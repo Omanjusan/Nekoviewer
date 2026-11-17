@@ -8,7 +8,7 @@ use crate::db_backup::{self, Generation};
 use crate::i18n;
 
 /// unix秒をローカル時刻の `YYYY-MM-DD HH:MM:SS` にする（ローカル時差が取れなければUTC）。
-fn format_unix(secs: i64) -> String {
+pub(super) fn format_unix(secs: i64) -> String {
     let Ok(utc) = time::OffsetDateTime::from_unix_timestamp(secs) else {
         return "-".to_owned();
     };
@@ -24,7 +24,7 @@ fn format_unix(secs: i64) -> String {
     )
 }
 
-fn format_size(bytes: u64) -> String {
+pub(super) fn format_size(bytes: u64) -> String {
     if bytes >= 1_000_000 {
         format!("{:.1} MB", bytes as f64 / 1_000_000.0)
     } else {

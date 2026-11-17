@@ -77,7 +77,7 @@ pub(super) fn icon_for(m: &DirMarker, show_dismissed: bool, presence: &PresenceM
     })
 }
 
-const ICON_SIZE: f32 = 16.0;
+pub(super) const ICON_SIZE: f32 = 16.0;
 const CARD_TOP_GAP: f32 = 4.0;
 
 /// カード上辺の左右中央に置くアイコンの矩形。
@@ -204,6 +204,32 @@ pub(super) fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: Marker
     }
 }
 
+/// 「実フォルダへ移動」アイコンの色（青〜水色の中間）。
+pub(super) const GOTO_REAL_COLOR: egui::Color32 = egui::Color32::from_rgb(40, 170, 230);
+/// 「仮想フォルダへ移動」アイコンの色（緑）。
+pub(super) const GOTO_VIRTUAL_COLOR: egui::Color32 = egui::Color32::from_rgb(60, 180, 90);
+
+/// リストの「実フォルダ」「仮想フォルダ」列の移動アイコン。移動マーカーと同じ形（丸の中の→矢印）で、色だけを変える。
+/// `hovered` のときは明るく、`enabled` が false（押せない）のときは消去済みと同じ灰色にする。
+pub(super) fn paint_goto_icon(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32, hovered: bool, enabled: bool) {
+    let base = if !enabled {
+        DISMISSED_GREY
+    } else if hovered {
+        color.lerp_to_gamma(egui::Color32::WHITE, 0.25)
+    } else {
+        color
+    };
+    let k = rect.width() / ICON_SIZE;
+    let v = |x: f32, y: f32| egui::vec2(x * k, y * k);
+    let c = rect.center();
+    painter.circle_filled(c, rect.width() / 2.0, base);
+    let ink = egui::Stroke::new(1.5 * k, egui::Color32::WHITE);
+    let (l, r) = (c + v(-4.0, 0.0), c + v(4.0, 0.0));
+    painter.line_segment([l, r], ink);
+    painter.line_segment([r, r + v(-3.0, -3.0)], ink);
+    painter.line_segment([r, r + v(-3.0, 3.0)], ink);
+}
+
 /// デバッグタブの見本用: 全マーカーアイコン（名前, 描画）を、実寸と拡大で並べる。
 pub(super) fn draw_icon_sheet(ui: &mut egui::Ui) {
     type Painter = fn(&egui::Painter, egui::Rect);
@@ -269,6 +295,59 @@ impl super::NekoviewApp {
             && self.viewing_similar.is_none()
     }
 
+    /// 検索タブで新モードの結果を表示しているか（重複マーカーを、保存済みの分だけ読み取り専用で出す表示）。
+    pub(super) fn cross_marker_view_active(&self) -> bool {
+        self.folder_pane_tab == super::FolderPaneTab::Search
+            && self.viewing_search.and_then(|i| self.search_history.get(i)).is_some_and(|e| e.form.mode == super::SearchMode::New)
+    }
+
+    /// 新モードの検索結果のファイルのアイコン。移動マーカー（一時的な印）は出さない。
+    /// 重複先の現存確認はしない（読み取り専用なので、保存されている内容のまま出す）。
+    pub(super) fn cross_marker_icon(&self, path: &std::path::Path) -> Option<MarkerIcon> {
+        if !self.cross_marker_view_active() {
+            return None;
+        }
+        let m = self.cross_markers.get(path)?;
+        icon_for(m, self.dup_show_dismissed, &PresenceMap::new()).filter(|i| *i != MarkerIcon::Moved)
+    }
+
+    /// 新モードの検索結果の各ファイルの、保存済みの重複マーカーを読み足す（`ids` は `paths` と同じ並び）。
+    pub(super) fn add_cross_markers(&mut self, paths: &[std::path::PathBuf], ids: &[u64]) {
+        if !self.cross_marker_view_active() || paths.len() != ids.len() {
+            return;
+        }
+        let Some(db) = self.spread_db.clone() else { return };
+        let found = crate::duplicate_marker::load_for_ids(&db, ids);
+        for (path, id) in paths.iter().zip(ids) {
+            self.cross_hit_ids.insert(path.clone(), *id);
+            if let Some(m) = found.get(id) {
+                self.cross_markers.insert(path.clone(), m.clone());
+            }
+        }
+    }
+
+    /// 履歴の idx 番目の行（新モード）の結果について、重複マーカーを読み直す。ほかの行・モードでは空にする。
+    pub(super) fn reload_cross_markers(&mut self, idx: usize) {
+        self.cross_markers.clear();
+        self.cross_hit_ids.clear();
+        // 結果が切り替わるので、「？」の照合結果も捨てる（古い依頼は世代で打ち切られる）。
+        self.reset_sim_cross();
+        let Some(entry) = self.search_history.get(idx) else { return };
+        if entry.form.mode != super::SearchMode::New || entry.hit_ids.len() != entry.hits.len() {
+            return;
+        }
+        let (paths, ids) = (entry.hits.clone(), entry.hit_ids.clone());
+        // enter_search_view の途中（viewing_search はまだ idx ではない）から呼ぶので、表示条件は見ずに読む。
+        let Some(db) = self.spread_db.clone() else { return };
+        let found = crate::duplicate_marker::load_for_ids(&db, &ids);
+        for (path, id) in paths.into_iter().zip(ids) {
+            self.cross_hit_ids.insert(path.clone(), id);
+            if let Some(m) = found.get(&id) {
+                self.cross_markers.insert(path, m.clone());
+            }
+        }
+    }
+
     /// 絞り込み・並びの対象になる自身のマーカーの検出日時（unix秒）。マーカー無し、消去済み
     /// （「消去済」を入れていない時）、マーカーを出さない表示は None。
     pub(super) fn active_marker_detected_at(&self, filename: &str) -> Option<i64> {
@@ -296,6 +375,17 @@ impl super::NekoviewApp {
         real_idx: usize,
         name: &str,
     ) {
+        // 検索タブの新モードの結果: 保存済みの重複マーカーを読み取り専用で出す（クリックしても何も起きない）。
+        if self.cross_marker_view_active() {
+            self.marker_icon_hits.remove(&real_idx);
+            let Some(path) = self.archives.get(real_idx) else { return };
+            let Some(icon) = self.cross_marker_icon(path) else { return };
+            paint_icon(&ui.painter().with_clip_rect(ui.clip_rect()), icon_rect, icon);
+            if ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| icon_rect.contains(p)) {
+                response.clone().on_hover_text(format!("{}\n{}", icon.tooltip(), i18n::t().cross_marker_no_jump()));
+            }
+            return;
+        }
         self.note_marker_seen(name);
         let Some(icon) = self.marker_icon(name) else {
             self.marker_icon_hits.remove(&real_idx);
@@ -347,6 +437,20 @@ impl super::NekoviewApp {
         real_idx: usize,
         name: &str,
     ) {
+        // 検索タブの新モードの結果: 保存済みのハッシュで、表示中の行だけ遅延照合した「？」を、読み取り専用で出す。
+        if self.cross_marker_view_active() {
+            self.sim_icon_hits.remove(&real_idx);
+            let Some(id) = self.archives.get(real_idx).and_then(|p| self.cross_hit_ids.get(p)).copied() else { return };
+            self.sim_cross_note_wanted(id);
+            let Some(info) = self.sim_cross_summary(id) else { return };
+            paint_similar_icon(&ui.painter().with_clip_rect(ui.clip_rect()), icon_rect, info.dismissed);
+            if ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| icon_rect.contains(p)) {
+                let t = i18n::t();
+                let body = if info.dismissed { t.sim_marker_dismissed_tooltip(info.pct, info.count) } else { t.sim_marker_tooltip(info.pct, info.count) };
+                response.clone().on_hover_text(format!("{body}\n{}", t.cross_marker_no_jump()));
+            }
+            return;
+        }
         let Some(info) = self.sim_summary(name) else {
             self.sim_icon_hits.remove(&real_idx);
             return;

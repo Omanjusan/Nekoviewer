@@ -5,7 +5,7 @@ use crate::fs::dir;
 use crate::neko_dir;
 
 use super::{
-    push_search_result, NekoviewApp, ScanState, SearchFormState, SearchResultEntry,
+    push_search_result, NekoviewApp, ScanState, SearchFormState, SearchMode, SearchResultEntry,
     TreeScanPending,
 };
 use crate::i18n;
@@ -45,16 +45,12 @@ fn restore_search_form(
 }
 
 fn parse_mb(s: &str) -> Option<u64> {
-    let s = s.trim();
-    if s.is_empty() {
-        return None;
-    }
-    s.parse::<f64>().ok().filter(|v| v.is_finite() && *v >= 0.0).map(|mb| (mb * 1024.0 * 1024.0) as u64)
+    crate::ledger_search::parse_size_mb(s)
 }
 
 /// "YYYY-MM-DD" を UTC 00:00:00 の Unix秒に変換する。chrono非依存
 /// （panels.rs の format_mtime と対称。Howard Hinnant's civil_from_days の逆算）。
-fn parse_date(s: &str) -> Option<i64> {
+pub(super) fn parse_date(s: &str) -> Option<i64> {
     let s = s.trim();
     if s.is_empty() {
         return None;
@@ -140,8 +136,13 @@ pub(super) fn spawn_search(
 impl NekoviewApp {
     /// 「検索開始」ボタンから呼ぶ。実行中（search_running）なら何もしない
     /// （多重実行不可、呼び出し側でもボタンを無効化済み）。
-    pub(super) fn start_search(&mut self, ctx: &egui::Context) {
-        if self.search_running {
+    /// `replace` は、保存済みの行を選んで再実行したときの元の行の時刻（置き換えて先頭へ移す）。
+    pub(super) fn start_search(&mut self, ctx: &egui::Context, replace: Option<i64>) {
+        if self.search_running || self.search_job.is_some() {
+            return;
+        }
+        // 条件が空の検索は始めない（全件の列挙になるため）。
+        if !super::search_history_ui::search_condition_is_valid(&self.search_form) {
             return;
         }
         let Some(cache_root) = self.config.cache_root() else { return };
@@ -154,6 +155,11 @@ impl NekoviewApp {
         let include_subdirs = submitted_form.include_subdirs;
         let ctx = ctx.clone();
         self.search_pending = Some(spawn_search(root, include_subdirs, cache_root, conditions, move || ctx.request_repaint()));
+        // 条件だけを履歴ファイルへ積む。再実行なら、元の行はここで取り除く（完了時に新しい行が先頭へ入る）。
+        self.search_pending_saved_at = Some(self.save_search_condition(&submitted_form, replace));
+        if let Some(t) = replace {
+            self.remove_stored_row(t);
+        }
         self.search_pending_form = Some(submitted_form);
         self.search_running = true;
     }
@@ -161,19 +167,27 @@ impl NekoviewApp {
     /// 検索ワーカーの結果をポーリングする。完了したら履歴の先頭に追加し、
     /// その結果を選択状態にする（検索したらすぐ見えるように）。
     pub(super) fn poll_search(&mut self) {
+        self.poll_new_search();
         let Some(rx) = &self.search_pending else { return };
         let Ok(hits) = rx.try_recv() else { return };
         self.search_pending = None;
         self.search_running = false;
         let form = self.search_pending_form.take().unwrap_or_else(|| self.search_form.clone());
         let label = i18n::t().search_result_label(&form.name_pattern, hits.len());
-        push_search_result(&mut self.search_history, SearchResultEntry { label, hits, form });
+        let saved_at = self.search_pending_saved_at.take();
+        push_search_result(&mut self.search_history, SearchResultEntry { label, hits, form, saved_at, ..Default::default() });
         self.search_selected = Some(0);
         self.enter_search_view(0);
+        self.enforce_search_history_limits();
     }
 
     /// 履歴をユーザーが確定したとき、実行時の全条件をフォームへ上書きして結果を表示する。
     pub(super) fn select_search_history(&mut self, idx: usize) {
+        // 結果を持たない行（再起動後に復元した行など）は、条件を復元して再走査する。
+        if self.search_history.get(idx).is_some_and(|e| e.restored) {
+            self.rerun_stored_search(idx);
+            return;
+        }
         if !restore_search_form(&mut self.search_form, &self.search_history, idx) {
             return;
         }
@@ -192,7 +206,14 @@ impl NekoviewApp {
         self.saved_archive_settings = self.spread_db.as_ref()
             .map(|db| crate::spread_state::saved_settings_for_paths(db, &self.archives))
             .unwrap_or_default();
+        // 新モードの結果なら、保存済みの重複マーカーを読み直す（読み取り専用の表示用）。
+        let is_new = entry.form.mode == SearchMode::New;
+        self.reload_cross_markers(idx);
         self.raw_image_files.clear();
+        // 新モード（台帳）の結果は単体画像も含みうる。追記時（append_search_view_hits）と同じ扱いにする。
+        if is_new {
+            self.raw_image_files.extend(self.archives.iter().filter(|p| crate::fs::archive::is_supported_image_file(p)).cloned());
+        }
         // 階層概念を持ち込まない平坦一覧という契約のため、サブフォルダ一覧も明示的に空にする
         // （grid_entries/draw_archive_grid側もviewing_searchをガードしているが二重の防御）。
         self.subdirs.clear();
@@ -215,13 +236,69 @@ impl NekoviewApp {
         self.select_anchor = None;
     }
 
+    /// 中央の一覧が、台帳由来の横断結果（検索の結果、またはタグ検索の結果）になっているか。
+    pub(super) fn in_ledger_result_view(&self) -> bool {
+        self.viewing_search.is_some() || self.tag_search_view_open
+    }
+
+    /// 台帳由来の結果（検索・タグ検索）の表示中に、実体が無いと分かったファイルを表示中の一覧から外す。
+    /// 履歴（`entry.hits`）とDBは変えない（ファイルが戻れば、開き直した時に再び出る）。
+    /// 並びは保ったまま詰め、選択・複数選択・グリッドカーソルは同じファイルを指し直す。
+    pub(super) fn drop_missing_from_search_view(&mut self, missing: &std::collections::HashSet<PathBuf>) {
+        if !self.in_ledger_result_view() {
+            return;
+        }
+        let before = std::mem::take(&mut self.archives);
+        self.archives = before.iter().filter(|p| !missing.contains(*p)).cloned().collect();
+        if self.archives.len() == before.len() {
+            return;
+        }
+        for p in missing {
+            self.thumbnails.remove(p);
+            self.thumb_pending.remove(p);
+        }
+        let remap = super::scan::index_remap(&before, &self.archives);
+        let moved = |i: usize| remap.get(&i).copied();
+        let selection_lost = self.selected_archive_index.is_some_and(|i| moved(i).is_none());
+        self.selected_archive_index = self.selected_archive_index.and_then(moved);
+        self.select_anchor = self.select_anchor.and_then(moved);
+        self.multi_selected = self.multi_selected.iter().filter_map(|&i| moved(i)).collect();
+        if let Some(super::GridEntry::Archive(i)) = self.grid_cursor {
+            self.grid_cursor = moved(i).map(super::GridEntry::Archive);
+        }
+        if selection_lost {
+            self.selected_archive_meta = None;
+        }
+        // 選択インデックスを付け直した後にフィルタを作り直す。
+        self.recompute_filter();
+        self.egui_ctx.request_repaint();
+    }
+
     /// 検索結果表示を終え、実ディレクトリ（current_dir）表示に戻す。
     pub(super) fn exit_search_view(&mut self) {
         if self.viewing_search.is_none() {
             return;
         }
+        // 検索タブへ戻ったときに、いま見ている行の結果を出し直せるよう、行を覚えておく。
+        self.search_resume_uid = self.viewing_search.and_then(|i| self.search_history.get(i)).map(|e| e.uid).filter(|&u| u != 0);
         self.viewing_search = None;
+        self.cross_markers.clear();
+        self.cross_hit_ids.clear();
+        self.reset_sim_cross();
         self.start_scan();
+    }
+
+    /// 検索タブへ戻ったとき: 離れる直前に見ていた履歴の行（結果を持つ行）の結果を、出し直す。
+    /// 別のモードへ切り替わっていた・行が無くなっていた・結果を持たない行になっていた場合は、何もしない。
+    pub(super) fn resume_search_view(&mut self) {
+        let Some(uid) = self.search_resume_uid.take() else { return };
+        let Some(idx) = self.search_history.iter().position(|e| e.uid == uid) else { return };
+        let entry = &self.search_history[idx];
+        if entry.restored || entry.form.mode != self.search_form.mode {
+            return;
+        }
+        self.search_selected = Some(idx);
+        self.enter_search_view(idx);
     }
 
     /// 検索タブ内でドライブをクリックした時の処理。ツリー表示のルートを実ツリーと同じ要領で
@@ -289,11 +366,16 @@ mod tests {
             size_max_mb: "20".to_string(),
             date_after: "2025-01-02".to_string(),
             date_before: "2025-03-04".to_string(),
+            mode: SearchMode::Legacy,
+            new_text: "saved text".to_string(),
+            new_size_min_mb: "3".to_string(),
+            new_size_max_mb: "4".to_string(),
         };
         let history = vec![SearchResultEntry {
             label: "saved".to_string(),
             hits: Vec::new(),
             form: saved.clone(),
+            ..Default::default()
         }];
         let mut current = SearchFormState {
             base_dir: Some(PathBuf::from("/current/base")),
@@ -303,6 +385,10 @@ mod tests {
             size_max_mb: "2".to_string(),
             date_after: "2026-05-06".to_string(),
             date_before: "2026-07-08".to_string(),
+            mode: SearchMode::New,
+            new_text: "current text".to_string(),
+            new_size_min_mb: "5".to_string(),
+            new_size_max_mb: "6".to_string(),
         };
 
         assert!(restore_search_form(&mut current, &history, 0));

@@ -6,6 +6,7 @@ use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use sha2::{Digest, Sha256};
 
 use crate::config::AppConfig;
+use crate::fs::archive::meta::{DetailKinds, DetailMeta};
 
 /// サムネキャッシュテーブル: キー=ファイル名, バリュー=(source_mtime_secs: i64, jpeg_blob: Vec<u8>)
 pub const THUMBS_TABLE: TableDefinition<&str, (i64, &[u8])> = TableDefinition::new("thumbs");
@@ -72,6 +73,19 @@ pub const INVALID_TABLE: TableDefinition<&str, i64> = TableDefinition::new("inva
 /// ファイル索引テーブル（検索機能用）: キー=ファイル名, バリュー=(mtime_secs: i64, size_bytes: u64)
 /// サムネ生成が完了したファイルのみ記録される（サムネ未取得ファイルは検索対象外）。
 pub const FILES_TABLE: TableDefinition<&str, (i64, u64)> = TableDefinition::new("files");
+
+/// アーカイブ情報テーブル（リストの「ページ数」「詳細」列用）: キー=ファイル名,
+/// バリュー=(mtime_secs, size_bytes, page_count, detail_flags)。
+/// ビューアーを開いた時点で書く再計算可能なキャッシュ。mtime・sizeが現物と違う行は無効として扱う。
+/// detail_flags: 0=詳細は未確認、1=確認済みで無し、2=確認済みで有り。
+pub const ARCHIVE_META_TABLE: TableDefinition<&str, (i64, u64, u32, u8)> =
+    TableDefinition::new("archive_meta_v1");
+
+/// 公開評価テーブル（リストの「公開評価」列用。info.txt の `Rating:`）: キー=ファイル名,
+/// バリュー=(mtime_secs, size_bytes, rating_x100)。rating_x100 は評価を100倍した整数（4.82 → 482）で、
+/// `u32::MAX` は「確認済みで評価なし」。行が無いか、mtime・sizeが現物（`ARCHIVE_META_TABLE` の行）と違うときは未確認。
+/// `ARCHIVE_META_TABLE` の値の型は変えられない（既存DBが開けなくなる）ので、別の表にしてある。
+pub const ARCHIVE_RATING_TABLE: TableDefinition<&str, (i64, u64, u32)> = TableDefinition::new("archive_rating_v1");
 
 /// 逆引き用テーブル: キー="source_dir"固定, バリュー=このDBに対応する実ディレクトリの絶対パス文字列。
 /// neko_dir_for() が一方向ハッシュのため、DBファイル単体からPWDを算出するにはこれが要る。
@@ -140,6 +154,8 @@ pub fn open_cache_db(neko_dir: &Path, source_dir: &Path) -> Option<Arc<Mutex<Dat
         tx.open_table(THUMB_FILTERS_TABLE).ok()?;
         tx.open_table(THUMB_STATES_TABLE).ok()?;
         tx.open_table(FILES_TABLE).ok()?;
+        tx.open_table(ARCHIVE_META_TABLE).ok()?;
+        tx.open_table(ARCHIVE_RATING_TABLE).ok()?;
         {
             let mut source_dir_table = tx.open_table(SOURCE_DIR_TABLE).ok()?;
             let abs = source_dir.to_string_lossy();
@@ -163,9 +179,25 @@ pub fn dir_for_db(db: &Arc<Mutex<Database>>) -> Option<PathBuf> {
     Some(PathBuf::from(guard.value()))
 }
 
+/// 移行も回収も要らない状態かを、読み取りだけで判定する（要らなければ書き込み・全キー走査を省く）。
+/// スキーマ版が現行で、中断されたprocessingが残っていなければ true。
+/// 状態表は小さい行だけなので軽い。THUMBS_TABLEはJPEG本体を抱えており、全キー走査はファイル全体の
+/// 読み出しになる（コールドの数十MBのDBで数十ms）ため、通常の起動ではここで済ませる。
+fn schema_is_settled(db: &Database) -> bool {
+    let Ok(tx) = db.begin_read() else { return false };
+    let version_ok = tx.open_table(META_TABLE).ok()
+        .and_then(|meta| meta.get(SCHEMA_VERSION_KEY).ok().flatten().map(|v| v.value()))
+        == Some(SCHEMA_VERSION);
+    if !version_ok { return false; }
+    let Ok(states) = tx.open_table(THUMB_STATES_TABLE) else { return false };
+    let Ok(iter) = states.iter() else { return false };
+    !iter.flatten().any(|item| decode_thumbnail_state(item.1.value()).status == ThumbnailStatus::Processing)
+}
+
 /// 旧形式のJPEGを保持したままv2状態へ移行する。
 /// 中断されたprocessingもここで回収し、次回訪問時に再生成できる状態へ戻す。
 fn enforce_schema_version(db: &Database) {
+    if schema_is_settled(db) { return; }
     let Ok(tx) = db.begin_write() else { return };
     let now = unix_timestamp_secs();
     let thumb_keys: Vec<String> = {
@@ -357,6 +389,34 @@ mod tests {
     }
 
     #[test]
+    fn clear_folder_thumbs_removes_every_thumb_row_and_keeps_other_records() {
+        let neko_dir = unique_test_neko_dir("clear_folder_thumbs");
+        let db = open_cache_db(&neko_dir, Path::new("/tmp/fake_source_dir_for_clear_folder_thumbs")).expect("db should open");
+        write_thumb(&db, "a.zip", 100, b"jpeg-a");
+        write_thumb(&db, "b.zip", 200, b"jpeg-b");
+        write_thumb_source(&db, "a.zip", Some("left\0pages/cover.jpg"));
+        // JPEG が無く生成元の記録だけ残っているファイルも、1件として数えて消す。
+        write_thumb_source(&db, "c.zip", None);
+        write_file_record(&db, "a.zip", 100, 1234);
+
+        assert_eq!(clear_folder_thumbs(&db), 3);
+
+        for name in ["a.zip", "b.zip", "c.zip"] {
+            assert!(read_thumb_unchecked(&db, name).is_none(), "{name}");
+            assert!(read_thumb_source(&db, name).is_none(), "{name}");
+        }
+        {
+            let db = db.lock().unwrap();
+            let tx = db.begin_read().unwrap();
+            let table = tx.open_table(FILES_TABLE).unwrap();
+            assert_eq!(table.get("a.zip").unwrap().unwrap().value(), (100, 1234), "ファイルの記録は残す");
+        }
+        // 空になった後に呼んでも 0 件で、壊れない。
+        assert_eq!(clear_folder_thumbs(&db), 0);
+        let _ = std::fs::remove_dir_all(&neko_dir);
+    }
+
+    #[test]
     fn source_change_keeps_old_blob_and_rejects_old_token() {
         let neko_dir = unique_test_neko_dir("thumb_source_race");
         let db = open_cache_db(&neko_dir, Path::new("/tmp/fake_thumb_source_race")).unwrap();
@@ -383,6 +443,27 @@ mod tests {
         ));
         assert_eq!(read_thumb_unchecked(&db, "book.zip").unwrap().1, b"right-jpeg");
         assert_eq!(read_thumbnail_state(&db, "book.zip").unwrap().status, ThumbnailStatus::Current);
+        let _ = std::fs::remove_dir_all(&neko_dir);
+    }
+
+    #[test]
+    fn needs_regeneration_follows_state_and_profile() {
+        let neko_dir = unique_test_neko_dir("needs_regen");
+        let db = open_cache_db(&neko_dir, Path::new("/tmp/fake_needs_regen")).unwrap();
+        // 状態なし → 要る
+        assert!(thumbnail_needs_regeneration(&db, "none.zip", 256, TRIANGLE));
+        // 生成中（Processing）→ 二重に始めない
+        let token = claim_thumbnail_generation(&db, "a.zip", 100, 256, TRIANGLE, "").unwrap();
+        assert!(!thumbnail_needs_regeneration(&db, "a.zip", 256, TRIANGLE));
+        // 完成（Current）。同じ設定なら要らない。サイズ・フィルタが変われば要る。
+        assert!(finish_thumbnail_generation(&db, "a.zip", 100, b"a", "", 256, TRIANGLE, token));
+        assert!(!thumbnail_needs_regeneration(&db, "a.zip", 256, TRIANGLE));
+        assert!(thumbnail_needs_regeneration(&db, "a.zip", 384, TRIANGLE), "サイズ変更");
+        assert!(thumbnail_needs_regeneration(&db, "a.zip", 256, LANCZOS3), "フィルタ変更");
+        // 旧JPEGを残したまま作り直し待ち（Stale）→ 要る
+        reset_thumb_for_source(&db, "a.zip", "right\0pages/cover.jpg");
+        assert_eq!(read_thumbnail_state(&db, "a.zip").unwrap().status, ThumbnailStatus::Stale);
+        assert!(thumbnail_needs_regeneration(&db, "a.zip", 256, TRIANGLE));
         let _ = std::fs::remove_dir_all(&neko_dir);
     }
 
@@ -457,6 +538,65 @@ mod tests {
         let _ = std::fs::remove_dir_all(&neko_dir);
     }
 
+    /// 現行スキーマで中断processingが無いDBは「落ち着いている」とみなし、全キー走査の書き込みを省く。
+    /// processingが残っているとき・版が古いときは省かず、従来の回収・移行へ回す。
+    #[test]
+    fn schema_is_settled_only_when_current_and_without_processing() {
+        let db_path = unique_test_db_path("schema_settled");
+        let db = Database::create(&db_path).unwrap();
+        {
+            let tx = db.begin_write().unwrap();
+            tx.open_table(THUMBS_TABLE).unwrap()
+                .insert("a.zip", (100, b"jpeg".as_slice())).unwrap();
+            tx.open_table(THUMB_STATES_TABLE).unwrap().insert(
+                "a.zip",
+                encode_thumbnail_state(ThumbnailRecordState {
+                    status: ThumbnailStatus::Processing,
+                    token: 1,
+                    generated_at: 0,
+                    updated_at: 1,
+                    target_edge: 384,
+                    target_filter: TRIANGLE,
+                    target_mtime: 100,
+                }),
+            ).unwrap();
+            tx.commit().unwrap();
+        }
+        assert!(!schema_is_settled(&db), "版未設定は落ち着いていない");
+        enforce_schema_version(&db);
+        assert!(schema_is_settled(&db), "移行・回収後は落ち着く");
+
+        // 現行版でも、processingが残っていれば省かずに回収する。
+        {
+            let tx = db.begin_write().unwrap();
+            tx.open_table(THUMB_STATES_TABLE).unwrap().insert(
+                "a.zip",
+                encode_thumbnail_state(ThumbnailRecordState {
+                    status: ThumbnailStatus::Processing,
+                    token: 2,
+                    generated_at: 0,
+                    updated_at: 1,
+                    target_edge: 384,
+                    target_filter: TRIANGLE,
+                    target_mtime: 100,
+                }),
+            ).unwrap();
+            tx.commit().unwrap();
+        }
+        assert!(!schema_is_settled(&db), "processingが残っていれば落ち着いていない");
+        enforce_schema_version(&db);
+        let tx = db.begin_read().unwrap();
+        let states = tx.open_table(THUMB_STATES_TABLE).unwrap();
+        assert_eq!(
+            decode_thumbnail_state(states.get("a.zip").unwrap().unwrap().value()).status,
+            ThumbnailStatus::Stale,
+        );
+        drop(states);
+        drop(tx);
+        drop(db);
+        let _ = std::fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
     #[test]
     fn interrupted_processing_is_recovered_without_deleting_blob() {
         let db_path = unique_test_db_path("processing_recovery");
@@ -502,9 +642,8 @@ mod tests {
     fn successful_pwd_sync_adds_missing_and_keeps_thumbnails_of_deleted_files() {
         let neko_dir = unique_test_neko_dir("thumb_pwd_sync");
         let db = open_cache_db(&neko_dir, Path::new("/tmp/fake_thumb_pwd_sync")).unwrap();
-        write_thumb(&db, "deleted.zip", 100, b"old");
+        test_seed_current(&db, "deleted.zip", 100, b"old", "");
         write_file_record(&db, "deleted.zip", 100, 10);
-        enforce_schema_version(&db.lock().unwrap());
 
         assert!(sync_thumbnail_records(
             &db,
@@ -1056,6 +1195,81 @@ pub fn remove_thumb(db: &Arc<Mutex<Database>>, filename: &str) {
     let _ = tx.commit();
 }
 
+/// 複数ファイルのサムネ（JPEGと生成元・サイズ・フィルタ・状態）を1トランザクションで破棄する。
+/// 計測フィクスチャーが「初回登録」の状態を作るために使う。
+pub fn remove_thumbs(db: &Arc<Mutex<Database>>, filenames: &[String]) {
+    let Ok(db) = db.lock() else { return };
+    let Ok(tx) = db.begin_write() else { return };
+    if let Ok(mut table) = tx.open_table(THUMBS_TABLE) {
+        for f in filenames { let _ = table.remove(f.as_str()); }
+    }
+    if let Ok(mut table) = tx.open_table(THUMB_SOURCES_TABLE) {
+        for f in filenames { let _ = table.remove(f.as_str()); }
+    }
+    if let Ok(mut table) = tx.open_table(THUMB_EDGES_TABLE) {
+        for f in filenames { let _ = table.remove(f.as_str()); }
+    }
+    if let Ok(mut table) = tx.open_table(THUMB_FILTERS_TABLE) {
+        for f in filenames { let _ = table.remove(f.as_str()); }
+    }
+    if let Ok(mut table) = tx.open_table(THUMB_STATES_TABLE) {
+        for f in filenames { let _ = table.remove(f.as_str()); }
+    }
+    if let Ok(mut table) = tx.open_table(THUMB_DESIRED_SOURCES_TABLE) {
+        for f in filenames { let _ = table.remove(f.as_str()); }
+    }
+    let _ = tx.commit();
+}
+
+/// サムネ系のテーブル1つの全行を消し、消した行のファイル名を `names` に足す。
+fn drain_thumb_table<V: redb::Value + 'static>(
+    tx: &redb::WriteTransaction,
+    def: TableDefinition<'static, &'static str, V>,
+    names: &mut std::collections::HashSet<String>,
+) {
+    let Ok(mut table) = tx.open_table(def) else { return };
+    let keys: Vec<String> = match table.iter() {
+        Ok(rows) => rows.filter_map(|r| r.ok()).map(|(k, _)| k.value().to_string()).collect(),
+        Err(_) => return,
+    };
+    for key in &keys {
+        let _ = table.remove(key.as_str());
+    }
+    names.extend(keys);
+}
+
+/// このフォルダ（のキャッシュDB）に貯めたサムネを、すべて破棄する。戻り値は破棄したファイル数。
+/// 消すのはサムネ本体と、その生成元・サイズ・フィルタ・状態・希望ソースだけ（ファイルの記録・ページ数・評価などは残す）。
+/// 次にそのフォルダを表示すると、サムネは未生成として作り直される。
+///
+/// サムネの拡縮アルゴリズムやサイズの設定を変えたあとに、作り込み済みのサムネを作り直す入口として使う
+/// （UIからは、アプリが開いている `cache_db` のハンドルを渡す）。起動引数 `--clear-thumbs` は
+/// `clear_dir_thumbs` 経由で呼ぶ。1トランザクションなので、途中で止まっても中途半端な状態は残らない。
+pub fn clear_folder_thumbs(db: &Arc<Mutex<Database>>) -> usize {
+    let Ok(db) = db.lock() else { return 0 };
+    let Ok(tx) = db.begin_write() else { return 0 };
+    let mut names = std::collections::HashSet::new();
+    drain_thumb_table(&tx, THUMBS_TABLE, &mut names);
+    drain_thumb_table(&tx, THUMB_SOURCES_TABLE, &mut names);
+    drain_thumb_table(&tx, THUMB_DESIRED_SOURCES_TABLE, &mut names);
+    drain_thumb_table(&tx, THUMB_EDGES_TABLE, &mut names);
+    drain_thumb_table(&tx, THUMB_FILTERS_TABLE, &mut names);
+    drain_thumb_table(&tx, THUMB_STATES_TABLE, &mut names);
+    if tx.commit().is_err() {
+        return 0;
+    }
+    names.len()
+}
+
+/// フォルダ `dir`（直下のみ。サブフォルダは別DB）のサムネを破棄する。キャッシュDBがまだ無ければ何もしない。
+/// 戻り値は、破棄したファイル数（DBが開けなければ None）。同じDBをアプリが既に開いていても、
+/// プロセス内のレジストリ経由で同じハンドルを使う（多重オープンにならない）。
+pub fn clear_dir_thumbs(dir: &Path, config: &AppConfig) -> Option<usize> {
+    let neko_dir = neko_dir_for(dir, config)?;
+    let db = open_cache_db_if_exists(&neko_dir, dir)?;
+    Some(clear_folder_thumbs(&db))
+}
+
 /// 旧JPEGを保持したまま、登録ページ変更をファイル単位でstale化する。
 pub fn reset_thumb_for_source(db: &Arc<Mutex<Database>>, filename: &str, source: &str) {
     let Ok(db) = db.lock() else { return };
@@ -1157,6 +1371,40 @@ pub fn claim_thumbnail_generation(
     Some(token)
 }
 
+/// 読み取り専用で、サムネが「生成済み（Current）かつ元ファイルのmtime・生成条件と一致」かを返す。
+/// `claim_thumbnail_generation` の「取得しない（既に最新）」判定と同じ条件で、書き込みは一切しない。
+/// 飛び地一覧（他フォルダのDBを参照だけする）で、再生成が要るかの判定に使う。
+pub fn is_thumbnail_current(
+    db: &Arc<Mutex<Database>>,
+    filename: &str,
+    source_mtime: i64,
+    requested_edge: u32,
+    requested_filter: u32,
+    desired_source: &str,
+) -> bool {
+    if source_mtime == 0 { return false; }
+    let Ok(db) = db.lock() else { return false };
+    let Ok(tx) = db.begin_read() else { return false };
+    let state = tx.open_table(THUMB_STATES_TABLE).ok()
+        .and_then(|t| t.get(filename).ok().flatten().map(|v| decode_thumbnail_state(v.value())));
+    if !state.is_some_and(|s| s.status == ThumbnailStatus::Current) { return false; }
+    let stored_mtime = tx.open_table(THUMBS_TABLE).ok()
+        .and_then(|t| t.get(filename).ok().flatten().map(|v| v.value().0));
+    let stored_edge = tx.open_table(THUMB_EDGES_TABLE).ok()
+        .and_then(|t| t.get(filename).ok().flatten().map(|v| v.value()));
+    let stored_filter = tx.open_table(THUMB_FILTERS_TABLE).ok()
+        .and_then(|t| t.get(filename).ok().flatten().map(|v| v.value()));
+    let stored_source = tx.open_table(THUMB_SOURCES_TABLE).ok()
+        .and_then(|t| t.get(filename).ok().flatten().map(|v| v.value().to_owned()));
+    stored_mtime == Some(source_mtime)
+        && stored_edge == Some(requested_edge)
+        && stored_filter == Some(requested_filter)
+        && match stored_source.as_deref() {
+            Some(actual) => thumbnail_desired_source_matches(desired_source, actual),
+            None => desired_source.is_empty(),
+        }
+}
+
 /// CAS取得時のtokenと生成条件が現在も一致する場合だけ、旧Blobを原子的に置き換える。
 pub fn finish_thumbnail_generation(
     db: &Arc<Mutex<Database>>,
@@ -1252,6 +1500,28 @@ pub fn fail_thumbnail_generation(
     let _ = tx.commit();
 }
 
+/// このファイルのサムネが、**現設定（サイズ・フィルタ）の完成品ではなく、作り直す必要があるか**を、状態だけを見て返す。
+/// 手すき生成が、設定変更後に旧形式（`Stale`、または別のサイズ・フィルタで完成した `Current`）を順に作り直す対象を選ぶのに使う。
+/// - 状態なし・`Missing`・`Stale` → 要る
+/// - `Processing`（他で生成中） → 要らない（二重に始めない）
+/// - `Current` → 保存された生成条件が現設定と違えば要る
+/// 元ファイルの更新日時との突合はしない（それは `claim_thumbnail_generation` の最終判定に任せる。ここは軽く保つ）。
+pub fn thumbnail_needs_regeneration(
+    db: &Arc<Mutex<Database>>,
+    filename: &str,
+    requested_edge: u32,
+    requested_filter: u32,
+) -> bool {
+    match read_thumbnail_state(db, filename) {
+        None => true,
+        Some(state) => match state.status {
+            ThumbnailStatus::Missing | ThumbnailStatus::Stale => true,
+            ThumbnailStatus::Processing => false,
+            ThumbnailStatus::Current => state.target_edge != requested_edge || state.target_filter != requested_filter,
+        },
+    }
+}
+
 /// 生成可否はファイル単位CASで判定するため、PWD単位では常に許可する。
 pub fn thumbnail_generation_state(
     _db: &Arc<Mutex<Database>>,
@@ -1337,6 +1607,240 @@ pub fn is_invalid_and_current(db: &Arc<Mutex<Database>>, filename: &str, archive
     stored_mtime == file_mtime(archive_path)
 }
 
+/// 詳細テキストの確認状態と種別（`ARCHIVE_META_TABLE` の detail_flags）。
+///
+/// 保存形式は1バイト: `0x80` = 確認済み（下位3ビットが XML・JSON・TXT の有無）、`0x40` = 対応外の形式（N/A）、
+/// それ以外 = 未確認。旧版が書いた 1（無し）・2（有り）は種別が分からないので未確認として読み、開き直したときに再記録される。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DetailFlag {
+    /// 未確認（まだ開いていない・走査していない、または読めなかった）。
+    Unknown,
+    /// 詳細テキストの抽出に対応していない形式（7z・tar・フォルダ）。
+    NotApplicable,
+    /// 確認済み。種別がすべて無ければ「確認済みで無し」。
+    Checked(DetailKinds),
+}
+
+impl DetailFlag {
+    const CHECKED_BIT: u8 = 0x80;
+    const NOT_APPLICABLE: u8 = 0x40;
+
+    fn to_u8(self) -> u8 {
+        match self {
+            Self::Unknown => 0,
+            Self::NotApplicable => Self::NOT_APPLICABLE,
+            Self::Checked(k) => Self::CHECKED_BIT | k.to_bits(),
+        }
+    }
+
+    fn from_u8(v: u8) -> Self {
+        if v & Self::CHECKED_BIT != 0 {
+            Self::Checked(DetailKinds::from_bits(v))
+        } else if v == Self::NOT_APPLICABLE {
+            Self::NotApplicable
+        } else {
+            Self::Unknown
+        }
+    }
+
+    /// 読み出し結果から作る。`read` は `meta::read_detail` の結果、`supported` は `meta::detail_supported`。
+    /// 対応形式で読めなかったとき（壊れたzipなど）は未確認のままにする。
+    pub fn from_read(read: Option<&DetailMeta>, supported: bool) -> Self {
+        match read {
+            Some(d) => Self::Checked(d.kinds()),
+            None if !supported => Self::NotApplicable,
+            None => Self::Unknown,
+        }
+    }
+}
+
+/// 公開評価（info.txt の `Rating:`）の確認状態。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourceRating {
+    /// 未確認（まだ開いていない・走査していない、または読めなかった・対応外の形式）。
+    Unknown,
+    /// 確認済みで、評価は無い（info.txt が無い・`Rating:` 行が無い・範囲外）。
+    None,
+    /// 評価を100倍した整数（4.82 → 482）。
+    Value(u32),
+}
+
+impl SourceRating {
+    const NONE_MARK: u32 = u32::MAX;
+
+    fn to_stored(self) -> Option<u32> {
+        match self {
+            Self::Unknown => None,
+            Self::None => Some(Self::NONE_MARK),
+            Self::Value(v) => Some(v.min(Self::NONE_MARK - 1)),
+        }
+    }
+
+    fn from_stored(v: u32) -> Self {
+        if v == Self::NONE_MARK { Self::None } else { Self::Value(v) }
+    }
+
+    /// 読み出し結果から作る。`read` が None（zipでない・読めない）なら未確認。
+    pub fn from_read(read: Option<&DetailMeta>) -> Self {
+        match read {
+            Some(d) => d.info_rating.map_or(Self::None, Self::Value),
+            None => Self::Unknown,
+        }
+    }
+
+    /// ソート用の値（評価×100。未確認・評価なしは0）。
+    pub fn sort_value(self) -> u32 {
+        match self {
+            Self::Value(v) => v,
+            _ => 0,
+        }
+    }
+}
+
+/// `ARCHIVE_META_TABLE` の1行（`ARCHIVE_RATING_TABLE` の公開評価を合成したもの）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ArchiveMetaRow {
+    pub mtime: i64,
+    pub size: u64,
+    pub page_count: u32,
+    pub detail: DetailFlag,
+    /// 公開評価。評価表の行の mtime・size が、この行と同じときだけ有効（違えば未確認）。
+    pub source_rating: SourceRating,
+}
+
+impl ArchiveMetaRow {
+    /// 現物のmtime・sizeと一致する（記録が古くなっていない）か。
+    pub fn is_current(&self, mtime: i64, size: u64) -> bool {
+        self.mtime == mtime && self.size == size
+    }
+}
+
+/// アーカイブ情報を書く。`page_count` は u32 に丸める。公開評価は触らない。
+pub fn write_archive_meta(
+    db: &Arc<Mutex<Database>>,
+    filename: &str,
+    mtime: i64,
+    size: u64,
+    page_count: usize,
+    detail: DetailFlag,
+) {
+    write_archive_meta_full(db, filename, mtime, size, page_count, detail, SourceRating::Unknown);
+}
+
+/// アーカイブ情報と公開評価を同じトランザクションで書く。`rating` が未確認なら、評価の表は触らない。
+pub fn write_archive_meta_full(
+    db: &Arc<Mutex<Database>>,
+    filename: &str,
+    mtime: i64,
+    size: u64,
+    page_count: usize,
+    detail: DetailFlag,
+    rating: SourceRating,
+) {
+    let Ok(db) = db.lock() else { return };
+    let Ok(tx) = db.begin_write() else { return };
+    if let Ok(mut table) = tx.open_table(ARCHIVE_META_TABLE) {
+        let pages = u32::try_from(page_count).unwrap_or(u32::MAX);
+        let _ = table.insert(filename, (mtime, size, pages, detail.to_u8()));
+    }
+    if let Some(stored) = rating.to_stored()
+        && let Ok(mut table) = tx.open_table(ARCHIVE_RATING_TABLE)
+    {
+        let _ = table.insert(filename, (mtime, size, stored));
+    }
+    let _ = tx.commit();
+}
+
+/// タグ取得の走査が書く、1ファイルぶんのアーカイブ情報。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArchiveMetaWrite {
+    pub filename: String,
+    pub mtime: i64,
+    pub size: u64,
+    /// 走査で数えたページ数。分からなければ None（記録済みの値を残す）。
+    pub page_count: Option<usize>,
+    pub detail: DetailFlag,
+    /// 公開評価。未確認なら評価の表は触らない。
+    pub rating: SourceRating,
+}
+
+/// 走査の結果と、記録済みの行を合わせる。記録が現物と一致しているなら、より確かな既存の値を残す:
+/// ビューアーで数えたページ数（0より大きい）は走査の概数より優先し、走査で読めなかった（未確認の）詳細は既存の確認結果を残す。
+fn merge_scan_row(existing: Option<ArchiveMetaRow>, new: &ArchiveMetaWrite) -> (u32, DetailFlag) {
+    let scanned_pages = new.page_count.map_or(0, |n| u32::try_from(n).unwrap_or(u32::MAX));
+    let keep = existing.filter(|r| r.is_current(new.mtime, new.size));
+    let pages = match keep {
+        Some(r) if r.page_count > 0 => r.page_count,
+        _ => scanned_pages,
+    };
+    let detail = match keep {
+        Some(r) if new.detail == DetailFlag::Unknown => r.detail,
+        _ => new.detail,
+    };
+    (pages, detail)
+}
+
+/// 走査の結果をまとめて（1トランザクションで）書く。記録済みの確かな値は `merge_scan_row` で残す。
+pub fn merge_archive_meta_batch(db: &Arc<Mutex<Database>>, rows: &[ArchiveMetaWrite]) {
+    let Ok(db) = db.lock() else { return };
+    let Ok(tx) = db.begin_write() else { return };
+    if let Ok(mut table) = tx.open_table(ARCHIVE_META_TABLE) {
+        for row in rows {
+            let existing = table.get(row.filename.as_str()).ok().flatten().map(|g| {
+                let (mtime, size, page_count, flag) = g.value();
+                ArchiveMetaRow { mtime, size, page_count, detail: DetailFlag::from_u8(flag), source_rating: SourceRating::Unknown }
+            });
+            let (pages, detail) = merge_scan_row(existing, row);
+            let _ = table.insert(row.filename.as_str(), (row.mtime, row.size, pages, detail.to_u8()));
+        }
+    }
+    // 公開評価は、走査で確認できたものだけ書く（未確認のものは、既存の確認結果をそのまま残す）。
+    if let Ok(mut table) = tx.open_table(ARCHIVE_RATING_TABLE) {
+        for row in rows {
+            if let Some(stored) = row.rating.to_stored() {
+                let _ = table.insert(row.filename.as_str(), (row.mtime, row.size, stored));
+            }
+        }
+    }
+    let _ = tx.commit();
+}
+
+/// このDBのアーカイブ情報を全て読む（キー=ファイル名）。DBが開けない・表が無ければ空。
+pub fn read_all_archive_meta(db: &Arc<Mutex<Database>>) -> HashMap<String, ArchiveMetaRow> {
+    let mut out = HashMap::new();
+    let Ok(db) = db.lock() else { return out };
+    let Ok(tx) = db.begin_read() else { return out };
+    let Ok(table) = tx.open_table(ARCHIVE_META_TABLE) else { return out };
+    let Ok(iter) = table.iter() else { return out };
+    for item in iter.flatten() {
+        let (mtime, size, page_count, flag) = item.1.value();
+        out.insert(
+            item.0.value().to_owned(),
+            ArchiveMetaRow {
+                mtime,
+                size,
+                page_count,
+                detail: DetailFlag::from_u8(flag),
+                source_rating: SourceRating::Unknown,
+            },
+        );
+    }
+    // 公開評価を合成する（表が無い旧DBは全部未確認。更新日時・サイズが違う行も未確認）。
+    if let Ok(ratings) = tx.open_table(ARCHIVE_RATING_TABLE)
+        && let Ok(iter) = ratings.iter()
+    {
+        for item in iter.flatten() {
+            let (mtime, size, stored) = item.1.value();
+            if let Some(row) = out.get_mut(item.0.value())
+                && row.is_current(mtime, size)
+            {
+                row.source_rating = SourceRating::from_stored(stored);
+            }
+        }
+    }
+    out
+}
+
 /// ファイルのmtimeをi64（Unix秒）で返す。取得失敗時は0。
 pub fn file_mtime(path: &Path) -> i64 {
     std::fs::metadata(path)
@@ -1393,4 +1897,170 @@ fn sha256_hex(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
     format!("{:x}", hasher.finalize())
+}
+
+#[cfg(test)]
+mod archive_meta_tests {
+    use super::*;
+
+    fn temp_db(tag: &str) -> (PathBuf, Arc<Mutex<Database>>) {
+        let neko_dir = std::env::temp_dir().join(format!(
+            "nekoviewer_archive_meta_{tag}_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+        ));
+        let db = open_cache_db(&neko_dir, &neko_dir.join("src")).unwrap();
+        (neko_dir, db)
+    }
+
+    #[test]
+    fn archive_meta_round_trips_and_overwrites() {
+        let (dir, db) = temp_db("rt");
+        assert!(read_all_archive_meta(&db).is_empty());
+        let xml_txt = DetailFlag::Checked(DetailKinds { xml: true, json: false, txt: true });
+        let none = DetailFlag::Checked(DetailKinds::default());
+        write_archive_meta(&db, "a.zip", 100, 2000, 30, xml_txt);
+        write_archive_meta(&db, "b.cbz", 200, 3000, 5, none);
+        write_archive_meta(&db, "c.7z", 300, 4000, 7, DetailFlag::NotApplicable);
+        write_archive_meta(&db, "d.zip", 400, 5000, 1, DetailFlag::Unknown);
+        let all = read_all_archive_meta(&db);
+        assert_eq!(all.len(), 4);
+        assert_eq!(all["a.zip"], ArchiveMetaRow { mtime: 100, size: 2000, page_count: 30, detail: xml_txt, source_rating: SourceRating::Unknown });
+        assert_eq!(all["b.cbz"].detail, none);
+        assert_eq!(all["c.7z"].detail, DetailFlag::NotApplicable);
+        assert_eq!(all["d.zip"].detail, DetailFlag::Unknown);
+        // 再オープン（ファイルが変わった）で上書きされる。
+        write_archive_meta(&db, "a.zip", 150, 2100, 31, none);
+        let all = read_all_archive_meta(&db);
+        assert_eq!(all["a.zip"].page_count, 31);
+        assert_eq!(all["a.zip"].detail, none);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn archive_meta_is_current_only_when_mtime_and_size_match() {
+        let row = ArchiveMetaRow { mtime: 100, size: 2000, page_count: 3, detail: DetailFlag::Unknown, source_rating: SourceRating::Unknown };
+        assert!(row.is_current(100, 2000));
+        assert!(!row.is_current(101, 2000));
+        assert!(!row.is_current(100, 2001));
+    }
+
+    #[test]
+    fn detail_flag_encoding_keeps_kinds_and_reads_old_values_as_unknown() {
+        for bits in 0..8u8 {
+            let f = DetailFlag::Checked(DetailKinds::from_bits(bits));
+            assert_eq!(DetailFlag::from_u8(f.to_u8()), f);
+        }
+        assert_eq!(DetailFlag::from_u8(DetailFlag::NotApplicable.to_u8()), DetailFlag::NotApplicable);
+        assert_eq!(DetailFlag::from_u8(0), DetailFlag::Unknown);
+        // 旧版の 1（無し）・2（有り）は種別が分からないので未確認。
+        assert_eq!(DetailFlag::from_u8(1), DetailFlag::Unknown);
+        assert_eq!(DetailFlag::from_u8(2), DetailFlag::Unknown);
+    }
+
+    #[test]
+    fn detail_flag_from_read_separates_na_from_unreadable() {
+        let d = DetailMeta { comment: "c".into(), ..Default::default() };
+        assert_eq!(DetailFlag::from_read(Some(&d), true), DetailFlag::Checked(DetailKinds { xml: false, json: false, txt: true }));
+        assert_eq!(DetailFlag::from_read(None, false), DetailFlag::NotApplicable);
+        assert_eq!(DetailFlag::from_read(None, true), DetailFlag::Unknown);
+    }
+
+    fn scan_row(pages: Option<usize>, detail: DetailFlag) -> ArchiveMetaWrite {
+        ArchiveMetaWrite { filename: "a.zip".into(), mtime: 100, size: 2000, page_count: pages, detail, rating: SourceRating::Unknown }
+    }
+
+    #[test]
+    fn scan_merge_keeps_viewer_page_count_and_confirmed_detail() {
+        let xml = DetailFlag::Checked(DetailKinds { xml: true, json: false, txt: false });
+        let viewer = ArchiveMetaRow { mtime: 100, size: 2000, page_count: 30, detail: xml, source_rating: SourceRating::Unknown };
+        // 走査の概数より、ビューアーで数えた値を残す。
+        assert_eq!(merge_scan_row(Some(viewer), &scan_row(Some(28), DetailFlag::Unknown)), (30, xml));
+        // 走査で詳細が確認できたなら、そちらで更新する。
+        let none = DetailFlag::Checked(DetailKinds::default());
+        assert_eq!(merge_scan_row(Some(viewer), &scan_row(None, none)), (30, none));
+        // 記録が無い・古いときは走査の値（ページ数不明は0）。
+        assert_eq!(merge_scan_row(None, &scan_row(Some(28), xml)), (28, xml));
+        assert_eq!(merge_scan_row(None, &scan_row(None, DetailFlag::NotApplicable)), (0, DetailFlag::NotApplicable));
+        let stale = ArchiveMetaRow { mtime: 99, ..viewer };
+        assert_eq!(merge_scan_row(Some(stale), &scan_row(Some(28), DetailFlag::Unknown)), (28, DetailFlag::Unknown));
+    }
+
+    #[test]
+    fn scan_batch_writes_in_one_pass_and_merges() {
+        let (dir, db) = temp_db("batch");
+        let xml = DetailFlag::Checked(DetailKinds { xml: true, json: false, txt: false });
+        write_archive_meta(&db, "a.zip", 100, 2000, 30, xml);
+        let rows = vec![
+            scan_row(Some(28), DetailFlag::Unknown),
+            ArchiveMetaWrite { filename: "b.7z".into(), mtime: 5, size: 6, page_count: None, detail: DetailFlag::NotApplicable, rating: SourceRating::Unknown },
+            ArchiveMetaWrite { filename: "c.zip".into(), mtime: 7, size: 8, page_count: Some(12), detail: xml, rating: SourceRating::Value(482) },
+        ];
+        merge_archive_meta_batch(&db, &rows);
+        let all = read_all_archive_meta(&db);
+        assert_eq!((all["a.zip"].page_count, all["a.zip"].detail), (30, xml));
+        assert_eq!(all["b.7z"].detail, DetailFlag::NotApplicable);
+        assert_eq!((all["c.zip"].page_count, all["c.zip"].detail), (12, xml));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn source_rating_round_trips_and_ignores_stale_rows() {
+        let (dir, db) = temp_db("rating");
+        let none = DetailFlag::Checked(DetailKinds::default());
+        write_archive_meta_full(&db, "a.zip", 100, 2000, 5, none, SourceRating::Value(482));
+        write_archive_meta_full(&db, "b.zip", 100, 2000, 5, none, SourceRating::None);
+        write_archive_meta_full(&db, "c.zip", 100, 2000, 5, none, SourceRating::Unknown);
+        let all = read_all_archive_meta(&db);
+        assert_eq!(all["a.zip"].source_rating, SourceRating::Value(482));
+        assert_eq!(all["b.zip"].source_rating, SourceRating::None);
+        assert_eq!(all["c.zip"].source_rating, SourceRating::Unknown, "未確認のときは評価の表を触らない");
+        // ファイルが変わって記録し直したら、古い評価は使わない（未確認のときは評価の表を触らないので、更新日時が食い違う）。
+        write_archive_meta_full(&db, "a.zip", 200, 2100, 5, none, SourceRating::Unknown);
+        assert_eq!(read_all_archive_meta(&db)["a.zip"].source_rating, SourceRating::Unknown);
+        // 評価0.00は有効な値。
+        write_archive_meta_full(&db, "a.zip", 200, 2100, 5, none, SourceRating::Value(0));
+        assert_eq!(read_all_archive_meta(&db)["a.zip"].source_rating, SourceRating::Value(0));
+        // 評価の「無し」の確認で、前の評価を消す。
+        write_archive_meta_full(&db, "a.zip", 200, 2100, 5, none, SourceRating::None);
+        assert_eq!(read_all_archive_meta(&db)["a.zip"].source_rating, SourceRating::None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scan_batch_writes_ratings_but_keeps_existing_when_unconfirmed() {
+        let (dir, db) = temp_db("rating_batch");
+        let none = DetailFlag::Checked(DetailKinds::default());
+        write_archive_meta_full(&db, "a.zip", 100, 2000, 5, none, SourceRating::Value(300));
+        let rows = vec![
+            ArchiveMetaWrite { filename: "a.zip".into(), mtime: 100, size: 2000, page_count: None, detail: DetailFlag::Unknown, rating: SourceRating::Unknown },
+            ArchiveMetaWrite { filename: "b.zip".into(), mtime: 1, size: 2, page_count: Some(3), detail: none, rating: SourceRating::Value(482) },
+            ArchiveMetaWrite { filename: "c.zip".into(), mtime: 1, size: 2, page_count: Some(3), detail: none, rating: SourceRating::None },
+        ];
+        merge_archive_meta_batch(&db, &rows);
+        let all = read_all_archive_meta(&db);
+        assert_eq!(all["a.zip"].source_rating, SourceRating::Value(300), "走査で未確認なら既存を残す");
+        assert_eq!(all["b.zip"].source_rating, SourceRating::Value(482));
+        assert_eq!(all["c.zip"].source_rating, SourceRating::None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn source_rating_from_read_and_sort_value() {
+        let with = DetailMeta { info_rating: Some(482), ..Default::default() };
+        let without = DetailMeta::default();
+        assert_eq!(SourceRating::from_read(Some(&with)), SourceRating::Value(482));
+        assert_eq!(SourceRating::from_read(Some(&without)), SourceRating::None);
+        assert_eq!(SourceRating::from_read(None), SourceRating::Unknown);
+        assert_eq!(SourceRating::Value(482).sort_value(), 482);
+        assert_eq!((SourceRating::None.sort_value(), SourceRating::Unknown.sort_value()), (0, 0));
+    }
+
+    #[test]
+    fn archive_meta_clamps_huge_page_count() {
+        let (dir, db) = temp_db("clamp");
+        write_archive_meta(&db, "x.zip", 1, 1, usize::MAX, DetailFlag::Unknown);
+        assert_eq!(read_all_archive_meta(&db)["x.zip"].page_count, u32::MAX);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

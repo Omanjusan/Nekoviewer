@@ -237,7 +237,10 @@ pub fn hash_files(
         if !keep_going() {
             break;
         }
+        let db_started = std::time::Instant::now();
         let Some(rec) = crate::file_identity::lookup(db, &format!("{prefix}{name}")) else { continue };
+        let lookup_time = db_started.elapsed();
+        let item_started = std::time::Instant::now();
         let Some((thumb_mtime, jpeg)) = read_thumb(name) else { continue };
         let current = match known {
             Some(rows) => rows.get(&rec.id).copied(),
@@ -248,11 +251,18 @@ pub fn hash_files(
         }
         let hash = thumb_hash::dhash_from_image_bytes(&jpeg);
         pending.push((rec.id, HashRow { version: thumb_hash::HASH_VERSION, thumb_mtime, hash }));
+        // 計測: 1件ぶん（サムネ読み出し＋dHash）。DB操作（索引引き・書き込み）は別に積む。
+        crate::perf_fixture::item(crate::perf_fixture::Stage::ThumbHash, item_started.elapsed());
+        crate::perf_fixture::lock_wait(crate::perf_fixture::Stage::ThumbHash, lookup_time);
         if pending.len() >= WRITE_BATCH {
+            let flush_started = std::time::Instant::now();
             flush(&mut pending, &mut written);
+            crate::perf_fixture::lock_wait(crate::perf_fixture::Stage::ThumbHash, flush_started.elapsed());
         }
     }
+    let flush_started = std::time::Instant::now();
     flush(&mut pending, &mut written);
+    crate::perf_fixture::lock_wait(crate::perf_fixture::Stage::ThumbHash, flush_started.elapsed());
     written
 }
 

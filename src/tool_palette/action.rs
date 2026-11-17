@@ -43,12 +43,14 @@ pub enum ActionKind {
     ApplySlot4,
     /// 適用スロット番号を循環（未定義→1→2→3→4→1…）
     CycleApplySlot,
+    /// サムネバーの配置を循環（OFF→下→左→上→右→OFF）。切り替えた瞬間にその位置へ実際に表示する
+    CycleThumbbar,
 }
 
 /// 全ActionKind。category.rsの網羅テストがこれを基準に「全種がどこかのカテゴリに属する」を検査する
 /// （登録メニューはcategory.rsのカテゴリ表を走査する）。
 #[cfg(test)]
-pub const ALL_ACTION_KINDS: [ActionKind; 19] = [
+pub const ALL_ACTION_KINDS: [ActionKind; 20] = [
     ActionKind::NextPage,
     ActionKind::PrevPage,
     ActionKind::OpenFolder,
@@ -68,6 +70,7 @@ pub const ALL_ACTION_KINDS: [ActionKind; 19] = [
     ActionKind::ApplySlot3,
     ActionKind::ApplySlot4,
     ActionKind::CycleApplySlot,
+    ActionKind::CycleThumbbar,
 ];
 
 impl ActionKind {
@@ -93,6 +96,7 @@ impl ActionKind {
             ActionKind::ApplySlot3 => "apply_slot_3",
             ActionKind::ApplySlot4 => "apply_slot_4",
             ActionKind::CycleApplySlot => "cycle_apply_slot",
+            ActionKind::CycleThumbbar => "cycle_thumbbar",
         }
     }
 
@@ -117,6 +121,7 @@ impl ActionKind {
             "apply_slot_3" => ActionKind::ApplySlot3,
             "apply_slot_4" => ActionKind::ApplySlot4,
             "cycle_apply_slot" => ActionKind::CycleApplySlot,
+            "cycle_thumbbar" => ActionKind::CycleThumbbar,
             _ => return None,
         })
     }
@@ -143,6 +148,7 @@ impl ActionKind {
             ActionKind::ApplySlot3 => lang.tool_palette_action_label_apply_slot3(),
             ActionKind::ApplySlot4 => lang.tool_palette_action_label_apply_slot4(),
             ActionKind::CycleApplySlot => lang.tool_palette_action_label_cycle_apply_slot(),
+            ActionKind::CycleThumbbar => lang.tool_palette_action_label_cycle_thumbbar(),
         }
     }
 
@@ -168,6 +174,7 @@ impl ActionKind {
             ActionKind::ApplySlot3 => "③",
             ActionKind::ApplySlot4 => "④",
             ActionKind::CycleApplySlot => "⊞",
+            ActionKind::CycleThumbbar => "≡",
         }
     }
 }
@@ -176,7 +183,7 @@ impl ActionKind {
 mod tests {
     use super::*;
 
-    const ALL_KINDS: [ActionKind; 19] = [
+    const ALL_KINDS: [ActionKind; 20] = [
         ActionKind::NextPage,
         ActionKind::PrevPage,
         ActionKind::OpenFolder,
@@ -196,6 +203,7 @@ mod tests {
         ActionKind::ApplySlot3,
         ActionKind::ApplySlot4,
         ActionKind::CycleApplySlot,
+        ActionKind::CycleThumbbar,
     ];
 
     #[test]

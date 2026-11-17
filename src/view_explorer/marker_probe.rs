@@ -76,12 +76,14 @@ impl MarkerProbeWorker {
                             });
                         }
                         Job::Detect { generation, db, dir } => {
+                            let detect_started = std::time::Instant::now();
                             let created = crate::duplicate_marker::detect_in_dir(
                                 &db,
                                 &dir,
                                 &file_identity::probe_record,
                                 file_identity::now_unix(),
                             );
+                            crate::perf_fixture::item(crate::perf_fixture::Stage::Marker, detect_started.elapsed());
                             let _ = event_tx.send(ProbeEvent::Detected { generation, created });
                             ctx.request_repaint();
                         }
@@ -205,6 +207,9 @@ fn collect_group(
 impl super::NekoviewApp {
     /// 表示中のマーカーの重複先（再取得）と参照元（旧ファイル側）のうち、まだ確認を依頼していないIDを確認に出す。
     pub(super) fn request_marker_probe(&mut self) {
+        if crate::perf_fixture::is_thumb_only() {
+            return;
+        }
         let Some(db) = self.spread_db.clone() else { return };
         let mut ids: Vec<u64> = Vec::new();
         for marker in self.dir_markers.values() {
@@ -224,7 +229,7 @@ impl super::NekoviewApp {
     /// 表示中のフォルダで、同じ内容の別ファイルを探してマーカーを付ける（遡及検出）。
     /// ID解決が済んだ後に呼ぶ（新しく現れたファイルにもFPが付いているので、同時に拾える）。
     pub(super) fn request_marker_detect(&mut self) {
-        if !self.marker_view_active() {
+        if !self.marker_view_active() || crate::perf_fixture::is_thumb_only() {
             return;
         }
         let Some(db) = self.spread_db.clone() else { return };
@@ -248,6 +253,7 @@ impl super::NekoviewApp {
                 ProbeEvent::Detected { generation, created } => {
                     if self.marker_probe.is_current(generation) {
                         detected += created;
+                        crate::perf_fixture::stage_done(crate::perf_fixture::Stage::Marker);
                     }
                 }
                 ProbeEvent::Group { generation, token, group } => {

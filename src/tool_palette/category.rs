@@ -62,6 +62,8 @@ impl PaletteCategory {
                 Action(ActionKind::KomaPrev),
                 Action(ActionKind::SlideshowToggle),
                 Toggle(ToggleKind::Magnifier),
+                Toggle(ToggleKind::FitWidth),
+                Toggle(ToggleKind::FitHeight),
             ],
             PaletteCategory::ImageQuality => &[
                 Toggle(ToggleKind::BlueLightCut),
@@ -74,6 +76,7 @@ impl PaletteCategory {
                 Action(ActionKind::ToggleFullscreen),
                 Action(ActionKind::ToggleZoomActual),
                 Toggle(ToggleKind::ImageInfo),
+                Action(ActionKind::CycleThumbbar),
                 Action(ActionKind::OpenFolder),
             ],
             PaletteCategory::SpreadSettings => &[

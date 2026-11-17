@@ -44,7 +44,7 @@ fn take_allowed_thumbnail(
 }
 
 /// 並び替え前のインデックス → 同じパスの並び替え後のインデックス（消えたパスは含まない）
-fn index_remap(before: &[PathBuf], after: &[PathBuf]) -> HashMap<usize, usize> {
+pub(super) fn index_remap(before: &[PathBuf], after: &[PathBuf]) -> HashMap<usize, usize> {
     let new_index: HashMap<&PathBuf, usize> = after.iter().enumerate().map(|(i, p)| (p, i)).collect();
     before.iter().enumerate().filter_map(|(i, p)| Some((i, *new_index.get(p)?))).collect()
 }
@@ -83,6 +83,10 @@ struct SortEntry {
     size: u64,
     rating_half: u8,
     visit_count: u32,
+    /// ページ数（ビューアーを開いて記録された値。未取得・記録が古い場合は0）
+    page_count: u32,
+    /// 公開評価×100（記録が無い・古い・評価なしは0）
+    source_rating: u32,
 }
 
 impl SortEntry {
@@ -93,6 +97,8 @@ impl SortEntry {
             size: self.size,
             rating_half: self.rating_half,
             visit_count: self.visit_count,
+            page_count: self.page_count,
+            source_rating: self.source_rating,
         }
     }
 }
@@ -355,6 +361,8 @@ impl NekoviewApp {
 
     /// バックグラウンドスキャンを起動する（UIをブロックしない）
     pub(super) fn start_scan(&mut self) {
+        // フォルダを開き直すたびに、ページ数・詳細有無の記録を読み直す。
+        self.archive_info.clear();
         // タグ検索タブの中央は走査結果で埋める。実フォルダの読み込みで上書きしない
         // （タブを出るときは、折りたたんだ後に改めて呼ばれる）。
         if self.folder_pane_tab == FolderPaneTab::TagSearch {
@@ -393,7 +401,7 @@ impl NekoviewApp {
     }
 
     /// 実ディレクトリの一覧（フォルダ・ファイル）を空にする。start_scan と show_empty_listing の共通部分。
-    fn clear_dir_listing(&mut self) {
+    pub(super) fn clear_dir_listing(&mut self) {
         self.subdirs.clear();
         self.subdir_mtimes.clear();
         self.archives.clear();
@@ -407,6 +415,7 @@ impl NekoviewApp {
     /// サムネイル生成状態・選択・スクロール位置を初期化する。start_scan と show_empty_listing の共通部分。
     fn reset_thumbs_and_selection(&mut self) {
         self.thumbnails.clear();
+        self.thumb_stale_textures.clear();
         self.thumb_display_requested.clear();
         self.thumb_pending.clear();
         self.thumb_queue.clear();
@@ -444,6 +453,22 @@ impl NekoviewApp {
     }
 
     /// フレームごとにスキャン結果をポーリングして反映する
+    /// 実ディレクトリのスキャン結果を受け取る表示か（`poll_scan` が結果を処理する条件）。
+    /// 検索・お気に入り・タグ検索・類似の横断表示や、それらのタブでは受け取らない（結果は届いたまま保留される）。
+    pub(super) fn scan_result_is_polled(&self) -> bool {
+        self.folder_pane_tab.shows_real_dir()
+            && self.viewing_favorites.is_none()
+            && self.viewing_search.is_none()
+            && self.viewing_similar.is_none()
+    }
+
+    /// 中央に「読み込み中...」を出すか。受け取らない表示（検索タブなど）では、スキャンが保留のまま
+    /// 「読み込み中」に見えてしまうので出さない。短いアクセスのチラツキ防止に、0.5秒経ってから出す。
+    pub(super) fn scan_loading_visible(&self) -> bool {
+        self.scan_result_is_polled()
+            && matches!(&self.scan_state, ScanState::Loading { started_at, .. } if started_at.elapsed().as_secs_f32() > 0.5)
+    }
+
     pub(super) fn poll_scan(&mut self) {
         // お気に入り/検索結果の横断表示中はarchives/subdirsを差し替えているため、
         // 入室時に開始していた実ディレクトリの背後スキャン結果が遅れて届くと
@@ -452,11 +477,7 @@ impl NekoviewApp {
         // 必ず呼ばれる）に改めてstart_scan()されるため、ここでは単に無視すればよい。
         // folder_pane_tab とOptionフラグの二重チェック（タブ状態を唯一の一次判定にしつつ、
         // フラグの取りこぼしがあっても安全側に倒す）。
-        if !self.folder_pane_tab.shows_real_dir()
-            || self.viewing_favorites.is_some()
-            || self.viewing_search.is_some()
-            || self.viewing_similar.is_some()
-        {
+        if !self.scan_result_is_polled() {
             return;
         }
         let result = match self.scan_state {
@@ -636,6 +657,10 @@ impl NekoviewApp {
             ),
         );
         if requested_edge_changed {
+            // 表示中のテクスチャは旧形式になる。旧サムネは見せたまま、新形式で作り直して差し替える（可視セルの再要求・
+            // 先読み・手すき生成の対象にする）。手すき生成は、終わっていても最初からやり直す。
+            self.thumb_stale_textures = self.thumbnails.keys().cloned().collect();
+            self.idle_thumb.force_restart();
             self.thumb_session.fetch_add(1, Ordering::AcqRel);
             if let Some(db) = &self.cache_db {
                 let _ = neko_dir::invalidate_processing_for_profile(
@@ -668,7 +693,65 @@ impl NekoviewApp {
             .collect()
     }
 
-    fn is_thumb_missing(&self, path: &PathBuf) -> bool {
+    /// 現設定の完成品として表示できるテクスチャがあるか。設定変更で旧形式になったテクスチャは含めない。
+    pub(super) fn has_current_thumb_texture(&self, path: &PathBuf) -> bool {
+        self.thumbnails.contains_key(path) && !self.thumb_stale_textures.contains(path)
+    }
+
+    /// 現設定のサムネとして作り直す必要があるか（未生成・旧形式・生成条件の不一致）。手すき生成が対象を選ぶのに使う。
+    pub(super) fn thumb_needs_generation(&self, path: &PathBuf) -> bool {
+        path.file_name().and_then(|n| n.to_str())
+            .and_then(|name| self.cache_db.as_ref().map(|db| neko_dir::thumbnail_needs_regeneration(
+                db,
+                name,
+                self.config.thumb_size,
+                self.config.thumb_filter.thumbnail_cache_id(),
+            )))
+            .unwrap_or(true)
+    }
+
+    /// 画面に見えているセルのサムネを、直接リクエストする（キューを通らない優先経路）。
+    /// 生成中・失敗済み・先読みで待機中・ID解決待ち（検証中）のものは出さない。
+    pub(super) fn request_visible_thumbnail(&mut self, path: &PathBuf) {
+        // ファイルID解決待ち（検証中）のファイルは、移動したファイルのサムネを
+        // 引っ越せるよう、解決が済むまで生成を始めない。
+        if self.thumb_pending.contains(path)
+            || self.thumb_failed.contains(path)
+            || self.thumb_queued.contains(path)
+            || self.identity_verifying.contains(path)
+        {
+            return;
+        }
+        // キャッシュDBは表示中フォルダのもの。別フォルダのファイル（横断一覧・「消した組」ウィンドウ）に渡すと、
+        // サムネを間違ったフォルダのDBへ保存してしまうので、その場合はDBなしで生成する。
+        let same_dir_db = (self.folder_pane_tab.shows_real_dir() && path.parent() == Some(self.current_dir.as_path()))
+            .then(|| self.cache_db.clone())
+            .flatten();
+        if self.thumb_req_tx.try_send(ThumbRequest {
+            archive_path: path.clone(),
+            db: same_dir_db,
+            is_raw_file: self.raw_image_files.contains(path),
+            requested_edge: self.config.thumb_size,
+            requested_filter: self.config.thumb_filter,
+            generation_token: None,
+            session_id: self.thumb_session.load(std::sync::atomic::Ordering::Acquire),
+            is_tag_preview: false,
+            thumbnail_selection: path.parent().and_then(|dir| {
+                let filename = path.file_name()?.to_str()?;
+                self.spread_db.as_ref().and_then(|db| {
+                    crate::spread_state::read_thumbnail_selection(db, dir, filename)
+                })
+            }),
+        }).is_ok() {
+            // 計測（perf ログ ON のときだけ）: 画面に見えているセルの直接リクエスト（キューを通らない優先経路）。
+            let (active, limit) = (self.thumb_pending.len(), self.config.resolved_decode_threads());
+            let (since_input, since_open) = (self.thumb_last_user_activity.elapsed(), self.thumb_queue_built_at.elapsed());
+            self.trace_thumb_sent(path, "可視", active, limit, since_input, since_open);
+            self.thumb_pending.insert(path.clone());
+        }
+    }
+
+    pub(super) fn is_thumb_missing(&self, path: &PathBuf) -> bool {
         path.file_name().and_then(|n| n.to_str())
             .and_then(|name| self.cache_db.as_ref()
                 .and_then(|db| neko_dir::read_thumbnail_state(db, name)))
@@ -701,6 +784,12 @@ impl NekoviewApp {
     /// 進行方向へ1画面ぶんだけ先読みを足し、逆側にはみ出た未送信ぶんは捨てる。
     pub(super) fn update_thumbnail_lookahead(&mut self, lo: usize, hi: usize) {
         let total = self.filtered_indices.len();
+        // 見えている「検証中」のファイルは、ID解決を先頭からの順に先立って依頼する（サムネ生成が解決待ちで止まるため）。
+        self.prioritize_identity_for_visible(lo, hi);
+        // 計測フィクスチャーの全件サムネ生成中は、窓の外のキューを捨てない（perf_fixture_ui.rs）。
+        if self.perf_fixture_all_thumbs_active() {
+            return;
+        }
         if !self.folder_pane_tab.shows_real_dir()
             || self.viewing_favorites.is_some()
             || self.viewing_search.is_some()
@@ -749,7 +838,7 @@ impl NekoviewApp {
         self.thumb_missing_queued.retain(|p| desired.contains(p));
         self.thumb_priority_queued.retain(|p| desired.contains(p));
         for path in &window {
-            if self.thumbnails.contains_key(path)
+            if self.has_current_thumb_texture(path)
                 || self.thumb_pending.contains(path)
                 || self.thumb_failed.contains(path)
                 || self.thumb_queued.contains(path)
@@ -785,6 +874,69 @@ impl NekoviewApp {
         )))
     }
 
+    /// サムネ要求を送った時刻と種類を覚える（perf ログがONのときだけ）。`[perf/thumb-wait]` の「送信」行を出す。
+    pub(super) fn trace_thumb_sent(
+        &mut self,
+        path: &std::path::Path,
+        kind: &'static str,
+        active: usize,
+        limit: usize,
+        since_input: std::time::Duration,
+        since_folder_open: std::time::Duration,
+    ) {
+        if !crate::config::log().perf {
+            return;
+        }
+        let now = std::time::Instant::now();
+        self.thumb_trace.insert(path.to_path_buf(), (now, kind));
+        self.thumb_trace_first_sent.get_or_insert(now);
+        crate::log_perf!(
+            "[perf/thumb-wait] 送信 {} 種別={} 並列={}/{} フォルダを開いてから={:.0}ms 入力から={:.0}ms ビューアー={}",
+            crate::config::short_log_name(path.file_name().and_then(|n| n.to_str()).unwrap_or("?")),
+            kind,
+            active,
+            limit,
+            since_folder_open.as_secs_f64() * 1000.0,
+            since_input.as_secs_f64() * 1000.0,
+            if self.viewer_is_open() { "開" } else { "閉" },
+        );
+    }
+
+    /// 結果が返ったときに、送信→結果の時間を出して集計に足す。
+    pub(super) fn trace_thumb_done(&mut self, path: &std::path::Path) {
+        let Some((sent, kind)) = self.thumb_trace.remove(path) else { return };
+        let ms = sent.elapsed().as_secs_f64() * 1000.0;
+        self.thumb_trace_count += 1;
+        self.thumb_trace_sum_ms += ms;
+        self.thumb_trace_max_ms = self.thumb_trace_max_ms.max(ms);
+        crate::log_perf!(
+            "[perf/thumb-wait] 結果 {} 種別={} 送信→結果={:.0}ms",
+            crate::config::short_log_name(path.file_name().and_then(|n| n.to_str()).unwrap_or("?")),
+            kind,
+            ms,
+        );
+    }
+
+    /// フォルダのサムネ生成が済んだ時に、件数・平均・最大・最初の送信からの経過を出して、集計を戻す。
+    pub(super) fn trace_thumb_summary(&mut self) {
+        if self.thumb_trace_count == 0 {
+            return;
+        }
+        let total_ms = self.thumb_trace_first_sent.map_or(0.0, |t| t.elapsed().as_secs_f64() * 1000.0);
+        crate::log_perf!(
+            "[perf/thumb-wait] 要約 {}件 送信→結果 平均={:.0}ms 最大={:.0}ms 最初の送信から全完了まで={:.0}ms ビューアー={}",
+            self.thumb_trace_count,
+            self.thumb_trace_sum_ms / self.thumb_trace_count as f64,
+            self.thumb_trace_max_ms,
+            total_ms,
+            if self.viewer_is_open() { "開" } else { "閉" },
+        );
+        self.thumb_trace_count = 0;
+        self.thumb_trace_sum_ms = 0.0;
+        self.thumb_trace_max_ms = 0.0;
+        self.thumb_trace_first_sent = None;
+    }
+
     pub(super) fn pump_thumbnail_queue(&mut self, ctx: &egui::Context) {
         if !self.folder_pane_tab.shows_real_dir()
             || self.viewing_favorites.is_some()
@@ -809,6 +961,7 @@ impl NekoviewApp {
             if !allow_local && !allow_network { break; }
             let Some(path) = self.next_queued_thumbnail(allow_local, allow_network) else { break };
             let is_network = crate::fs::dir::is_gvfs_path(&path);
+            let kind = if self.thumb_priority_queued.contains(&path) { "優先" } else { "通常" };
             let selection = path.parent().and_then(|dir| {
                 let filename = path.file_name()?.to_str()?;
                 self.spread_db.as_ref().and_then(|db| {
@@ -833,6 +986,7 @@ impl NekoviewApp {
             self.thumb_queued.remove(&path);
             self.thumb_missing_queued.remove(&path);
             self.thumb_priority_queued.remove(&path);
+            self.trace_thumb_sent(&path, kind, active_local, local_limit, since_input, since_folder_open);
             self.thumb_pending.insert(path);
             if is_network { active_network += 1; } else { active_local += 1; }
         }
@@ -985,9 +1139,19 @@ impl NekoviewApp {
                 && p.file_name()
                     .and_then(|n| n.to_str())
                     .is_some_and(|name| self.favorite_states.contains_key(name));
-            let meta = (sort.needs_mtime() || sort.needs_size())
+            let meta = (sort.needs_mtime() || sort.needs_size() || sort.needs_pages() || sort.needs_source_rating())
                 .then(|| std::fs::metadata(p).ok())
                 .flatten();
+            let page_count = if sort.needs_pages() {
+                meta.as_ref().map_or(0, |m| self.fresh_page_count(p, m.modified().ok(), m.len()))
+            } else {
+                0
+            };
+            let source_rating = if sort.needs_source_rating() {
+                meta.as_ref().map_or(0, |m| self.fresh_source_rating(p, m.modified().ok(), m.len()))
+            } else {
+                0
+            };
             let rating = if sort.needs_rating() {
                 self.archive_rating_cache.get(p).copied().flatten()
             } else {
@@ -1011,6 +1175,8 @@ impl NekoviewApp {
                 size: meta.as_ref().map_or(0, |m| m.len()),
                 rating_half: rating.map_or(0, |r| r.rating_half),
                 visit_count: rating.map_or(0, |r| r.visit_count),
+                page_count,
+                source_rating,
             }
         }).collect();
         // 重複ソートONの段（両方 > 重複のみ > 類似のみ > なし）は、お気に入りの先頭固定よりさらに前。

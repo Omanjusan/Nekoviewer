@@ -1,11 +1,15 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 mod anim;
 mod cache;
+mod candidate_rules;
+mod card_band;
 mod card_date_format;
 mod config;
 mod confirm_dialog;
 mod controller;
 mod decode_jobs;
+mod flip_wait;
+mod display_backend;
 mod db_backup;
 mod dev_db_backup;
 mod duplicate_marker;
@@ -25,23 +29,52 @@ mod identity_resolve;
 mod image_filter;
 mod image_info;
 mod types;
+mod ui_theme;
 mod ui_widgets;
 mod keymap;
+mod layer_scan;
 mod koma;
 // 変換関数はフェーズ2で配線済み。バー幅API・自動ハイド秒などはフェーズ4以降で配線するまで未使用。
 #[allow(dead_code)]
 mod magnifier;
 mod magnifier_cursor;
 mod model_innerlog;
+mod monitor_geom;
+#[cfg(feature = "test-control")]
+mod test_control;
 mod neko_dir;
+mod perf_fixture;
+mod perf_fixture_db;
 mod rating_filter;
 mod rating_overlay;
 mod rotation;
 mod single_instance;
 mod spread_offset;
 mod spread_state;
+mod tag_apply;
+mod tag_candidates;
+mod tag_confirm_text;
+mod convenience_text;
+mod tag_corpus;
+mod tag_eval;
+mod tag_features;
+mod tag_learning;
 mod tag_manager;
+mod tag_master;
+mod tag_master_gen;
+mod tag_recovery;
+mod tag_meta;
+mod tag_model;
+mod tag_similarity;
+mod tag_source;
+mod tag_rules;
 mod tag_search;
+mod ledger_search;
+mod search_keys;
+mod similar_search;
+mod search_history_store;
+mod tag_trial;
+mod tag_auto_record;
 mod texture_window;
 // 「似ている画像」マーカーの特徴量。照合・保存の配線（Phase 2以降）までは使われない。
 #[allow(dead_code)]
@@ -112,6 +145,7 @@ fn main() {
         if let Some(v) = state.app_log_perf { log_cfg.perf = v; }
         if let Some(v) = state.app_log_key { log_cfg.key = v; }
         if let Some(v) = state.app_log_common { log_cfg.common = v; }
+        if let Some(v) = state.app_log_thumb_refactor { log_cfg.thumb_refactor = v; }
         config::set_log(log_cfg);
 
         // その他タブで編集された起動時フォルダ設定も同様に state 側を優先する。
@@ -125,8 +159,22 @@ fn main() {
             cfg.unconfirmed_retention_days =
                 v.clamp(config::UNCONFIRMED_RETENTION_DAYS_MIN, config::UNCONFIRMED_RETENTION_DAYS_MAX);
         }
+        if let Some(v) = state.app_idle_thumb_generation { cfg.idle_thumb_generation = v; }
+        if let Some(v) = state.app_idle_thumb_wait_secs {
+            cfg.idle_thumb_wait_secs = v.clamp(config::IDLE_THUMB_WAIT_MIN, config::IDLE_THUMB_WAIT_MAX);
+        }
+        if let Some(v) = state.app_idle_thumb_while_viewer { cfg.idle_thumb_while_viewer = v; }
         if let Some(v) = state.app_backup_generations {
             cfg.backup_generations = v.clamp(config::BACKUP_GENERATIONS_MIN, config::BACKUP_GENERATIONS_MAX);
+        }
+        if let Some(v) = state.app_tag_master_generations {
+            cfg.tag_master_generations = v.clamp(config::TAG_MASTER_GENERATIONS_MIN, config::TAG_MASTER_GENERATIONS_MAX);
+        }
+        if let Some(v) = state.app_tag_register_name.as_deref().and_then(config::TagRegisterName::from_key) {
+            cfg.tag_register_name = v;
+        }
+        if let Some(v) = state.app_tag_new_element_limit {
+            cfg.tag_new_element_limit = v.clamp(config::TAG_NEW_ELEMENT_LIMIT_MIN, config::TAG_NEW_ELEMENT_LIMIT_MAX);
         }
 
         // フェーズ4b: decode_threads/default_slotも同様にstate側を優先する。
@@ -134,7 +182,14 @@ fn main() {
         if let Some(v) = state.app_default_slot { cfg.default_slot = v; }
         if let Some(v) = state.app_magnifier_zoom_notice_shown { cfg.magnifier_zoom_notice_shown = v; }
         if let Some(v) = state.app_max_decode_edge_prompt_answered { cfg.max_decode_edge_prompt_answered = v; }
-        if let Some(v) = state.app_folder_book_access_warning_seen { cfg.folder_book_access_warning_seen = v; }
+        if let Some(v) = state.app_launch_x11 { cfg.launch_x11 = v; }
+        if let Some(v) = state.app_text_page { cfg.text_page = v; }
+        if let Some(v) = state.app_tag_match { cfg.tag_match = v; }
+        if let Some(v) = state.app_tag_learning_use { cfg.tag_learning_use = v; }
+        if let Some(v) = state.app_tag_confirm_default_review { cfg.tag_confirm_default_review = v; }
+        if let Some(v) = state.app_tag_confirm_intro_open { cfg.tag_confirm_intro_open = v; }
+        if let Some(v) = state.app_tag_learn_intro_hidden { cfg.tag_learn_intro_hidden = v; }
+        fs::archive::text_page::set_options(cfg.text_page);
         if let Some(v) = &state.app_last_run_version { cfg.last_run_version = v.clone(); }
 
         // 原寸時の最大長辺幅の既定値を 1920 → 4000 に上げた。保存済みの値が新既定値より低く未回答なら、
@@ -171,6 +226,21 @@ fn main() {
         };
         let start_dir = cfg.resolve_start_dir(cli_dir, &state);
         log_common!("[startup] start_dir = {:?}, open_target = {:?}", start_dir, open_target);
+        // デバッグ用: 起動するフォルダのサムネを、ワーカーが動き出す前に破棄する（直下のみ）。
+        // 標準エラーへ必ず出す（`--clear-thumbs` を付けたときだけ実行されるので、うるさくない）。
+        // 対象は「実際に開くフォルダ」。前回のタブが仮想フォルダなら、そのノードの実パス（`--scan-layers` と同じ選び方）。
+        if args.clear_thumbs {
+            let target = layer_scan::pick_scan_dir(&state.tab_positions, &start_dir);
+            match neko_dir::clear_dir_thumbs(&target, &cfg) {
+                Some(n) => eprintln!("[startup] --clear-thumbs: {:?} のサムネを {} 件破棄した", target, n),
+                None => eprintln!("[startup] --clear-thumbs: {:?} はキャッシュDBが無い（または開けない）ため何もしなかった", target),
+            }
+        }
+        // 走査対象は復帰先（実ツリー=start_dir、仮想フォルダタブ=ノードの実パス）。タブはCLI引数の固定後の値を見る。
+        // 走査は別スレッドで走り、結果は標準出力に出る（起動は止めない）。
+        if args.scan_layers {
+            layer_scan::spawn_scan(layer_scan::pick_scan_dir(&state.tab_positions, &start_dir));
+        }
 
         (cfg, state, start_dir, open_target)
     });
@@ -334,6 +404,11 @@ struct CliArgs {
     start_path:   Option<PathBuf>,
     /// キャッシュ合計（ページ+ファイル）の上限MB。
     cache_max_mb: Option<u64>,
+    /// `--scan-layers`: 復帰先フォルダ直下のzipを別スレッドで走査し、層つきの中身を持つ最初の1件を標準出力に出す（テスト用）。
+    scan_layers:  bool,
+    /// `--clear-thumbs`: 起動時に開くフォルダ（位置引数があればその場所、無ければ前回の場所。前回のタブが仮想フォルダなら、そのノードの実パス）直下の
+    /// 生成済みサムネを、起動前に破棄する（デバッグ用。再生成とビューアー同時起動の兼ね合いを見る）。
+    clear_thumbs: bool,
 }
 
 impl CliArgs {
@@ -342,10 +417,16 @@ impl CliArgs {
     fn parse() -> Self {
         let mut start_path   = None::<PathBuf>;
         let mut cache_max_mb = None::<u64>;
+        let mut scan_layers  = false;
+        let mut clear_thumbs = false;
 
         let mut it = std::env::args().skip(1);
         while let Some(arg) = it.next() {
-            if let Some(rest) = arg.strip_prefix("--cache-max-mb") {
+            if arg == "--scan-layers" {
+                scan_layers = true;
+            } else if arg == "--clear-thumbs" {
+                clear_thumbs = true;
+            } else if let Some(rest) = arg.strip_prefix("--cache-max-mb") {
                 cache_max_mb = Self::take_value(rest, &mut it);
             } else if !arg.starts_with('-') {
                 // 複数の位置引数（複数ファイル/複数DIR）が来ても先頭のみを対象とし、以降は無視する。
@@ -356,7 +437,7 @@ impl CliArgs {
             // 未知の --xxx オプションは無視
         }
 
-        Self { start_path, cache_max_mb }
+        Self { start_path, cache_max_mb, scan_layers, clear_thumbs }
     }
 
     fn take_value(rest: &str, it: &mut impl Iterator<Item = String>) -> Option<u64> {

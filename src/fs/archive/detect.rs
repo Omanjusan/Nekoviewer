@@ -172,22 +172,26 @@ const FORMAT_CACHE_MAX_BYTES: usize = 16 * 1024 * 1024;
 const FORMAT_CACHE_ENTRY_OVERHEAD: usize = 64;
 
 impl FormatCache {
-    fn get_or_compute(&mut self, path: &Path) -> ArchiveFormat {
+    /// 覚えている形式を返す（無ければ None）。ディレクトリが変わったときの世代の繰り上げもここで行う。
+    /// ディスクは読まない。ロックを持つのは、この検索と `store` の間だけにするため。
+    fn lookup(&mut self, path: &Path) -> Option<ArchiveFormat> {
         let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
         if self.last_dir.as_deref() != Some(dir.as_path()) {
             self.current_gen += 1;
             self.last_dir = Some(dir.clone());
             self.evict_old_generations();
         }
+        self.dirs.get(&dir).and_then(|g| g.entries.get(path)).copied()
+    }
+
+    /// 判定結果を覚える。既に入っていれば何もしない（同じファイルを複数のスレッドが同時に調べても、
+    /// 結果は同じなので、先に入ったものを残す）。
+    fn store(&mut self, path: &Path, format: ArchiveFormat) {
+        let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
         let generation = self.current_gen;
-
-        if let Some(g) = self.dirs.get(&dir) {
-            if let Some(&format) = g.entries.get(path) {
-                return format;
-            }
+        if self.dirs.get(&dir).is_some_and(|g| g.entries.contains_key(path)) {
+            return;
         }
-
-        let format = detect_format_uncached(path);
         let entry_bytes = path.as_os_str().len() + FORMAT_CACHE_ENTRY_OVERHEAD;
         let g = self.dirs.entry(dir).or_insert_with(|| DirGeneration {
             generation,
@@ -200,7 +204,13 @@ impl FormatCache {
         self.total_bytes += entry_bytes;
 
         self.evict_over_budget();
-        format
+    }
+
+    /// 形式が別の根拠（中央ディレクトリが読めた等）で分かったときに覚えさせる。既にあれば何もしない。
+    fn remember(&mut self, path: &Path, format: ArchiveFormat) {
+        if self.lookup(path).is_none() {
+            self.store(path, format);
+        }
     }
 
     /// 最新世代から FORMAT_CACHE_MAX_GENERATIONS より古いディレクトリを丸ごと削除する
@@ -249,7 +259,29 @@ fn format_cache() -> &'static std::sync::Mutex<FormatCache> {
 /// 読めない・判別不能な場合のみ拡張子にフォールバックする。
 /// 判定結果はディレクトリ単位・世代管理でキャッシュし、同じパスへの再判定でファイルI/Oを避ける。
 pub fn detect_format(path: &Path) -> ArchiveFormat {
-    format_cache().lock().unwrap().get_or_compute(path)
+    if let Some(format) = format_cache().lock().unwrap().lookup(path) {
+        return format;
+    }
+    // 先頭のマジック読み（冷たいHDDではシーク1回で 100ms 超）は、ロックの外で行う。ロックを持ったまま読むと、
+    // 並列に動くサムネ生成スレッドが、この読みを1本ずつ順番待ちして、件数に比例して遅くなる
+    // （計測: 16件目の待ちが約2.4秒）。
+    let format = detect_format_uncached(path);
+    format_cache().lock().unwrap().store(path, format);
+    format
+}
+
+/// 拡張子が zip 系（.zip / .cbz）か。大文字小文字は区別しない。
+pub(crate) fn has_zip_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("zip") || e.eq_ignore_ascii_case("cbz"))
+}
+
+/// 中央ディレクトリが読めた（＝zip と確定した）パスを、形式キャッシュへ「zip」として覚えさせる。
+/// 以降の `detect_format` は先頭のマジック読み（冷たいHDDではシーク1回。キャッシュのロック中に読むので、
+/// 他スレッドの判定も待たせる）を省ける。
+pub(crate) fn remember_zip(path: &Path) {
+    format_cache().lock().unwrap().remember(path, ArchiveFormat::Zip);
 }
 
 /// 7z/CB7 かどうかを判定する（`detect_format` の薄いラッパ）。
@@ -278,6 +310,50 @@ mod tests {
         assert!(is_supported_image_file(Path::new("SCAN.TIFF")));
         assert!(is_image_entry_raw(b"page01.tiff"));
         assert!(is_image_entry_raw(b"page01.tif"));
+    }
+
+    fn empty_cache() -> FormatCache {
+        FormatCache { current_gen: 0, last_dir: None, total_bytes: 0, dirs: HashMap::new() }
+    }
+
+    #[test]
+    fn format_cache_store_is_idempotent_and_lookup_finds_it() {
+        let mut c = empty_cache();
+        let path = Path::new("/tmp/nekoviewer_fc_test/a.zip");
+        assert_eq!(c.lookup(path), None);
+        c.store(path, ArchiveFormat::Zip);
+        let bytes = c.total_bytes;
+        assert!(bytes > 0);
+        // 同じファイルを2本のスレッドが同時に調べて、両方が登録しにきても、使用量は二重に数えない。
+        c.store(path, ArchiveFormat::Zip);
+        assert_eq!(c.total_bytes, bytes);
+        assert_eq!(c.lookup(path), Some(ArchiveFormat::Zip));
+        // remember は、既にあれば上書きしない。
+        c.remember(path, ArchiveFormat::Zip);
+        assert_eq!(c.total_bytes, bytes);
+    }
+
+    /// 複数スレッドが同じファイル・別々のファイルを同時に判定しても、結果が揃い、落ちない（ロックの外で読む）。
+    #[test]
+    fn detect_format_from_many_threads_agrees() {
+        let dir = std::env::temp_dir().join(format!("nekoviewer_detect_mt_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut paths = Vec::new();
+        for i in 0..8 {
+            let p = dir.join(format!("f{i}.zip"));
+            std::fs::write(&p, b"PK\x03\x04 dummy zip body").unwrap();
+            paths.push(p);
+        }
+        let handles: Vec<_> = (0..16)
+            .map(|t| {
+                let p = paths[t % paths.len()].clone();
+                std::thread::spawn(move || detect_format(&p))
+            })
+            .collect();
+        for h in handles {
+            assert_eq!(h.join().unwrap(), ArchiveFormat::Zip);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -1,0 +1,459 @@
+//! 手すき時間のサムネ生成。表示中のフォルダで、画面外（先読みの窓の外）のサムネ未生成のファイルを、
+//! 操作が止まっている間だけ、1件ずつ生成してDBキャッシュに貯める。
+//!
+//! - 条件: 最後の入力から設定の待ち時間（既定3秒）以上たち、通常のサムネ処理（先読みキュー・保留）が空で、設定がONのとき。
+//!   ビューアー窓が開いている間も、既定では続ける。設定で止めることもできる（入力はエクスプローラー窓のものだけを
+//!   見ているので、止めない場合は本を読んでいる間のページデコードとディスクを取り合う）
+//! - 入力があれば新規の送信を止める（送信済みの分は完走させる）。次の手すきで、一覧の先頭から見直す
+//! - 対象はID解決済みのファイルだけ（「検証中」はサムネの引っ越しの前提があるため待つ）。ネットワークパスは対象外
+//! - 結果はDBに保存されるだけ（テクスチャにはしない。画面に出る時にDBから読む）
+//! - 同時実行数は1件固定。計測フィクスチャーの実行中は動かない
+//! - 設定→デバッグの「サムネ周りのリファクタリング用ログ」がONの間、開始・100件ごとの進捗・入力による中断・周の完了を
+//!   標準出力へ出す（`[idle-thumb]`）。送信が1件も無かった周は出さない
+//! - 見直しの1周は、`SCAN_PER_FRAME` 件ずつ状態を確認して進める（UIを重くしない）
+
+use std::collections::HashSet;
+use std::path::PathBuf;
+use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
+
+use super::NekoviewApp;
+use crate::cache::ThumbRequest;
+
+/// 同時に生成する件数（固定）。外付けHDDでは並列にしても速くならず、操作再開時の影響だけが増えるため。
+const CONCURRENCY: usize = 1;
+/// 1回の呼び出し（1フレーム）で、サムネの有無を確認する最大件数。
+const SCAN_PER_FRAME: usize = 16;
+/// ページ読み・アーカイブを開く処理が終わってから、手すき生成が次を送るまでに空ける静けさ。
+/// 入力はエクスプローラー窓のものしか見ていないので、本を読んでいる間（ビューアー窓）の操作はここで拾う。
+/// 止めるのではなく、読み進めている間だけ送らず、読み終わり・手が止まれば自動で再開する。
+/// 送信済みの1件は止められないので、ページ送りの間隔より長めにして、ぶつかる確率を下げる。
+const FG_QUIET: Duration = Duration::from_millis(1500);
+/// ID解決待ちで飛ばしたものを見直すまでの間隔。
+const RECHECK_AFTER: Duration = Duration::from_secs(1);
+
+/// 手すき生成の進行状態。
+pub(super) struct IdleThumb {
+    /// 次に確認する `archives` の位置。
+    cursor: usize,
+    /// この周で、ID解決待ちのため飛ばしたものがあるか（あれば周の終わりに見直す）。
+    deferred: bool,
+    /// 今の状態で、確認すべきものが尽きたか。
+    done: bool,
+    /// この状態を作った時の「最後の入力」。入力が新しくなったら、先頭から見直す。
+    seen_activity: Option<Instant>,
+    /// 見直しを始めてよい時刻（ID解決待ちの再確認を間引く）。
+    recheck_at: Option<Instant>,
+    /// 手すき生成で送って、まだ結果が返っていないパス。通常の「保留が空になった」判定（ハッシュ・サマリー更新）から外す。
+    pending: HashSet<PathBuf>,
+    /// 前回の報告以降に、1件でも送ったか。
+    dirty: bool,
+    /// 周が終わったので、ハッシュ・サマリーの更新を1回だけ依頼してほしい。
+    report_done: bool,
+    /// この周（入力による見直しまでの区間）で送った件数と、最初に送った時刻（ログ用）。
+    pass_sent: usize,
+    pass_started: Option<Instant>,
+    /// この周で送らなかった理由の内訳（ログ用）。
+    skipped: Skipped,
+}
+
+#[derive(Default, Clone, Copy)]
+struct Skipped {
+    /// 一覧に表示中のテクスチャがある。
+    shown: usize,
+    /// 通常の生成が保留中。
+    pending: usize,
+    /// 生成に失敗済み。
+    failed: usize,
+    /// ネットワークパス。
+    network: usize,
+    /// ID解決待ち（検証中）。
+    verifying: usize,
+    /// DBのサムネが未生成ではない（生成済み・処理中・古い）。
+    existing: usize,
+}
+
+/// ゲート（設定のログ）が有効な時だけ標準出力へ出す。
+fn log(msg: impl FnOnce() -> String) {
+    if crate::config::log().thumb_refactor {
+        println!("[idle-thumb] {}", msg());
+    }
+}
+
+impl IdleThumb {
+    pub(super) fn new() -> Self {
+        Self {
+            cursor: 0,
+            deferred: false,
+            done: false,
+            seen_activity: None,
+            recheck_at: None,
+            pending: HashSet::new(),
+            dirty: false,
+            report_done: false,
+            pass_sent: 0,
+            pass_started: None,
+            skipped: Skipped::default(),
+        }
+    }
+
+    /// 次のフレームで、最初から見直す（設定変更で、作り直す対象が変わったとき）。終わっていても再開する。
+    pub(super) fn force_restart(&mut self) {
+        self.seen_activity = None;
+    }
+
+    fn restart(&mut self, activity: Instant) {
+        if self.pass_sent > 0 && !self.done {
+            log(|| format!("入力で中断: 送信 {} 件（+{:.1}s）", self.pass_sent, self.elapsed()));
+        }
+        self.pass_sent = 0;
+        self.pass_started = None;
+        self.skipped = Skipped::default();
+        self.cursor = 0;
+        self.deferred = false;
+        self.done = false;
+        self.recheck_at = None;
+        self.seen_activity = Some(activity);
+    }
+}
+
+impl IdleThumb {
+    /// この周の最初の送信からの経過秒。
+    fn elapsed(&self) -> f64 {
+        self.pass_started.map_or(0.0, |t| t.elapsed().as_secs_f64())
+    }
+
+    /// 1件送った。最初の1件で開始を、100件ごとに進捗をログへ出す。
+    fn note_sent(&mut self, dir: &std::path::Path, total: usize) {
+        self.dirty = true;
+        self.pass_sent += 1;
+        if self.pass_started.is_none() {
+            self.pass_started = Some(Instant::now());
+            log(|| format!("開始: {}（一覧 {} 件、同時 {} 件まで）", dir.display(), total, CONCURRENCY));
+        } else if self.pass_sent % 100 == 0 {
+            log(|| format!("送信 {} 件（+{:.1}s）", self.pass_sent, self.elapsed()));
+        }
+    }
+}
+
+/// クリックとドラッグの境目（押した位置から動いた距離。egui の `max_click_dist` と同じ値）。
+const CLICK_MAX_DIST: f32 = 6.0;
+
+/// 手すき生成のタイマーを戻す「操作」を見分ける。
+/// 数える: キー・テキスト入力（IME含む）・コピー/切り取り/貼り付け・**クリック**（動かさずに押して離す）。
+/// 数えない: マウスの移動、ホイールのスクロール、フォーカス変化、ズーム、**ドラッグ**（押したまま動かす。
+/// スクロールバーのドラッグ・範囲選択・タッチのスワイプなど。タッチの `Touch` イベントも数えない。タップは
+/// egui-winit が `PointerButton` の押下と離すに翻訳するので、クリックとして数えられる）。
+/// 眺めているだけ・一覧を動かしているだけの間にも、画面外のサムネを先回りして貯めるため。
+/// 許可リスト方式なので、将来イベントの種類が増えても、手すきが勝手に止まる側には倒れない（数えない側に倒れる）。
+#[derive(Default)]
+pub(super) struct OperationTracker {
+    /// ボタンを押している間の、押した位置と、そこから `CLICK_MAX_DIST` を超えて動いたか。
+    press: Option<(egui::Pos2, bool)>,
+}
+
+impl OperationTracker {
+    /// イベントを1件見て、操作として数えるなら true。フレームのイベントは、すべて順に渡すこと
+    /// （押下位置を覚えるため、途中で止めない）。
+    pub(super) fn feed(&mut self, event: &egui::Event) -> bool {
+        match event {
+            egui::Event::Key { .. }
+            | egui::Event::Text(_)
+            | egui::Event::Ime(_)
+            | egui::Event::Copy
+            | egui::Event::Cut
+            | egui::Event::Paste(_) => true,
+            egui::Event::PointerButton { pos, pressed: true, .. } => {
+                self.press = Some((*pos, false));
+                false
+            }
+            egui::Event::PointerMoved(pos) => {
+                if let Some((start, moved)) = &mut self.press {
+                    if start.distance(*pos) > CLICK_MAX_DIST {
+                        *moved = true;
+                    }
+                }
+                false
+            }
+            // 離した。押した位置から動いていなければクリック。押下を見ていない離し（フォーカス復帰など）は数えない。
+            egui::Event::PointerButton { pos, pressed: false, .. } => match self.press.take() {
+                Some((start, moved)) => !moved && start.distance(*pos) <= CLICK_MAX_DIST,
+                None => false,
+            },
+            _ => false,
+        }
+    }
+}
+
+/// 手すきとみなせるか（最後の入力からの経過が、設定の待ち時間以上）。
+pub(super) fn is_idle(since_input: Duration, wait: Duration) -> bool {
+    since_input >= wait
+}
+
+impl NekoviewApp {
+    /// 手すき生成を1回進める（毎フレーム、通常のサムネ処理の後に呼ぶ）。
+    pub(super) fn pump_idle_thumbnails(&mut self, ctx: &egui::Context) {
+        if !self.config.idle_thumb_generation
+            || crate::perf_fixture::is_active()
+            || (self.viewer_is_open() && !self.config.idle_thumb_while_viewer)
+            || !self.folder_pane_tab.shows_real_dir()
+            || self.viewing_favorites.is_some()
+            || self.viewing_search.is_some()
+            || self.viewing_similar.is_some()
+            || self.cache_db.is_none()
+            || !matches!(self.scan_state, super::ScanState::Done)
+            || self.archives.is_empty()
+        {
+            return;
+        }
+        let activity = self.idle_last_activity;
+        // 入力があったら、その手すきの間に最初から見直す。
+        if self.idle_thumb.seen_activity != Some(activity) {
+            self.idle_thumb.restart(activity);
+        }
+        // 結果が返らないまま捨てられた分（フォルダ移動など）を外す。
+        self.idle_thumb.pending.retain(|p| self.thumb_pending.contains(p));
+        if self.idle_thumb.done {
+            return;
+        }
+        let since_input = activity.elapsed();
+        let wait = Duration::from_secs(u64::from(self.config.idle_thumb_wait_secs.clamp(
+            crate::config::IDLE_THUMB_WAIT_MIN,
+            crate::config::IDLE_THUMB_WAIT_MAX,
+        )));
+        if !is_idle(since_input, wait) {
+            // 手すきになる時刻に、入力が無くても再描画して再開する。
+            ctx.request_repaint_after(wait - since_input);
+            return;
+        }
+        // 通常のサムネ処理が空で、手すき生成の同時実行数に空きがあること。
+        if !self.thumb_queued.is_empty()
+            || !self.thumb_priority_queue.is_empty()
+            || self.normal_thumb_pending() > 0
+            || self.idle_thumb.pending.len() >= CONCURRENCY
+        {
+            return;
+        }
+        // 本のページ読み・アーカイブを開く処理が動いている間と直後は、ディスクを取り合わないよう送らない。
+        if !crate::cache::foreground_io_quiet_for(FG_QUIET) {
+            ctx.request_repaint_after(Duration::from_millis(500));
+            return;
+        }
+        let mut checked = 0;
+        while checked < SCAN_PER_FRAME {
+            if self.idle_thumb.cursor >= self.archives.len() {
+                // 周の終わり。ID解決待ちで飛ばしたものがあれば、少し置いて見直す。
+                if self.idle_thumb.deferred && !self.identity_verifying.is_empty() {
+                    let due = *self.idle_thumb.recheck_at.get_or_insert_with(|| Instant::now() + RECHECK_AFTER);
+                    if Instant::now() < due {
+                        ctx.request_repaint_after(due.saturating_duration_since(Instant::now()));
+                        return;
+                    }
+                    self.idle_thumb.cursor = 0;
+                    self.idle_thumb.deferred = false;
+                    self.idle_thumb.recheck_at = None;
+                    continue;
+                }
+                self.idle_thumb.done = true;
+                // 生成したものがあれば、ハッシュ・サマリーの更新を1回だけ依頼する。
+                if std::mem::take(&mut self.idle_thumb.dirty) {
+                    self.idle_thumb.report_done = true;
+                }
+                if self.idle_thumb.pass_sent > 0 {
+                    let (s, total) = (self.idle_thumb.skipped, self.archives.len());
+                    log(|| {
+                        format!(
+                            "周が完了: 送信 {} 件 / 一覧 {} 件（+{:.1}s） 送らなかった内訳: 生成済み等 {}・表示中 {}・保留 {}・失敗 {}・検証中 {}・ネット {}",
+                            self.idle_thumb.pass_sent,
+                            total,
+                            self.idle_thumb.elapsed(),
+                            s.existing,
+                            s.shown,
+                            s.pending,
+                            s.failed,
+                            s.verifying,
+                            s.network,
+                        )
+                    });
+                }
+                return;
+            }
+            let path = self.archives[self.idle_thumb.cursor].clone();
+            self.idle_thumb.cursor += 1;
+            checked += 1;
+            // 表示中でも、設定変更で旧形式になったテクスチャは「表示済み」とみなさず、作り直す。
+            let skip = if self.has_current_thumb_texture(&path) {
+                Some(&mut self.idle_thumb.skipped.shown)
+            } else if self.thumb_pending.contains(&path) {
+                Some(&mut self.idle_thumb.skipped.pending)
+            } else if self.thumb_failed.contains(&path) {
+                Some(&mut self.idle_thumb.skipped.failed)
+            } else if crate::fs::dir::is_gvfs_path(&path) {
+                Some(&mut self.idle_thumb.skipped.network)
+            } else {
+                None
+            };
+            if let Some(counter) = skip {
+                *counter += 1;
+                continue;
+            }
+            if self.identity_verifying.contains(&path) {
+                self.idle_thumb.deferred = true;
+                self.idle_thumb.skipped.verifying += 1;
+                continue;
+            }
+            // 未生成（Missing）に加えて、旧形式（Stale・別のサイズ/フィルタで完成したもの）も作り直す。
+            if !self.thumb_needs_generation(&path) {
+                self.idle_thumb.skipped.existing += 1;
+                continue;
+            }
+            if self.send_idle_thumbnail(path) {
+                let (dir, total) = (self.current_dir.clone(), self.archives.len());
+                self.idle_thumb.note_sent(&dir, total);
+                // 同時実行数いっぱいなら、完了を待つ（完了の通知で再描画される）。
+                if self.idle_thumb.pending.len() >= CONCURRENCY {
+                    return;
+                }
+            } else {
+                // 送信口がふさがっている。位置を戻して、次の機会に回す。
+                self.idle_thumb.cursor -= 1;
+                return;
+            }
+        }
+        // 確認の途中。次のフレームで続ける。
+        ctx.request_repaint();
+    }
+
+    /// 1件を生成に回す。結果はDBに保存され、画面には出さない（`thumb_display_requested` に入れない）。
+    fn send_idle_thumbnail(&mut self, path: PathBuf) -> bool {
+        let selection = path.parent().and_then(|dir| {
+            let filename = path.file_name()?.to_str()?;
+            self.spread_db.as_ref().and_then(|db| crate::spread_state::read_thumbnail_selection(db, dir, filename))
+        });
+        let request = ThumbRequest {
+            archive_path: path.clone(),
+            db: self.cache_db.clone(),
+            is_raw_file: self.raw_image_files.contains(&path),
+            thumbnail_selection: selection,
+            requested_edge: self.config.thumb_size,
+            requested_filter: self.config.thumb_filter,
+            generation_token: None,
+            session_id: self.thumb_session.load(Ordering::Acquire),
+            is_tag_preview: false,
+        };
+        if self.thumb_req_tx.try_send(request).is_err() {
+            return false;
+        }
+        self.idle_thumb.pending.insert(path.clone());
+        self.trace_thumb_sent(&path, "手すき", self.idle_thumb.pending.len(), CONCURRENCY, self.idle_last_activity.elapsed(), self.thumb_queue_built_at.elapsed());
+        self.thumb_pending.insert(path);
+        true
+    }
+
+    /// 手すき生成を除いた、サムネ生成の保留件数。「保留が空になった」判定（ハッシュ・サマリー更新の契機）に使う。
+    /// 手すき生成の1件ごとに更新が走らないようにするため。
+    pub(super) fn normal_thumb_pending(&self) -> usize {
+        self.thumb_pending.iter().filter(|p| !self.idle_thumb.pending.contains(*p)).count()
+    }
+
+    /// 結果が返った手すき生成の1件を、保留から外す。
+    pub(super) fn idle_thumb_completed(&mut self, path: &PathBuf) {
+        self.idle_thumb.pending.remove(path);
+    }
+
+    /// 手すき生成の周が終わった合図を1回だけ返す（ハッシュ・サマリーの更新の契機）。
+    pub(super) fn take_idle_thumb_report(&mut self) -> bool {
+        std::mem::take(&mut self.idle_thumb.report_done)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn button(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE }
+    }
+
+    /// マウス移動・ホイール・フォーカス・ズーム・タッチの移動は数えず、キー・クリックなどは数える。
+    #[test]
+    fn only_deliberate_operations_reset_the_idle_timer() {
+        let pos = egui::pos2(10.0, 20.0);
+        let mut t = OperationTracker::default();
+        // 数えない（眺めているだけ）
+        assert!(!t.feed(&egui::Event::PointerMoved(pos)));
+        assert!(!t.feed(&egui::Event::MouseMoved(egui::vec2(1.0, 2.0))));
+        assert!(!t.feed(&egui::Event::PointerGone));
+        assert!(!t.feed(&egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0.0, -3.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        }));
+        assert!(!t.feed(&egui::Event::WindowFocused(true)));
+        assert!(!t.feed(&egui::Event::Zoom(1.1)));
+        assert!(!t.feed(&egui::Event::Touch {
+            device_id: egui::TouchDeviceId(0),
+            id: egui::TouchId(0),
+            phase: egui::TouchPhase::Move,
+            pos,
+            force: None,
+        }));
+        // 数える（人が操作している）
+        assert!(t.feed(&egui::Event::Text("a".into())));
+        assert!(t.feed(&egui::Event::Key {
+            key: egui::Key::A,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }));
+        assert!(t.feed(&egui::Event::Paste("x".into())));
+    }
+
+    /// クリック（動かさずに押して離す）は数え、押した瞬間・ドラッグ（スワイプ・スクロールバー・範囲選択）は数えない。
+    #[test]
+    fn click_counts_but_press_and_drag_do_not() {
+        let mut t = OperationTracker::default();
+        let p = egui::pos2(100.0, 100.0);
+        // クリック: 押した瞬間は数えず、離したときに数える。
+        assert!(!t.feed(&button(p, true)));
+        assert!(t.feed(&button(p, false)));
+        // 小さな揺れ（6pt以内）は、クリックのまま。
+        assert!(!t.feed(&button(p, true)));
+        assert!(!t.feed(&egui::Event::PointerMoved(egui::pos2(103.0, 102.0))));
+        assert!(t.feed(&button(egui::pos2(103.0, 102.0), false)));
+        // ドラッグ（スワイプ）: 動かしてから離しても、数えない。
+        assert!(!t.feed(&button(p, true)));
+        assert!(!t.feed(&egui::Event::PointerMoved(egui::pos2(100.0, 160.0))));
+        assert!(!t.feed(&egui::Event::PointerMoved(egui::pos2(100.0, 101.0)))); // 途中で元の位置に戻っても、ドラッグのまま
+        assert!(!t.feed(&button(egui::pos2(100.0, 101.0), false)));
+        // 押下を見ていない離しは数えない。
+        assert!(!t.feed(&button(p, false)));
+        // ドラッグのあとの次のクリックは、普通に数える（状態が残らない）。
+        assert!(!t.feed(&button(p, true)));
+        assert!(t.feed(&button(p, false)));
+    }
+
+    #[test]
+    fn idle_begins_only_after_the_wait() {
+        let wait = Duration::from_secs(3);
+        assert!(!is_idle(Duration::from_millis(2999), wait));
+        assert!(is_idle(Duration::from_secs(3), wait));
+        assert!(is_idle(Duration::from_secs(60), wait));
+        // 待ち時間は設定で変わる。
+        assert!(!is_idle(Duration::from_secs(5), Duration::from_secs(10)));
+        assert!(is_idle(Duration::from_secs(1), Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn restart_rewinds_to_the_first_file_on_new_input() {
+        let mut s = IdleThumb::new();
+        s.cursor = 40;
+        s.deferred = true;
+        s.done = true;
+        let a = Instant::now();
+        s.restart(a);
+        assert_eq!((s.cursor, s.deferred, s.done, s.seen_activity), (0, false, false, Some(a)));
+    }
+}

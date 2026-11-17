@@ -32,6 +32,12 @@ v1.1.0時点のキャッシュ層（`cache.rs` / `anim.rs` / `neko_dir.rs`）の
 - **ZIP/CBZ**: 生バイト列（`Raw`）を共有し、各デコードスレッドが自分用の軽量 `ZipArchive` を
   開いて並列にデコードする。`ZipArchive::by_name` は1エントリだけの個別解凍が可能な真の
   ランダムアクセスを持つため、生バイト列の共有だけで十分並列性が出る
+- **FileCache にまだ載っていない zip（ディスク直読み）**: `OpenArchive::Fast`（`FastZip`）が、
+  `ZipArchive::new` を通さず中央ディレクトリだけで開く。判断できない zip は従来の `ZipArchive`
+  （`OpenArchive::Disk`）に戻る。冷たいHDDの初回を速くするための経路
+  （[features/archive-open-perf.md](features/archive-open-perf.md)）
+- **FileCache の zip 丸読み**: 2MBずつ読み、ページ読み等の画面表示用のディスク読みが動いている間は
+  次の区切りを待つ（HDDで、ページ送りと同じディスクを取り合わないため。同ドキュメント §4.1）
 - **7z/tar（ソリッド圧縮）**: ランダムアクセスができないため、`FileCache` 側で1回だけ全画像を
   展開し（`Extracted`）、各デコードスレッドは読み取り専用でロックなしに参照する
 - あえて非対称にしている理由: もしZIPも「生きたアーカイブハンドルを共有」する形にすると
@@ -74,9 +80,49 @@ v1.1.0時点のキャッシュ層（`cache.rs` / `anim.rs` / `neko_dir.rs`）の
   （`take_thumbnail_rows` / `put_thumbnail_rows`。移動先で生成中・生成済みなら上書きしない）。
   ID解決待ちのファイルは、解決が済むまでサムネ生成を始めない。残ったサムネ行の掃除は、別ブランチ予定のキャッシュ整理の役割
 
+### サムネの一括破棄（`neko_dir::clear_folder_thumbs`）
+
+フォルダ単位で、貯めたサムネをすべて破棄する API。サムネの拡縮アルゴリズムやサイズの設定を変えたあと、
+作り込み済みのサムネを作り直す入口として、UI から呼べるようにしてある（UI の導線は未実装）。
+
+- `clear_folder_thumbs(db)`: そのフォルダのキャッシュDBから、サムネ本体と生成元・サイズ・フィルタ・状態・希望ソースの
+  全行を1トランザクションで消し、消したファイル数を返す。ファイルの記録・ページ数・評価などは残す。UI からは、
+  アプリが開いている `cache_db` のハンドルを渡す
+- `clear_dir_thumbs(dir, config)`: フォルダのパスから DB を引いて同じことをする（DB が無ければ何もしない）。
+  対象は直下のみ（サブフォルダは別DB）
+- 起動引数 `--clear-thumbs` が、起動前（ワーカーが動く前）に `clear_dir_thumbs` を呼ぶ。対象は起動するフォルダ
+  （位置引数があればその場所、無ければ前回の場所。前回のタブが仮想フォルダなら、そのノードの実パス）。標準エラーに破棄件数を出す
+  （[implements.md](implements.md) の「起動方法」）
+
+### 設定変更後の旧サムネの更新
+
+サムネサイズ・フィルタの変更後、旧形式（`Stale`・別の生成条件の `Current`）を自動で作り直す仕組みは
+[features/idle-thumb.md](features/idle-thumb.md) の「設定変更後の旧サムネの更新」に書いた。`neko_dir::thumbnail_needs_regeneration` が、
+状態と生成条件だけで「作り直す必要があるか」を返す（`Processing` は二重に始めない）。
+
+### 飛び地一覧（お気に入り・検索・タグ検索・類似）のサムネ参照
+
+飛び地一覧（表示中フォルダ以外のファイルが並ぶ一覧）のサムネ要求は `ThumbRequest.db = None` で送る
+（表示中フォルダのDBへ誤って保存しないため）。以前はこのとき、プローブがDBを見ずに毎回元アーカイブから
+生成していた（HDDで30〜700ms・結果は保存されない）。
+
+- プローブレーン（`cache.rs::probe_foreign_thumb`）が、そのファイル自身の**親フォルダのサムネDB**
+  （既存のものだけ・新規には作らない）を**読み取り専用**で引く。開いたDBは親フォルダ単位で使い回す
+- 当たれば暫定表示を出し、続けて mtime と生成条件（サイズ・フィルタ・登録サムネ）を
+  `neko_dir::is_thumbnail_current` で検証する（書き込みなし）。一致なら完了、食い違えば旧画像を出したまま
+  メモリ上だけで再生成する。**飛び地からDBへは書かない**
+- 外れ（DB無し・行無し）は従来どおりメモリ上だけで生成する
+- `neko_dir::open_cache_db` は、スキーマ版が現行で中断中のprocessingが無ければ、書き込みトランザクションと
+  THUMBS_TABLE の全キー走査を省く（`schema_is_settled`）。THUMBS_TABLE はJPEG本体を抱えるので、全キー走査は
+  DBファイル全体の読み出しになる
+- 計測: 設定の perf ログON時に `[perf/foreign-thumb]` を出す（open・stat・現行判定）。実測は、当たり1件
+  約0.3ms・stat 0.0ms・再生成なし（stat のコールド時の値は未確認。必要なら再起動直後に再計測）
+
 ## 見積もり（開く前のメモリ超過チェック）
 
 `fs/archive/mod.rs::estimate_archive_memory` がページ数に応じてサンプリング
 （3枚以下→先頭1枚、4〜10枚→先頭・末尾、11枚以上→先頭・中間・末尾）し、サンプル平均×総ページ数
 が予算を超えるかを判定する。7z（ソリッド圧縮）はサンプリングでの軽量見積もりが成立しない
 ため、`estimate_archive_memory_7z` に委譲し一括展開結果を使った全件厳密判定を行う。
+zip のサンプル読みは `FastZip`（中央ディレクトリの近道。`ZipArchive::new` を通さない）で行い、
+使えない zip だけ従来の `ZipArchive` に戻る（[features/archive-open-perf.md](features/archive-open-perf.md)）。

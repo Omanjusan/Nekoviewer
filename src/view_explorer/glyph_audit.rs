@@ -149,6 +149,21 @@ fn toolbar_icon_glyphs_are_available() {
     }
 }
 
+/// ソートメニューの昇順/降順の矢印が豆腐表示にならないこと。
+#[test]
+fn sort_order_arrow_glyphs_are_available() {
+    let chain = font_chain();
+    for s in [crate::view_reader::SORT_ASC_ARROW, crate::view_reader::SORT_DESC_ARROW] {
+        let ch = s.chars().next().unwrap();
+        let r = audit_char(&chain, ch);
+        assert!(
+            r.font_name.is_some(),
+            "ソート矢印 {s} (U+{:04X}) はフォントチェーンに収録がなく豆腐になる",
+            ch as u32
+        );
+    }
+}
+
 /// 検索日付ボタンのカレンダー絵文字が豆腐表示にならないこと。
 #[test]
 fn calendar_button_glyph_is_available() {

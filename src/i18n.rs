@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lang {
@@ -58,11 +58,54 @@ impl Lang {
         }
     }
 
+    /// アーカイブ内の格納順ソート（作者が意図した並びの可能性）
+    pub fn sort_stored(self) -> &'static str {
+        match self {
+            Lang::Japanese => "[格納順]",
+            Lang::English  => "[Stored]",
+            Lang::Chinese  => "[存储顺序]",
+        }
+    }
+
+    /// 格納順ボタンのホバー説明
+    pub fn sort_stored_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "アーカイブ内の格納順（作成ツールが入れた並び）",
+            Lang::English  => "Order stored in the archive (as written by the creation tool)",
+            Lang::Chinese  => "压缩包内的存储顺序（由创建工具写入）",
+        }
+    }
+
+    /// 格納順ボタンが無効なときのホバー説明（フォルダ・単一画像には格納順が無い）
+    pub fn sort_stored_unavailable_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "フォルダ・単一画像には格納順がありません",
+            Lang::English  => "Folders and single images have no stored order",
+            Lang::Chinese  => "文件夹和单张图片没有存储顺序",
+        }
+    }
+
     pub fn sort_natural(self) -> &'static str {
         match self {
-            Lang::Japanese => "[自然数]",
-            Lang::English  => "[Natural]",
-            Lang::Chinese  => "[自然序]",
+            Lang::Japanese => "[自然数:行頭]",
+            Lang::English  => "[Natural:Lead]",
+            Lang::Chinese  => "[自然序:行首]",
+        }
+    }
+
+    pub fn sort_natural_layer(self) -> &'static str {
+        match self {
+            Lang::Japanese => "[自然数:層]",
+            Lang::English  => "[Natural:Layer]",
+            Lang::Chinese  => "[自然序:层]",
+        }
+    }
+
+    pub fn sort_natural_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "クリックで「行頭番号優先」⇔「層番号優先」を切り替え\n層番号優先: 001, 002 → 001 (2), 002 (2) → 001 (3), 002 (3) の順（末尾の (n) を層とみなす）",
+            Lang::English  => "Click to toggle leading-number order <-> layer order\nLayer order: 001, 002 -> 001 (2), 002 (2) -> 001 (3), 002 (3) (a trailing (n) is the layer)",
+            Lang::Chinese  => "点击在“行首编号优先”与“层编号优先”之间切换\n层编号优先：001, 002 → 001 (2), 002 (2) → 001 (3), 002 (3)（末尾的 (n) 视为层）",
         }
     }
 
@@ -79,6 +122,22 @@ impl Lang {
             Lang::Japanese => "[訪問回数]",
             Lang::English  => "[Visits]",
             Lang::Chinese  => "[访问次数]",
+        }
+    }
+
+    pub fn sort_pages(self) -> &'static str {
+        match self {
+            Lang::Japanese => "[ページ数]",
+            Lang::English  => "[Pages]",
+            Lang::Chinese  => "[页数]",
+        }
+    }
+
+    pub fn sort_source_rating(self) -> &'static str {
+        match self {
+            Lang::Japanese => "[公開評価]",
+            Lang::English  => "[Source Rating]",
+            Lang::Chinese  => "[来源评分]",
         }
     }
 
@@ -699,15 +758,6 @@ impl Lang {
             Lang::Japanese => "比較できる類似ファイルがありません",
             Lang::English  => "No similar files to compare",
             Lang::Chinese  => "没有可比较的相似文件",
-        }
-    }
-
-    /// ファイルID解決（新規・移動直後のファイルの照合）が長引いた時に出す、処理中トースト。
-    pub fn identity_toast(self, done: usize, total: usize) -> String {
-        match self {
-            Lang::Japanese => format!("ファイルを検証しています… {done} / {total}"),
-            Lang::English  => format!("Verifying files… {done} / {total}"),
-            Lang::Chinese  => format!("正在验证文件… {done} / {total}"),
         }
     }
 
@@ -1466,6 +1516,24 @@ impl Lang {
         }
     }
 
+    /// ビューアーbarの採点UI: 未評価時の点数欄の表示。
+    pub fn rating_bar_unset(self) -> &'static str {
+        match self {
+            Lang::Japanese => "未評価",
+            Lang::English  => "Unrated",
+            Lang::Chinese  => "未评价",
+        }
+    }
+
+    /// ビューアーbarの[-][+]ボタンのツールチップ。
+    pub fn rating_bar_step_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "評価を0.5ずつ増減（巻末の評価と同じ値）",
+            Lang::English  => "Change rating by 0.5 (same value as the end-of-book rating)",
+            Lang::Chinese  => "评价增减0.5（与书末评价同步）",
+        }
+    }
+
     pub fn toast_rating_cleared(self) -> &'static str {
         match self {
             Lang::Japanese => "未評価として登録しなおしました",
@@ -1631,9 +1699,9 @@ impl Lang {
     /// （OS標準ファイラーで現在表示中ディレクトリ=PWDを開く）
     pub fn explorer_open_folder_menu(self) -> &'static str {
         match self {
-            Lang::Japanese => "現在のフォルダを開く",
-            Lang::English  => "Open Current Folder",
-            Lang::Chinese  => "打开当前文件夹",
+            Lang::Japanese => "現在のフォルダをファイラーで開く",
+            Lang::English  => "Open Current Folder in File Manager",
+            Lang::Chinese  => "在文件管理器中打开当前文件夹",
         }
     }
 
@@ -1726,18 +1794,9 @@ impl Lang {
     /// （OS標準ファイラーで、右クリックしたフォルダ自身を開く）
     pub fn explorer_open_this_folder_menu(self) -> &'static str {
         match self {
-            Lang::Japanese => "このフォルダを開く",
-            Lang::English  => "Open This Folder",
-            Lang::Chinese  => "打开此文件夹",
-        }
-    }
-
-    /// 実フォルダ/仮想フォルダタブのフォルダ右クリック「このフォルダを検索タブで開く」
-    pub fn explorer_open_in_search_menu(self) -> &'static str {
-        match self {
-            Lang::Japanese => "このフォルダを検索タブで開く",
-            Lang::English  => "Open This Folder in Search Tab",
-            Lang::Chinese  => "在搜索标签中打开此文件夹",
+            Lang::Japanese => "このフォルダをファイラーで開く",
+            Lang::English  => "Open This Folder in File Manager",
+            Lang::Chinese  => "在文件管理器中打开此文件夹",
         }
     }
 
@@ -1771,6 +1830,51 @@ impl Lang {
             Lang::Japanese => "ソート条件の変更",
             Lang::English  => "Change Sort Condition",
             Lang::Chinese  => "更改排序条件",
+        }
+    }
+
+    /// ソート条件ダイアログ: 保存済みソート条件を未定義に戻すボタン
+    pub fn sort_condition_clear_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "未定義に戻す",
+            Lang::English  => "Reset to undefined",
+            Lang::Chinese  => "恢复为未定义",
+        }
+    }
+
+    /// 未定義に戻す確認ダイアログ: 実行ボタン
+    pub fn sort_condition_clear_execute(self) -> &'static str {
+        match self {
+            Lang::Japanese => "未定義に戻す",
+            Lang::English  => "Reset",
+            Lang::Chinese  => "恢复",
+        }
+    }
+
+    /// 未定義に戻す確認ダイアログ: 本文
+    pub fn sort_condition_clear_confirm(self, count: usize) -> String {
+        match self {
+            Lang::Japanese => format!("{count}件の保存済みソート条件を未定義に戻します。よろしいですか？"),
+            Lang::English  => format!("Reset the saved sort condition of {count} file(s) to undefined?"),
+            Lang::Chinese  => format!("将 {count} 个文件已保存的排序条件恢复为未定义。确定吗？"),
+        }
+    }
+
+    /// 未定義に戻す確認ダイアログ: 注意書き
+    pub fn sort_condition_clear_note(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ビューアーで開いているファイルも解除されます（表示中の並びは変わりません）。",
+            Lang::English  => "Files open in the viewer are also reset (the current order stays as is).",
+            Lang::Chinese  => "在查看器中打开的文件也会被解除（当前排列不变）。",
+        }
+    }
+
+    /// ソート条件ダイアログ: 反映時の注意書き
+    pub fn sort_condition_apply_note(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ビューアーで開いているファイルは、閉じるときに開いている側の条件で上書きされることがあります。",
+            Lang::English  => "A file open in the viewer may be overwritten with the viewer's own condition when it is closed.",
+            Lang::Chinese  => "在查看器中打开的文件，关闭时可能被查看器一侧的条件覆盖。",
         }
     }
 
@@ -2146,18 +2250,74 @@ impl Lang {
     /// タグ検索タブ左ペイン上部の操作ヒント
     pub fn tag_search_left_hint(self) -> &'static str {
         match self {
-            Lang::Japanese => "タグをクリックで有効／無効。有効にしたタグを全て持つファイルを探します。",
-            Lang::English  => "Click a tag to enable or disable it. Finds files that have every enabled tag.",
-            Lang::Chinese  => "点击标签以启用或禁用。查找同时具有所有已启用标签的文件。",
+            Lang::Japanese => "タグをクリックで有効／無効。ORは有効タグのどれかを持つファイル、ANDは全てを持つファイルを探します。",
+            Lang::English  => "Click a tag to enable or disable it. OR finds files with any enabled tag; AND finds files with every enabled tag.",
+            Lang::Chinese  => "点击标签以启用或禁用。“或”查找具有任一已启用标签的文件，“且”查找同时具有所有已启用标签的文件。",
         }
     }
 
-    /// タグ検索タブ左ペイン: 単一選択カテゴリの「S」マークのホバー説明
+    /// タグ検索タブ左ペイン: 単一選択カテゴリの「S」マークのホバー説明（ANDのときだけ出る）
     pub fn tag_search_single_hint(self) -> &'static str {
         match self {
-            Lang::Japanese => "単一選択のカテゴリです。同時に1つだけ有効にできます。",
-            Lang::English  => "Single-select category. Only one tag can be enabled at a time.",
-            Lang::Chinese  => "单选类别。同一时间只能启用一个标签。",
+            Lang::Japanese => "単一選択のカテゴリです。ANDのときは同時に1つだけ有効にできます（ORでは複数可）。",
+            Lang::English  => "Single-select category. In AND mode only one tag can be enabled at a time (OR allows several).",
+            Lang::Chinese  => "单选类别。“且”模式下同一时间只能启用一个标签（“或”模式可多选）。",
+        }
+    }
+
+    pub fn tag_search_mode_or(self) -> &'static str {
+        match self {
+            Lang::Japanese => "OR（どれか）",
+            Lang::English  => "OR (any)",
+            Lang::Chinese  => "或（任一）",
+        }
+    }
+
+    pub fn tag_search_mode_and(self) -> &'static str {
+        match self {
+            Lang::Japanese => "AND（すべて）",
+            Lang::English  => "AND (all)",
+            Lang::Chinese  => "且（全部）",
+        }
+    }
+
+    pub fn tag_search_clear(self) -> &'static str {
+        match self {
+            Lang::Japanese => "クリア",
+            Lang::English  => "Clear",
+            Lang::Chinese  => "清除",
+        }
+    }
+
+    pub fn tag_search_filter_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグ要素を絞り込み…",
+            Lang::English  => "Filter tags…",
+            Lang::Chinese  => "筛选标签…",
+        }
+    }
+
+    pub fn tag_search_active_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "有効なタグ",
+            Lang::English  => "Enabled tags",
+            Lang::Chinese  => "已启用的标签",
+        }
+    }
+
+    pub fn tag_search_active_none(self) -> &'static str {
+        match self {
+            Lang::Japanese => "未選択",
+            Lang::English  => "None selected",
+            Lang::Chinese  => "未选择",
+        }
+    }
+
+    pub fn tag_search_no_match(self) -> &'static str {
+        match self {
+            Lang::Japanese => "該当する要素がありません",
+            Lang::English  => "No matching tags",
+            Lang::Chinese  => "没有匹配的标签",
         }
     }
 
@@ -2228,9 +2388,9 @@ impl Lang {
 
     pub fn virtual_menu_register_subs(self) -> &'static str {
         match self {
-            Lang::Japanese => "フォルダの実サブフォルダを一括登録",
-            Lang::English  => "Register Real Subfolders",
-            Lang::Chinese  => "批量登记实际子文件夹",
+            Lang::Japanese => "実パスのサブフォルダを一括登録",
+            Lang::English  => "Register Subfolders of Real Path",
+            Lang::Chinese  => "批量登记实际路径的子文件夹",
         }
     }
 
@@ -2364,9 +2524,9 @@ impl Lang {
 
     pub fn virtual_menu_delete(self) -> &'static str {
         match self {
-            Lang::Japanese => "仮想フォルダ削除",
-            Lang::English  => "Delete Virtual Folder",
-            Lang::Chinese  => "删除虚拟文件夹",
+            Lang::Japanese => "フォルダ削除",
+            Lang::English  => "Delete Folder",
+            Lang::Chinese  => "删除文件夹",
         }
     }
 
@@ -2502,6 +2662,130 @@ impl Lang {
         }
     }
 
+    /// 「詳細」列のバッジ・表示のヒント。`kind` は "XML" / "JSON" / "TXT" / "none"（確認済みで無し）/ "na"（対応外の形式）。
+    pub fn list_detail_tip(self, kind: &str) -> &'static str {
+        match (kind, self) {
+            ("XML", Lang::Japanese) => "ComicInfo.xml を表示",
+            ("XML", Lang::English) => "Show ComicInfo.xml",
+            ("XML", Lang::Chinese) => "显示 ComicInfo.xml",
+            ("JSON", Lang::Japanese) => "meta.json を表示",
+            ("JSON", Lang::English) => "Show meta.json",
+            ("JSON", Lang::Chinese) => "显示 meta.json",
+            ("TXT", Lang::Japanese) => "付属テキスト（nfo・info.txt・readme・zipコメント）を表示",
+            ("TXT", Lang::English) => "Show the attached text (nfo, info.txt, readme, zip comment)",
+            ("TXT", Lang::Chinese) => "显示附带文本（nfo、info.txt、readme、zip 注释）",
+            ("none", Lang::Japanese) => "確認済み：詳細ファイルはありません",
+            ("none", Lang::English) => "Checked: no detail files",
+            ("none", Lang::Chinese) => "已确认：没有详情文件",
+            (_, Lang::Japanese) => "この形式は詳細ファイルの取得に対応していません",
+            (_, Lang::English) => "This format does not support reading detail files",
+            (_, Lang::Chinese) => "此格式不支持读取详情文件",
+        }
+    }
+
+    pub fn detail_window_title(self, name: &str) -> String {
+        match self {
+            Lang::Japanese => format!("詳細 - {name}"),
+            Lang::English  => format!("Details - {name}"),
+            Lang::Chinese  => format!("详情 - {name}"),
+        }
+    }
+
+    pub fn detail_loading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "読み込み中…",
+            Lang::English  => "Loading…",
+            Lang::Chinese  => "加载中…",
+        }
+    }
+
+    pub fn detail_none(self) -> &'static str {
+        match self {
+            Lang::Japanese => "表示できる詳細テキストはありません（ファイルが変更・移動された可能性があります）",
+            Lang::English  => "No detail text to show (the file may have been changed or moved)",
+            Lang::Chinese  => "没有可显示的详细文本（文件可能已被更改或移动）",
+        }
+    }
+
+    pub fn detail_section_comic_info(self) -> &'static str {
+        "ComicInfo.xml"
+    }
+
+    /// 付属テキスト（.nfo / info.txt / readme.txt）の見出し
+    pub fn detail_section_text(self, name: &str) -> String {
+        match self {
+            Lang::Japanese => format!("テキスト: {name}"),
+            Lang::English  => format!("Text: {name}"),
+            Lang::Chinese  => format!("文本: {name}"),
+        }
+    }
+
+    pub fn detail_section_comment(self) -> &'static str {
+        match self {
+            Lang::Japanese => "zipコメント",
+            Lang::English  => "Zip comment",
+            Lang::Chinese  => "zip 注释",
+        }
+    }
+
+    /// meta.json の詳細窓の項目名
+    pub fn detail_json_field(self, key: &str) -> &'static str {
+        let (ja, en, zh) = match key {
+            "title_japanese" => ("タイトル(日)", "Title (JA)", "标题(日)"),
+            "title_english" => ("タイトル(英)", "Title (EN)", "标题(英)"),
+            "language" => ("言語", "Language", "语言"),
+            "category" => ("カテゴリ", "Category", "分类"),
+            "artist" => ("作者", "Artist", "作者"),
+            "group" => ("グループ", "Group", "社团"),
+            "parody" => ("パロディ", "Parody", "原作"),
+            "character" => ("キャラクター", "Character", "角色"),
+            _ => ("タグ", "Tags", "标签"),
+        };
+        match self {
+            Lang::Japanese => ja,
+            Lang::English  => en,
+            Lang::Chinese  => zh,
+        }
+    }
+
+    /// 長すぎる本文を途中で切ったときの注記
+    pub fn detail_truncated(self, shown: usize) -> String {
+        match self {
+            Lang::Japanese => format!("（長いため、先頭の{shown}文字だけ表示しています）"),
+            Lang::English  => format!("(Too long: showing only the first {shown} characters)"),
+            Lang::Chinese  => format!("（内容过长，仅显示前 {shown} 个字符）"),
+        }
+    }
+
+    /// ComicInfo.xml のタグ名に対する表示名。未知のタグはタグ名のまま。
+    pub fn comic_info_field(self, tag: &str) -> String {
+        let (ja, en, zh) = match tag {
+            "Title" => ("タイトル", "Title", "标题"),
+            "Series" => ("シリーズ", "Series", "系列"),
+            "Number" => ("話数", "Number", "编号"),
+            "Volume" => ("巻", "Volume", "卷"),
+            "Writer" => ("著者", "Writer", "作者"),
+            "Penciller" => ("作画", "Penciller", "作画"),
+            "Publisher" => ("出版社", "Publisher", "出版社"),
+            "Imprint" => ("レーベル", "Imprint", "品牌"),
+            "Genre" => ("ジャンル", "Genre", "类型"),
+            "Tags" => ("タグ", "Tags", "标签"),
+            "Year" => ("年", "Year", "年"),
+            "Month" => ("月", "Month", "月"),
+            "LanguageISO" => ("言語", "Language", "语言"),
+            "PageCount" => ("ページ数(記載値)", "Page count (declared)", "页数（声明值）"),
+            "Web" => ("Web", "Web", "网址"),
+            "Summary" => ("あらすじ", "Summary", "简介"),
+            other => return other.to_string(),
+        };
+        match self {
+            Lang::Japanese => ja,
+            Lang::English => en,
+            Lang::Chinese => zh,
+        }
+        .to_string()
+    }
+
     pub fn list_col_name(self) -> &'static str {
         match self {
             Lang::Japanese => "名前",
@@ -2534,6 +2818,62 @@ impl Lang {
         }
     }
 
+    pub fn list_col_goto_real(self) -> &'static str {
+        match self {
+            Lang::Japanese => "実",
+            Lang::English  => "Dir",
+            Lang::Chinese  => "实际",
+        }
+    }
+
+    pub fn list_col_goto_virtual(self) -> &'static str {
+        match self {
+            Lang::Japanese => "仮想",
+            Lang::English  => "Virt",
+            Lang::Chinese  => "虚拟",
+        }
+    }
+
+    pub fn list_goto_real_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このファイルの場所を、フォルダタブで開く",
+            Lang::English  => "Open this file's location in the Folders tab",
+            Lang::Chinese  => "在文件夹标签页中打开此文件所在位置",
+        }
+    }
+
+    pub fn list_goto_virtual_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このファイルの場所を登録した仮想フォルダを、仮想フォルダタブで開く",
+            Lang::English  => "Open the virtual folder that registers this file's location, in the Virtual Folders tab",
+            Lang::Chinese  => "在虚拟文件夹标签页中打开登记了此文件所在位置的虚拟文件夹",
+        }
+    }
+
+    pub fn list_goto_virtual_many_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このファイルの場所を登録した仮想フォルダが複数あります。押して選ぶ",
+            Lang::English  => "Several virtual folders register this file's location. Click to choose one",
+            Lang::Chinese  => "有多个虚拟文件夹登记了此文件所在位置。点击选择",
+        }
+    }
+
+    pub fn goto_virtual_menu_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "開く仮想フォルダを選ぶ",
+            Lang::English  => "Choose a virtual folder",
+            Lang::Chinese  => "选择要打开的虚拟文件夹",
+        }
+    }
+
+    pub fn list_goto_virtual_none_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このファイルの場所を登録した仮想フォルダはありません",
+            Lang::English  => "No virtual folder registers this file's location",
+            Lang::Chinese  => "没有登记此文件所在位置的虚拟文件夹",
+        }
+    }
+
     pub fn list_col_place(self) -> &'static str {
         match self {
             Lang::Japanese => "場所",
@@ -2547,6 +2887,48 @@ impl Lang {
             Lang::Japanese => "訪問回数",
             Lang::English  => "Visits",
             Lang::Chinese  => "访问次数",
+        }
+    }
+
+    /// 「ページ数」列の見出し（ビューアーを開くと記録される）
+    pub fn list_col_pages(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ページ数",
+            Lang::English  => "Pages",
+            Lang::Chinese  => "页数",
+        }
+    }
+
+    /// 「公開評価」列の見出し（アーカイブ内の info.txt にある評価。自分の「評価」とは別）
+    pub fn list_col_source_rating(self) -> &'static str {
+        match self {
+            Lang::Japanese => "公開評価",
+            Lang::English  => "Source Rating",
+            Lang::Chinese  => "来源评分",
+        }
+    }
+
+    /// 「公開評価」列のヒント。`kind` は "value" / "none"（確認済みで無し）/ "na"（対応外の形式）。
+    pub fn list_source_rating_tip(self, kind: &str) -> &'static str {
+        match (kind, self) {
+            ("value", Lang::Japanese) => "公開評価（アーカイブ内の info.txt の Rating）",
+            ("value", Lang::English) => "Source rating (Rating in the archive's info.txt)",
+            ("value", Lang::Chinese) => "来源评分（压缩包内 info.txt 的 Rating）",
+            ("none", Lang::Japanese) => "確認済み：info.txt に評価はありません",
+            ("none", Lang::English) => "Checked: no rating in info.txt",
+            ("none", Lang::Chinese) => "已确认：info.txt 中没有评分",
+            (_, Lang::Japanese) => "この形式は info.txt の取得に対応していません",
+            (_, Lang::English) => "This format does not support reading info.txt",
+            (_, Lang::Chinese) => "此格式不支持读取 info.txt",
+        }
+    }
+
+    /// 「詳細」列の見出し（詳細テキストのあるファイルにアイコンが付く）
+    pub fn list_col_detail(self) -> &'static str {
+        match self {
+            Lang::Japanese => "詳細",
+            Lang::English  => "Details",
+            Lang::Chinese  => "详情",
         }
     }
 
@@ -2981,6 +3363,32 @@ impl Lang {
         }
     }
 
+    pub fn search_cancel_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "中断",
+            Lang::English  => "Stop",
+            Lang::Chinese  => "中断",
+        }
+    }
+
+    /// 検索結果の行ラベルに添える（中断した検索）。
+    pub fn search_cancelled_suffix(self) -> &'static str {
+        match self {
+            Lang::Japanese => " 中断",
+            Lang::English  => " stopped",
+            Lang::Chinese  => " 已中断",
+        }
+    }
+
+    /// 検索結果の行ラベルに添える（前回の確認で見つからず、一覧から外した件数）。
+    pub fn search_unconfirmed_suffix(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!(" 確認不可{n}件"),
+            Lang::English  => format!(" {n} unverified"),
+            Lang::Chinese  => format!(" 无法确认{n}个"),
+        }
+    }
+
     pub fn search_base_dir_label(self) -> &'static str {
         match self {
             Lang::Japanese => "検索基底フォルダ",
@@ -3034,6 +3442,89 @@ impl Lang {
             Lang::Japanese => "日付以前(YYYY-MM-DD)",
             Lang::English  => "Before (YYYY-MM-DD)",
             Lang::Chinese  => "此日期之前 (YYYY-MM-DD)",
+        }
+    }
+
+    pub fn search_mode_new(self) -> &'static str {
+        match self {
+            Lang::Japanese => "新",
+            Lang::English  => "New",
+            Lang::Chinese  => "新",
+        }
+    }
+
+    pub fn search_mode_legacy(self) -> &'static str {
+        match self {
+            Lang::Japanese => "旧（フォルダ指定）",
+            Lang::English  => "Legacy (by folder)",
+            Lang::Chinese  => "旧（按文件夹）",
+        }
+    }
+
+    pub fn search_new_text_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "検索文字列（ファイル名・タグ名）",
+            Lang::English  => "Search text (file / tag names)",
+            Lang::Chinese  => "搜索文字（文件名・标签名）",
+        }
+    }
+
+    /// 新モードの検索文字列欄にホバーしたときの説明（ヘルプ表示のON/OFFに関わらず出す）。
+    pub fn search_new_text_tooltip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "半角、全角スペースでOR検索用の単語を増やせます。単語内にスペースがある場合は\"サン　プル\"のように\"で単語を囲ってください。フィルタ文字列も使えます",
+            Lang::English  => "Separate words with half- or full-width spaces to add OR search words. If a word contains a space, enclose it in quotes, like \"Sam ple\". Filter patterns (* ? [...]) can be used too.",
+            Lang::Chinese  => "可用半角或全角空格分隔，增加 OR 搜索的词。词中含空格时，请用 \" 括起来，如 \"示　例\"。也可使用过滤字符串（* ? [...]）。",
+        }
+    }
+
+    pub fn search_notice_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "新検索モードの注意点",
+            Lang::English  => "Notes on the new search mode",
+            Lang::Chinese  => "新搜索模式的注意事项",
+        }
+    }
+
+    pub fn search_notice_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "新検索モードの注意点",
+            Lang::English  => "Notes on the new search mode",
+            Lang::Chinese  => "新搜索模式的注意事项",
+        }
+    }
+
+    pub fn search_notice_body(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ここでの一致・類似マーカーは計算量が膨大になるのを避け、結果を素早く出すため保存済みマーカーを表示するだけで新たな検知は行わず、解決UIにも移動できません。実フォルダ・仮想フォルダの現地移動メニューがあるので現地へ移動してから解決をしてください。\n\nこのモードは、本アプリの全データベースを走査します。データベースが未構築のフォルダは、期待どおりの結果が出ないことがあります。\nデータベースは「サムネイル」と「ファイルID」の2種類に大別され、検索に使われるのはファイルIDです。サムネイルが完成しているフォルダは、おおむねファイルIDも生成済みと考えてよいです（旧バージョンのサムネイルのみのデータベースを除く）。\nまずは、漫画や画像アーカイブのあるフォルダを一通り閲覧することをおすすめします。フォルダを閲覧した時点で、そのフォルダの管理データベースが更新されます。アプリのデータベース構成が更新された後も、フォルダを閲覧し直すことで、新しい形式に更新されます。\nエクスプローラー上部のサムネイル取得数の横に、ファイルIDの取得状況（ID取得中/ID取得済）が表示されます。これを参考に、データベースを完成させてください。",
+            Lang::English  => "To avoid a huge amount of computation and keep results fast, the match / similar markers here only show markers that are already saved. No new detection is performed, and you cannot jump to the resolution UI from here. Use the menu to go to the actual location in the Folders or Virtual Folders tab, and resolve them there.\n\nThis mode scans all of the app's databases. For folders whose databases have not been built yet, you may not get the results you expect.\nThe databases fall into two broad kinds, \"thumbnails\" and \"file IDs\", and search relies on the file IDs. A folder whose thumbnails are complete can generally be assumed to have its file IDs generated as well (except for databases from older versions that contain thumbnails only).\nFirst, we recommend browsing through the folders that contain manga or image archives. The folder's management database is updated at the moment you browse it. Even after the app's database structure is updated, browsing the folders again brings them up to the new format.\nThe file ID status (fetching / ready) is shown next to the thumbnail count at the top of the Explorer. Use it as a guide to complete the databases.",
+            Lang::Chinese  => "为避免计算量过大并优先快速给出结果，此处的一致/相似标记只显示已保存的标记，不会进行新的检测，也无法从这里跳转到处理界面。请使用菜单跳转到文件夹或虚拟文件夹标签页中的实际位置，然后在那里处理。\n\n此模式会扫描本应用的全部数据库。尚未建立数据库的文件夹，可能无法得到预期的结果。\n数据库大致分为“缩略图”和“文件ID”两种，搜索使用的是文件ID。缩略图已完成的文件夹，通常可视为文件ID也已生成（仅包含缩略图的旧版本数据库除外）。\n建议首先浏览一遍包含漫画或图片压缩包的文件夹。浏览文件夹的同时，该文件夹的管理数据库会被更新。应用的数据库结构更新后，再次浏览文件夹，也会更新为新的格式。\n资源管理器顶部的缩略图数量旁会显示文件ID的获取状态（获取中/已获取）。请以此为参考，完成数据库的建立。",
+        }
+    }
+
+    /// 検索結果（新モード）のマーカーのホバー説明の末尾に添える一文。
+    pub fn cross_marker_no_jump(self) -> &'static str {
+        match self {
+            Lang::Japanese => "検索結果からは一致・類似ファイルリストには飛べません。",
+            Lang::English  => "From search results you cannot jump to the match / similar file list.",
+            Lang::Chinese  => "无法从搜索结果跳转到一致/相似文件列表。",
+        }
+    }
+
+    /// 検索開始ボタンが押せないとき（条件が空）のホバー説明。
+    pub fn search_condition_required(self) -> &'static str {
+        match self {
+            Lang::Japanese => "検索条件を1つ以上入力してください（文字列・サイズ・日付など）",
+            Lang::English  => "Enter at least one search condition (text, size, date, ...)",
+            Lang::Chinese  => "请至少输入一个搜索条件（文字、大小、日期等）",
+        }
+    }
+
+    pub fn search_new_text_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スペース区切り。\"…\" で句",
+            Lang::English  => "Space-separated. \"...\" for phrases",
+            Lang::Chinese  => "空格分隔。\"…\" 表示短语",
         }
     }
 
@@ -3140,17 +3631,17 @@ impl Lang {
 
     pub fn favorite_rename_menu(self) -> &'static str {
         match self {
-            Lang::Japanese => "リネーム (F2)",
-            Lang::English  => "Rename (F2)",
-            Lang::Chinese  => "重命名 (F2)",
+            Lang::Japanese => "プロパティの変更 (F2)",
+            Lang::English  => "Edit Properties (F2)",
+            Lang::Chinese  => "修改属性 (F2)",
         }
     }
 
     pub fn favorite_delete_menu(self) -> &'static str {
         match self {
-            Lang::Japanese => "削除",
-            Lang::English  => "Delete",
-            Lang::Chinese  => "删除",
+            Lang::Japanese => "お気に入りフォルダの削除",
+            Lang::English  => "Delete Favorite Folder",
+            Lang::Chinese  => "删除收藏夹",
         }
     }
 
@@ -3164,9 +3655,9 @@ impl Lang {
 
     pub fn favorite_dialog_title_rename(self) -> &'static str {
         match self {
-            Lang::Japanese => "お気に入りフォルダのリネーム",
-            Lang::English  => "Rename Favorite Folder",
-            Lang::Chinese  => "重命名收藏夹",
+            Lang::Japanese => "お気に入りフォルダのプロパティ",
+            Lang::English  => "Favorite Folder Properties",
+            Lang::Chinese  => "收藏夹属性",
         }
     }
 
@@ -3242,13 +3733,306 @@ impl Lang {
         }
     }
 
+    // ---- カード右クリックメニューのテーマ見出し（panels.rs） ----
+
+    pub fn menu_theme_file_settings(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイル設定",
+            Lang::English  => "File Settings",
+            Lang::Chinese  => "文件设置",
+        }
+    }
+
+    pub fn menu_theme_os_file_manager(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイラーで開く（OS）",
+            Lang::English  => "Open in File Manager (OS)",
+            Lang::Chinese  => "在文件管理器中打开（系统）",
+        }
+    }
+
+    pub fn menu_theme_tag_learning(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグ学習",
+            Lang::English  => "Tag Learning",
+            Lang::Chinese  => "标签学习",
+        }
+    }
+
+    pub fn menu_theme_favorite_manage(self) -> &'static str {
+        match self {
+            Lang::Japanese => "お気に入り整理",
+            Lang::English  => "Manage Favorites",
+            Lang::Chinese  => "整理收藏",
+        }
+    }
+
+    pub fn menu_theme_virtual_folder(self) -> &'static str {
+        match self {
+            Lang::Japanese => "仮想フォルダ",
+            Lang::English  => "Virtual Folders",
+            Lang::Chinese  => "虚拟文件夹",
+        }
+    }
+
+    pub fn menu_theme_view(self) -> &'static str {
+        match self {
+            Lang::Japanese => "表示",
+            Lang::English  => "View",
+            Lang::Chinese  => "显示",
+        }
+    }
+
+    pub fn menu_theme_move(self) -> &'static str {
+        match self {
+            Lang::Japanese => "移動",
+            Lang::English  => "Go To",
+            Lang::Chinese  => "跳转",
+        }
+    }
+
+    pub fn menu_theme_search(self) -> &'static str {
+        match self {
+            Lang::Japanese => "検索",
+            Lang::English  => "Search",
+            Lang::Chinese  => "搜索",
+        }
+    }
+
+    // ---- 右クリック「タグ検索」のすだれメニュー（key_search_ui.rs） ----
+
+    pub fn key_search_menu(self) -> &'static str {
+        match self {
+            Lang::Japanese => "主要タグ検索",
+            Lang::English  => "Main Tag Search",
+            Lang::Chinese  => "主要标签搜索",
+        }
+    }
+
+    pub fn key_search_menu_hover(self) -> &'static str {
+        match self {
+            Lang::Japanese => "グループ・作者・キャラクターなど、決まった種類のタグ（とファイル名から判定した名前）で検索する。ユーザー独自のタグは対象外。",
+            Lang::English  => "Search by fixed kinds of tags (group, author, character, ...) and names detected from the file name. User-defined tags are not included.",
+            Lang::Chinese  => "按固定类别的标签（团体、作者、角色等）及从文件名判断出的名称搜索。不包括用户自定义标签。",
+        }
+    }
+
+    pub fn key_search_disabled_multi(self) -> &'static str {
+        match self {
+            Lang::Japanese => "複数選択中は使えない（1つだけ選んで右クリックする）",
+            Lang::English  => "Not available with multiple selection (right-click a single file)",
+            Lang::Chinese  => "多选时不可用（请只选一个文件后右键）",
+        }
+    }
+
+    pub fn key_search_role_none(self, label: &str) -> String {
+        match self {
+            Lang::Japanese => format!("「{label}」は見つからない（タグ未登録で、ファイル名からも判定できない）"),
+            Lang::English  => format!("No \"{label}\" found (not tagged, and not detected from the file name)"),
+            Lang::Chinese  => format!("未找到“{label}”（未登记标签，也无法从文件名判断）"),
+        }
+    }
+
+    pub fn key_status_precise(self) -> &'static str {
+        match self {
+            Lang::Japanese => "主要タグ取得状況: メタデータから取得",
+            Lang::English  => "Main tag status: from metadata",
+            Lang::Chinese  => "主要标签获取状态：来自元数据",
+        }
+    }
+
+    pub fn key_status_precise_hover(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ComicInfo.xml または meta.json から取得したタグを使っている。",
+            Lang::English  => "Using tags obtained from ComicInfo.xml or meta.json.",
+            Lang::Chinese  => "使用了从 ComicInfo.xml 或 meta.json 获取的标签。",
+        }
+    }
+
+    pub fn key_status_simple(self) -> &'static str {
+        match self {
+            Lang::Japanese => "主要タグ取得状況: ファイル名から簡易取得",
+            Lang::English  => "Main tag status: simple detection from file name",
+            Lang::Chinese  => "主要标签获取状态：根据文件名简易获取",
+        }
+    }
+
+    pub fn key_status_unavailable(self) -> &'static str {
+        match self {
+            Lang::Japanese => "主要タグ取得状況: 取得不可",
+            Lang::English  => "Main tag status: unavailable",
+            Lang::Chinese  => "主要标签获取状态：无法获取",
+        }
+    }
+
+    pub fn key_status_click_hover(self) -> &'static str {
+        match self {
+            Lang::Japanese => "押すと、取得状況の説明を開く。",
+            Lang::English  => "Click to open an explanation of the status.",
+            Lang::Chinese  => "点击打开获取状态的说明。",
+        }
+    }
+
+    pub fn key_notice_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "主要タグの取得状況について",
+            Lang::English  => "About Main Tag Status",
+            Lang::Chinese  => "关于主要标签的获取状态",
+        }
+    }
+
+    /// 案内ダイアログの本文: 簡易取得のとき。
+    pub fn key_notice_body_simple(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このファイルの主要タグ（グループ・作者・キャラクターなど）は、ファイル名から簡易的に取得した名前です。\n\
+メタデータ（ComicInfo.xml・meta.json）から取得したものではないため、正確でない場合があります。\n\
+\n\
+【括弧が無くても取得できる場合】\n\
+次のどちらかの場合、ファイル名に括弧が無くても名前を取得できます。\n\
+・メタデータがあり、タグの自動抽出で付与済みの場合\n\
+・メインカテゴリなどを手動で正しく設定し、学習データに沿ってファイル名から抽出できる場合\n\
+\n\
+【正確に取得するには】\n\
+フォルダを開いて、タグ管理の「現フォルダファイルのタグ自動抽出＆付与」を実行してください。\n\
+フォルダを一度も開いていない場合は、メタデータの有無が未確認のため、簡易取得と表示されます。",
+            Lang::English => "The main tags (group, author, character, etc.) of this file are names detected simply from the file name.\n\
+They were not obtained from metadata (ComicInfo.xml / meta.json), so they may not be accurate.\n\
+\n\
+[Names can be detected even without brackets]\n\
+In either of the following cases, a name can be detected even if the file name has no brackets.\n\
+- The file has metadata and its tags were already assigned by automatic tag extraction\n\
+- You set the main category etc. correctly by hand, and the name can be extracted from the file name using the learning data\n\
+\n\
+[To get accurate results]\n\
+Open the folder and run \"Auto-extract & assign tags for files in current folder\" in Tag Manager.\n\
+If you have never opened the folder, the presence of metadata is unconfirmed, so the status is shown as simple detection.",
+            Lang::Chinese => "此文件的主要标签（团体、作者、角色等）是根据文件名简易获取的名称。\n\
+它们并非来自元数据（ComicInfo.xml / meta.json），因此可能不准确。\n\
+\n\
+【没有括号也能获取的情况】\n\
+在以下任一情况下，即使文件名没有括号也能获取名称。\n\
+・文件有元数据，且已通过标签自动提取完成分配\n\
+・手动正确设置了主类别等，并可依据学习数据从文件名中提取\n\
+\n\
+【要准确获取】\n\
+请打开文件夹，在标签管理中执行“当前文件夹文件的标签自动提取并分配”。\n\
+若从未打开过该文件夹，则元数据是否存在尚未确认，因此显示为简易获取。",
+        }
+    }
+
+    /// 案内ダイアログの本文: 取得不可のとき。
+    pub fn key_notice_body_unavailable(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このファイルからは、主要タグ（グループ・作者・キャラクターなど）を取得できませんでした。\n\
+\n\
+【取得できない理由】\n\
+・ファイルに主要タグが付いていません\n\
+・ファイル名からも判定できません（括弧などの手がかりが無い、または学習データに一致しません）\n\
+\n\
+【取得するには】\n\
+メタデータ（ComicInfo.xml・meta.json）があるファイルは、フォルダを開いて、タグ管理の「現フォルダファイルのタグ自動抽出＆付与」を実行してください。\n\
+メタデータが無いファイルは、メインカテゴリなどを手動で設定し、タグ抽出用の学習を行うと、ファイル名から取得できることがあります。",
+            Lang::English => "No main tags (group, author, character, etc.) could be obtained from this file.\n\
+\n\
+[Why they could not be obtained]\n\
+- No main tags are attached to the file\n\
+- They cannot be detected from the file name either (no clues such as brackets, or no match in the learning data)\n\
+\n\
+[To obtain them]\n\
+For files with metadata (ComicInfo.xml / meta.json), open the folder and run \"Auto-extract & assign tags for files in current folder\" in Tag Manager.\n\
+For files without metadata, setting the main category etc. by hand and training the tag extraction learning may allow names to be detected from the file name.",
+            Lang::Chinese => "无法从此文件获取主要标签（团体、作者、角色等）。\n\
+\n\
+【无法获取的原因】\n\
+・文件上没有主要标签\n\
+・也无法从文件名判断（没有括号等线索，或与学习数据不匹配）\n\
+\n\
+【获取方法】\n\
+对于有元数据（ComicInfo.xml / meta.json）的文件，请打开文件夹，在标签管理中执行“当前文件夹文件的标签自动提取并分配”。\n\
+对于没有元数据的文件，手动设置主类别等并进行标签提取学习后，有时可从文件名中获取。",
+        }
+    }
+
+    pub fn key_source_db(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイルに付いているタグから",
+            Lang::English  => "from the file's tags",
+            Lang::Chinese  => "来自文件的标签",
+        }
+    }
+
+    pub fn key_source_file_name(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイル名から判定",
+            Lang::English  => "detected from the file name",
+            Lang::Chinese  => "根据文件名判断",
+        }
+    }
+
+    pub fn key_pick_title(self, label: &str) -> String {
+        match self {
+            Lang::Japanese => format!("検索する「{label}」を選ぶ"),
+            Lang::English  => format!("Choose {label} to Search"),
+            Lang::Chinese  => format!("选择要搜索的“{label}”"),
+        }
+    }
+
+    pub fn key_pick_body(self) -> &'static str {
+        match self {
+            Lang::Japanese => "チェックした名前のどれかに当たるファイルを探す（複数チェックはOR）。",
+            Lang::English  => "Find files matching any of the checked names (multiple checks are OR).",
+            Lang::Chinese  => "搜索匹配任一已勾选名称的文件（多选为“或”）。",
+        }
+    }
+
+    pub fn key_pick_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "検索",
+            Lang::English  => "Search",
+            Lang::Chinese  => "搜索",
+        }
+    }
+
+    pub fn key_search_no_ledger(self) -> &'static str {
+        match self {
+            Lang::Japanese => "台帳（DB）が使えないため検索できない",
+            Lang::English  => "Cannot search because the ledger (DB) is unavailable",
+            Lang::Chinese  => "账本（DB）不可用，无法搜索",
+        }
+    }
+
+    /// タグチップの右クリックメニュー項目。`name` は右クリックした要素名（別名つきは主表記）。
+    pub fn tag_chip_search_menu(self, name: &str) -> String {
+        match self {
+            Lang::Japanese => format!("この要素名（{name}）をタグ検索"),
+            Lang::English  => format!("Tag search for this element ({name})"),
+            Lang::Chinese  => format!("按此元素（{name}）标签搜索"),
+        }
+    }
+
+    pub fn tag_chip_search_unset_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "未設定は検索できない",
+            Lang::English  => "\"Unset\" cannot be searched",
+            Lang::Chinese  => "“未设置”无法搜索",
+        }
+    }
+
+    pub fn key_search_busy(self) -> &'static str {
+        match self {
+            Lang::Japanese => "別の検索を実行中のため、条件だけ入れた（検索は同時に1つだけ。終わってから「検索開始」を押す）",
+            Lang::English  => "Another search is running, so only the conditions were entered (one search at a time; press Start when it finishes)",
+            Lang::Chinese  => "另一项搜索正在进行，仅填入了条件（同一时间只能搜索一项，结束后请点击“开始搜索”）",
+        }
+    }
+
     // ---- お気に入りタブ: 再紐付け・外す（relink_ui.rs） ----
 
     pub fn relink_menu(self) -> &'static str {
         match self {
-            Lang::Japanese => "移動先を指定して元ファイルを検索",
-            Lang::English  => "Specify Destination to Find Original",
-            Lang::Chinese  => "指定目标位置以查找原文件",
+            Lang::Japanese => "移動先を指定して再紐付け",
+            Lang::English  => "Specify Destination to Relink",
+            Lang::Chinese  => "指定目标位置并重新关联",
         }
     }
 
@@ -3398,7 +4182,7 @@ impl Lang {
     pub fn help_relink(self) -> HelpDoc {
         match self {
             Lang::Japanese => HelpDoc {
-                title: "移動先を指定して元ファイルを検索",
+                title: "移動先を指定して再紐付け",
                 sections: &[
                     (
                         "",
@@ -3565,6 +4349,7 @@ impl Lang {
         total: usize,
         errors: usize,
         replacing_old: bool,
+        id_gauge: Option<IdGaugeText>,
     ) -> String {
         let mut text = match self {
             Lang::Japanese => format!("サムネイル {current}/{total}"),
@@ -3584,6 +4369,20 @@ impl Lang {
                 Lang::English  => " Updating to the new format",
                 Lang::Chinese  => " 正在更新为新格式",
             });
+        }
+        // ファイルID取得状況は最右に書き添える。
+        match id_gauge {
+            None => {}
+            Some(IdGaugeText::Done) => text.push_str(match self {
+                Lang::Japanese => "（ID取得済）",
+                Lang::English  => " (IDs ready)",
+                Lang::Chinese  => "（ID已获取）",
+            }),
+            Some(IdGaugeText::Running { remaining }) => text.push_str(&match self {
+                Lang::Japanese => format!("（ID取得中/残り{remaining}件）"),
+                Lang::English  => format!(" (Fetching IDs / {remaining} left)"),
+                Lang::Chinese  => format!("（ID获取中/剩余{remaining}项）"),
+            }),
         }
         text
     }
@@ -3681,45 +4480,229 @@ impl Lang {
         }
     }
 
-    pub fn slot_label(self, n: usize) -> String {
+    /// エクスプローラーのメニューバーのソートボタンの先頭語（続けて現在の条件を並べる）。
+    pub fn sort_button_prefix(self) -> &'static str {
         match self {
-            Lang::Japanese => format!("[位置F{n}]"),
-            Lang::English  => format!("[SlotF{n}]"),
-            Lang::Chinese  => format!("[位置F{n}]"),
+            Lang::Japanese => "ソート",
+            Lang::English  => "Sort",
+            Lang::Chinese  => "排序",
+        }
+    }
+
+    /// エクスプローラーのソートメニューの、基本キー（名前・日付・サイズ）の見出し。
+    pub fn sort_menu_primary(self) -> &'static str {
+        match self {
+            Lang::Japanese => "基本キー",
+            Lang::English  => "Primary key",
+            Lang::Chinese  => "基本排序键",
+        }
+    }
+
+    /// エクスプローラーのソートメニューの、評価キー（スコア・訪問回数）の見出し。
+    pub fn sort_menu_rating(self) -> &'static str {
+        match self {
+            Lang::Japanese => "評価キー（任意）",
+            Lang::English  => "Rating key (optional)",
+            Lang::Chinese  => "评价排序键（可选）",
+        }
+    }
+
+    /// エクスプローラーのソートメニュー下部の補足。
+    pub fn sort_menu_rating_note(self) -> &'static str {
+        match self {
+            Lang::Japanese => "評価キーがONのときは評価キーが優先され、同順位を基本キーで並べる。任意キーの条件は選択中のボタンをもう一度押すと無効化可能。",
+            Lang::English  => "While a rating key is on it takes priority, and ties are ordered by the primary key. The optional key can be disabled by pressing its selected button again.",
+            Lang::Chinese  => "开启评价排序键时优先按其排序，相同时再按基本排序键。可选键的条件可通过再次点击已选中的按钮来取消。",
+        }
+    }
+
+    /// エクスプローラーのソートメニュー末尾、ビューアーのデフォルト（任意）の見出し。
+    pub fn sort_menu_viewer_default(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ビューアーのデフォルト（任意）",
+            Lang::English  => "Viewer default (optional)",
+            Lang::Chinese  => "查看器默认排序（可选）",
+        }
+    }
+
+    /// ソートメニュー末尾の注意書き（ビューアーのデフォルトより保存済みの条件が優先される）。
+    pub fn sort_menu_note(self) -> &'static str {
+        match self {
+            Lang::Japanese => "デフォルトキーが設定されていても、ソート条件を保存したファイルは保存された条件が優先されます。",
+            Lang::English  => "Even when a default key is set, files with a saved sort condition use the saved one.",
+            Lang::Chinese  => "即使设置了默认排序键，已保存排序条件的文件仍优先使用已保存的条件。",
+        }
+    }
+
+    /// ビューアー上部バー右寄せの「ウィンドウ位置」メニューボタン。
+    pub fn window_pos_menu_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ウィンドウ位置",
+            Lang::English  => "Window Position",
+            Lang::Chinese  => "窗口位置",
+        }
+    }
+
+    /// ビューアー上部バー最右端の「メニューバー自動ハイド」トグルボタン。
+    pub fn menubar_autohide_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "自動で隠す",
+            Lang::English  => "Auto-hide",
+            Lang::Chinese  => "自动隐藏",
+        }
+    }
+
+    pub fn menubar_autohide_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ONの間、このバーは普段は引っ込み、ウィンドウ上端にポインタを寄せると出る",
+            Lang::English  => "While ON, this bar stays hidden and appears when the pointer nears the top edge",
+            Lang::Chinese  => "开启时此栏平时隐藏，指针靠近窗口顶部时显示",
+        }
+    }
+
+    pub fn window_pos_apply(self) -> &'static str {
+        match self {
+            Lang::Japanese => "展開",
+            Lang::English  => "Apply",
+            Lang::Chinese  => "展开",
+        }
+    }
+
+    pub fn window_pos_record(self) -> &'static str {
+        match self {
+            Lang::Japanese => "記録",
+            Lang::English  => "Save",
+            Lang::Chinese  => "记录",
+        }
+    }
+
+    pub fn window_pos_delete(self) -> &'static str {
+        match self {
+            Lang::Japanese => "削除",
+            Lang::English  => "Delete",
+            Lang::Chinese  => "删除",
+        }
+    }
+
+    /// スロット未保存の行に出す文言（展開はno-op）。
+    pub fn window_pos_empty(self) -> &'static str {
+        match self {
+            Lang::Japanese => "記録なし",
+            Lang::English  => "Empty",
+            Lang::Chinese  => "无记录",
+        }
+    }
+
+    /// 行頭のキー名が取れない（キーボード未割り当て）ときの表示。
+    pub fn window_pos_key_none(self) -> &'static str {
+        "—"
+    }
+
+    /// 記録済みスロットの内容表示。モニター番号は1始まり。
+    pub fn window_pos_entry(self, monitor: Option<usize>, x: i32, y: i32, w: u32, h: u32) -> String {
+        let mon = match (self, monitor) {
+            (Lang::Japanese, Some(n)) => format!("モニター{n}"),
+            (Lang::English,  Some(n)) => format!("Monitor {n}"),
+            (Lang::Chinese,  Some(n)) => format!("显示器{n}"),
+            (Lang::Japanese, None)    => "モニター?".to_owned(),
+            (Lang::English,  None)    => "Monitor ?".to_owned(),
+            (Lang::Chinese,  None)    => "显示器?".to_owned(),
+        };
+        format!("{mon} ({x},{y}) {w}×{h}")
+    }
+
+    /// 「開いたとき自動展開」チェック（各行に1つ・排他）。
+    pub fn window_pos_auto_apply(self) -> &'static str {
+        match self {
+            Lang::Japanese => "開いたとき自動展開",
+            Lang::English  => "Auto-apply on open",
+            Lang::Chinese  => "打开时自动展开",
+        }
+    }
+
+    pub fn window_pos_auto_apply_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ビューアーを開くたびに、このスロットの位置・サイズを適用する。チェックは1つだけ（全て外すと適用しない）。未記録のスロットは何もしない。",
+            Lang::English  => "Apply this slot's position/size every time the viewer opens. Only one slot can be checked (uncheck all to disable). An empty slot does nothing.",
+            Lang::Chinese  => "每次打开查看器时应用此槽位的位置与大小。只能勾选一个（全部取消则不应用）。空槽位不执行任何操作。",
+        }
+    }
+
+    /// Wayland ネイティブで起動しているときの最上段の警告。
+    pub fn backend_wayland_warning(self) -> &'static str {
+        match self {
+            Lang::Japanese => "Waylandで起動している場合はこの機能は動作しません。XWaylandで実行しなおしてください",
+            Lang::English  => "This feature does not work when running on Wayland. Please restart under XWayland.",
+            Lang::Chinese  => "在 Wayland 下运行时此功能无法使用。请改用 XWayland 重新运行。",
+        }
+    }
+
+    pub fn backend_next_xwayland(self) -> &'static str {
+        match self {
+            Lang::Japanese => "次回起動時にXWaylandで起動する",
+            Lang::English  => "Start with XWayland next time",
+            Lang::Chinese  => "下次启动时使用 XWayland",
+        }
+    }
+
+    pub fn backend_xwayland_running(self) -> &'static str {
+        match self {
+            Lang::Japanese => "XWaylandで起動しています。",
+            Lang::English  => "Running under XWayland.",
+            Lang::Chinese  => "当前正在通过 XWayland 运行。",
+        }
+    }
+
+    pub fn backend_xwayland_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "もし不具合が生じていると判断した場合既定のWaylandモードで実行することをおすすめします",
+            Lang::English  => "If you suspect problems, we recommend running in the default Wayland mode.",
+            Lang::Chinese  => "如果您认为出现了问题，建议使用默认的 Wayland 模式运行。",
+        }
+    }
+
+    pub fn backend_next_wayland(self) -> &'static str {
+        match self {
+            Lang::Japanese => "次回起動時にWaylandで起動する",
+            Lang::English  => "Start with Wayland next time",
+            Lang::Chinese  => "下次启动时使用 Wayland",
+        }
+    }
+
+    /// XWayland を望まれたが DISPLAY が無く、Wayland のまま起動したとき。
+    pub fn backend_xwayland_unavailable(self) -> &'static str {
+        match self {
+            Lang::Japanese => "XWaylandが使えない（DISPLAYが見つからない）ため、Waylandで起動しました。",
+            Lang::English  => "XWayland is unavailable (DISPLAY not found), so Wayland was used.",
+            Lang::Chinese  => "无法使用 XWayland（未找到 DISPLAY），已使用 Wayland 启动。",
+        }
+    }
+
+    pub fn window_pos_overwrite_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ウィンドウ位置の上書き",
+            Lang::English  => "Overwrite window position",
+            Lang::Chinese  => "覆盖窗口位置",
+        }
+    }
+
+    pub fn window_pos_overwrite_body(self, key: &str) -> String {
+        match self {
+            Lang::Japanese => format!("{key} の記録済みの位置・サイズを、現在のビューアーの位置・サイズで上書きする？"),
+            Lang::English  => format!("Overwrite the saved position/size of {key} with the viewer's current position/size?"),
+            Lang::Chinese  => format!("用查看器当前的位置与大小覆盖 {key} 已记录的内容？"),
+        }
+    }
+
+    pub fn window_pos_overwrite_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "上書き",
+            Lang::English  => "Overwrite",
+            Lang::Chinese  => "覆盖",
         }
     }
 
     /// 言語選択コンボボックス用の、その言語自身の正式名称（現在の表示言語に依存しない）。
-    pub fn native_name(self) -> &'static str {
-        match self {
-            Lang::Japanese => "日本語",
-            Lang::English  => "English",
-            Lang::Chinese  => "简体中文",
-        }
-    }
-
-    pub fn scoring_toggle_button(self, on: bool) -> &'static str {
-        match (self, on) {
-            (Lang::Japanese, true)  => "スコアリングON",
-            (Lang::Japanese, false) => "スコアリングOFF",
-            (Lang::English, true)   => "Scoring: ON",
-            (Lang::English, false)  => "Scoring: OFF",
-            (Lang::Chinese, true)   => "评分：开",
-            (Lang::Chinese, false)  => "评分：关",
-        }
-    }
-
-    pub fn tool_palette_toggle_button(self, on: bool) -> &'static str {
-        match (self, on) {
-            (Lang::Japanese, true)  => "ツールボックスON",
-            (Lang::Japanese, false) => "ツールボックスOFF",
-            (Lang::English, true)   => "Toolbox: ON",
-            (Lang::English, false)  => "Toolbox: OFF",
-            (Lang::Chinese, true)   => "工具箱：开",
-            (Lang::Chinese, false)  => "工具箱：关",
-        }
-    }
-
     pub fn tag_main_edit_toggle_button(self, on: bool) -> &'static str {
         match (self, on) {
             (Lang::Japanese, true)  => "編集モードON",
@@ -3732,6 +4715,431 @@ impl Lang {
     }
 
     /// メインカテゴリの表示名。保存名は使わず、表示のたびに言語別へ差し替える
+    /// システムカテゴリ「アーカイブ形式」の初期名（作成後はユーザーが変更できる）
+    pub fn tag_system_archive_format_name(self) -> &'static str {
+        match self {
+            Lang::Japanese => "アーカイブ形式",
+            Lang::English  => "Archive format",
+            Lang::Chinese  => "压缩包格式",
+        }
+    }
+
+    /// アーカイブ形式カテゴリの、フォルダ本の要素名
+    pub fn tag_format_folder_name(self) -> &'static str {
+        match self {
+            Lang::Japanese => "フォルダ",
+            Lang::English  => "Folder",
+            Lang::Chinese  => "文件夹",
+        }
+    }
+
+    /// システムカテゴリの「－」が押せない理由（ヒント）
+    pub fn tag_manager_system_category_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "システムのカテゴリなので削除できません（名前・色・要素は変更できます）",
+            Lang::English  => "This is a system category and cannot be deleted (you can rename it, recolor it, and edit its elements)",
+            Lang::Chinese  => "这是系统分类，无法删除（可以修改名称、颜色和元素）",
+        }
+    }
+
+    /// カテゴリ削除の確認ダイアログ: タイトル
+    pub fn tag_manager_delete_category_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "カテゴリの削除",
+            Lang::English  => "Delete category",
+            Lang::Chinese  => "删除分类",
+        }
+    }
+
+    /// カテゴリ削除の確認ダイアログ: 本文（カテゴリ名・要素数）
+    pub fn tag_manager_delete_category_body(self, name: &str, elements: usize) -> String {
+        match self {
+            Lang::Japanese => format!("カテゴリ「{name}」（要素 {elements} 個）を削除します。このカテゴリの要素は、ファイルに付いていてもタグとして使えなくなります。"),
+            Lang::English  => format!("Delete the category \"{name}\" ({elements} elements)? Its elements will no longer work as tags, even on files that already have them."),
+            Lang::Chinese  => format!("将删除分类“{name}”（{elements} 个元素）。该分类的元素即使已附加在文件上，也将无法作为标签使用。"),
+        }
+    }
+
+    /// カテゴリ削除の確認ダイアログ: 実行ボタン
+    pub fn tag_manager_delete_category_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "削除する",
+            Lang::English  => "Delete",
+            Lang::Chinese  => "删除",
+        }
+    }
+
+    /// 「危険な設定」窓: 開くボタン
+    pub fn tag_danger_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "危険な設定",
+            Lang::English  => "Danger zone",
+            Lang::Chinese  => "危险设置",
+        }
+    }
+
+    pub fn tag_danger_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "危険な設定",
+            Lang::English  => "Danger zone",
+            Lang::Chinese  => "危险设置",
+        }
+    }
+
+    pub fn tag_danger_trial_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "試用中は使えません。先に確定か破棄をしてください",
+            Lang::English  => "Not available during a trial. Confirm or discard the trial first",
+            Lang::Chinese  => "试用期间无法使用。请先确认或放弃试用",
+        }
+    }
+
+    pub fn tag_danger_clear_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグのクリア",
+            Lang::English  => "Clear tags",
+            Lang::Chinese  => "清除标签",
+        }
+    }
+
+    pub fn tag_danger_clear_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグマスター（カテゴリ・要素）を初期状態に戻し、全ファイルのタグ付けも消します。一括タグ取得でやり直したいときに使います。評価・お気に入り・学習データは消えません。",
+            Lang::English  => "Resets the tag master (categories and elements) and removes the tags from every file. Use this to start over with bulk tag collection. Ratings, favorites and learning data are kept.",
+            Lang::Chinese  => "将标签主表（分类和元素）恢复为初始状态，并清除所有文件的标签。用于通过批量获取标签重新开始。评分、收藏和学习数据不会被清除。",
+        }
+    }
+
+    pub fn tag_danger_clear_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグを全部クリア…",
+            Lang::English  => "Clear all tags…",
+            Lang::Chinese  => "清除全部标签…",
+        }
+    }
+
+    pub fn tag_danger_clear_unavailable(self) -> &'static str {
+        match self {
+            Lang::Japanese => "いまは実行できません（データベースが開けない、または一括適用の実行中です）",
+            Lang::English  => "Cannot run now (the database is unavailable, or a bulk apply is running)",
+            Lang::Chinese  => "目前无法执行（数据库不可用，或正在执行批量应用）",
+        }
+    }
+
+    pub fn tag_danger_clear_confirm1_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグのクリア（1/2）",
+            Lang::English  => "Clear tags (1/2)",
+            Lang::Chinese  => "清除标签（1/2）",
+        }
+    }
+
+    pub fn tag_danger_clear_confirm1_body(self) -> &'static str {
+        match self {
+            Lang::Japanese => "次のものを消します。\n・タグマスター（カテゴリ・要素）を初期状態に戻す\n・全ファイルのタグ付け\n\n消さないもの: 評価・お気に入り・見開きなどの設定・学習データ\n\n実行の直前に、データベースのバックアップ世代とタグマスターの世代を自動で作ります。元に戻すには、設定の「DB」タブからDBの世代を復元し、タグ管理のロールバックでマスターを戻します。",
+            Lang::English  => "This will remove:\n- reset the tag master (categories and elements) to its initial state\n- the tags of every file\n\nKept: ratings, favorites, spread and other per-file settings, learning data\n\nJust before running, a database backup generation and a tag master generation are created automatically. To undo, restore the database generation from the \"DB\" settings tab and roll the tag master back from the tag manager.",
+            Lang::Chinese  => "将清除以下内容：\n・将标签主表（分类和元素）恢复为初始状态\n・所有文件的标签\n\n不会清除：评分、收藏、跨页等设置、学习数据\n\n执行前会自动创建数据库备份版本和标签主表版本。如需撤销，请在设置的“数据库”标签中恢复数据库版本，并在标签管理中回滚标签主表。",
+        }
+    }
+
+    pub fn tag_danger_clear_confirm2_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "本当にクリアしますか（2/2）",
+            Lang::English  => "Really clear? (2/2)",
+            Lang::Chinese  => "确定要清除吗（2/2）",
+        }
+    }
+
+    pub fn tag_danger_clear_confirm2_body(self) -> &'static str {
+        match self {
+            Lang::Japanese => "全ファイルのタグ付けとタグマスターを消します。この操作は取り消せません（バックアップから戻すことはできます）。実行しますか？",
+            Lang::English  => "This removes the tags of every file and resets the tag master. It cannot be undone (you can restore from the backups). Run it?",
+            Lang::Chinese  => "将清除所有文件的标签并重置标签主表。此操作无法撤销（可从备份恢复）。确定执行吗？",
+        }
+    }
+
+    pub fn tag_danger_clear_next(self) -> &'static str {
+        match self {
+            Lang::Japanese => "次へ",
+            Lang::English  => "Next",
+            Lang::Chinese  => "下一步",
+        }
+    }
+
+    pub fn tag_danger_clear_run(self) -> &'static str {
+        match self {
+            Lang::Japanese => "クリアする",
+            Lang::English  => "Clear",
+            Lang::Chinese  => "清除",
+        }
+    }
+
+    pub fn tag_danger_cleared_toast(self, records: usize) -> String {
+        match self {
+            Lang::Japanese => format!("タグをクリアしました（タグ付けの記録 {records}件を消去）"),
+            Lang::English  => format!("Tags cleared ({records} tag records removed)"),
+            Lang::Chinese  => format!("已清除标签（删除 {records} 条标签记录）"),
+        }
+    }
+
+    pub fn tag_danger_clear_failed_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグのクリアに失敗しました（何も変更していません）",
+            Lang::English  => "Failed to clear tags (nothing was changed)",
+            Lang::Chinese  => "清除标签失败（未做任何更改）",
+        }
+    }
+
+    pub fn tag_danger_recovery_none(self) -> &'static str {
+        match self {
+            Lang::Japanese => "リカバリポイントは未設定です",
+            Lang::English  => "No recovery point is set",
+            Lang::Chinese  => "尚未设置恢复点",
+        }
+    }
+
+    pub fn tag_danger_recovery_status(self, when: &str, db: &str, master: &str) -> String {
+        match self {
+            Lang::Japanese => format!("設定済み: {when}（DB {db} ＋ マスター {master}）"),
+            Lang::English  => format!("Set: {when} (DB {db} + master {master})"),
+            Lang::Chinese  => format!("已设置：{when}（数据库 {db} ＋ 主表 {master}）"),
+        }
+    }
+
+    pub fn tag_danger_recovery_delete_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "削除…",
+            Lang::English  => "Delete…",
+            Lang::Chinese  => "删除…",
+        }
+    }
+
+    pub fn tag_danger_recovery_overwrite_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "リカバリポイントの上書き",
+            Lang::English  => "Overwrite recovery point",
+            Lang::Chinese  => "覆盖恢复点",
+        }
+    }
+
+    pub fn tag_danger_recovery_overwrite_body(self) -> &'static str {
+        match self {
+            Lang::Japanese => "いまのタグマスターとデータベースで、設定済みのリカバリポイントを上書きします。前のリカバリポイントには戻せなくなります。",
+            Lang::English  => "Overwrites the existing recovery point with the current tag master and database. You will not be able to go back to the previous recovery point.",
+            Lang::Chinese  => "将用当前标签主表和数据库覆盖已设置的恢复点。之后无法再恢复到之前的恢复点。",
+        }
+    }
+
+    pub fn tag_danger_recovery_overwrite_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "上書きする",
+            Lang::English  => "Overwrite",
+            Lang::Chinese  => "覆盖",
+        }
+    }
+
+    pub fn tag_danger_recovery_delete_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "リカバリポイントの削除",
+            Lang::English  => "Delete recovery point",
+            Lang::Chinese  => "删除恢复点",
+        }
+    }
+
+    pub fn tag_danger_recovery_delete_body(self) -> &'static str {
+        match self {
+            Lang::Japanese => "リカバリポイントを削除します。保存してあるタグマスターとデータベースのコピーが消え、復元の予約があれば取り消されます。",
+            Lang::English  => "Deletes the recovery point. The saved copies of the tag master and database are removed, and any pending restore is cancelled.",
+            Lang::Chinese  => "将删除恢复点。已保存的标签主表和数据库副本会被删除，已预约的恢复也会取消。",
+        }
+    }
+
+    pub fn tag_danger_recovery_delete_ok(self) -> &'static str {
+        match self {
+            Lang::Japanese => "削除する",
+            Lang::English  => "Delete",
+            Lang::Chinese  => "删除",
+        }
+    }
+
+    pub fn tag_danger_recovery_set_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "リカバリポイントを設定しました",
+            Lang::English  => "Recovery point set",
+            Lang::Chinese  => "已设置恢复点",
+        }
+    }
+
+    pub fn tag_danger_recovery_deleted_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "リカバリポイントを削除しました",
+            Lang::English  => "Recovery point deleted",
+            Lang::Chinese  => "已删除恢复点",
+        }
+    }
+
+    /// ロールバック窓: リカバリポイントの行の見出し
+    pub fn tag_gen_recovery_row(self) -> &'static str {
+        match self {
+            Lang::Japanese => "リカバリポイント（固定）",
+            Lang::English  => "Recovery point (fixed)",
+            Lang::Chinese  => "恢复点（固定）",
+        }
+    }
+
+    pub fn tag_gen_recovery_row_hover(self) -> &'static str {
+        match self {
+            Lang::Japanese => "主にデバッグ用。タグマスターとデータベース全体を戻します（次回起動時に反映）",
+            Lang::English  => "Mainly for debugging. Restores the tag master and the whole database (applied at the next launch)",
+            Lang::Chinese  => "主要用于调试。恢复标签主表和整个数据库（下次启动时生效）",
+        }
+    }
+
+    pub fn tag_gen_recovery_pending(self) -> &'static str {
+        match self {
+            Lang::Japanese => "リカバリポイントへの復元を予約中です（次回起動時に反映）",
+            Lang::English  => "A restore to the recovery point is scheduled (applied at the next launch)",
+            Lang::Chinese  => "已预约恢复到恢复点（下次启动时生效）",
+        }
+    }
+
+    pub fn tag_gen_recovery_cancel(self) -> &'static str {
+        match self {
+            Lang::Japanese => "予約を取り消す",
+            Lang::English  => "Cancel",
+            Lang::Chinese  => "取消预约",
+        }
+    }
+
+    pub fn tag_gen_confirm_recovery_body(self, when: &str) -> String {
+        match self {
+            Lang::Japanese => format!("{when} に設定したリカバリポイントへ戻します。タグマスターとデータベース全体が、アプリの再起動時にまとめて戻ります。それ以降の評価・タグ・お気に入りなどの変更は失われます。いまのデータベースは退避、いまのマスターは世代に残ります。"),
+            Lang::English  => format!("Go back to the recovery point set at {when}. The tag master and the whole database are restored together when the app restarts, and changes made since then (ratings, tags, favorites, etc.) will be lost. The current database is kept as a pre-restore copy and the current master as a generation."),
+            Lang::Chinese  => format!("将恢复到 {when} 设置的恢复点。标签主表和整个数据库将在应用重启时一并恢复，此后的评分、标签、收藏等更改将丢失。当前数据库会作为备份保留，当前主表会保留为版本。"),
+        }
+    }
+
+    pub fn tag_gen_recovery_requested_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "リカバリポイントへの復元を予約しました。アプリの再起動で反映されます",
+            Lang::English  => "Restore to the recovery point scheduled. It takes effect when the app restarts",
+            Lang::Chinese  => "已预约恢复到恢复点，重启应用后生效",
+        }
+    }
+
+    pub fn tag_danger_recovery_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "リカバリポイント（主にデバッグ用）",
+            Lang::English  => "Recovery point (mainly for debugging)",
+            Lang::Chinese  => "恢复点（主要用于调试）",
+        }
+    }
+
+    pub fn tag_danger_recovery_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "いまのタグマスターとデータベース全体を、固定の1か所に保存します。ロールバックの一覧の最下段から、いつでも戻せます（ローテーションで消えません。復元は次回起動時に、マスターとDBをまとめて適用します）。",
+            Lang::English  => "Saves the current tag master and the whole database in one fixed slot. You can go back from the bottom of the rollback list at any time (it is never rotated away; the restore applies the master and database together at the next launch).",
+            Lang::Chinese  => "将当前标签主表和整个数据库保存到一个固定位置。可随时从回滚列表最下方恢复（不会被轮替删除；恢复将在下次启动时一并应用主表和数据库）。",
+        }
+    }
+
+    pub fn tag_danger_recovery_set_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "現在の状態をリカバリポイントに設定…",
+            Lang::English  => "Set current state as recovery point…",
+            Lang::Chinese  => "将当前状态设为恢复点…",
+        }
+    }
+
+    /// 世代窓: 開くボタン
+    pub fn tag_gen_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ロールバック",
+            Lang::English  => "Rollback",
+            Lang::Chinese  => "回滚",
+        }
+    }
+
+    pub fn tag_gen_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグマスターのロールバック",
+            Lang::English  => "Tag master rollback",
+            Lang::Chinese  => "标签主表回滚",
+        }
+    }
+
+    pub fn tag_gen_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグ管理を開いて編集するたびに、開く前の状態が履歴として自動で残ります。選んだ世代に戻せます（いまの状態も世代に残ります）。",
+            Lang::English  => "Each time you open the tag manager and edit, the state before opening is kept automatically. You can roll back to a selected generation (the current state is kept too).",
+            Lang::Chinese  => "每次打开标签管理并编辑时，打开前的状态会自动保留。可回滚到所选版本（当前状态也会保留）。",
+        }
+    }
+
+    pub fn tag_gen_current(self) -> &'static str {
+        match self {
+            Lang::Japanese => "現世代（採用中）",
+            Lang::English  => "Current (in use)",
+            Lang::Chinese  => "当前版本（使用中）",
+        }
+    }
+
+    pub fn tag_gen_empty(self) -> &'static str {
+        match self {
+            Lang::Japanese => "履歴はまだありません",
+            Lang::English  => "No history yet",
+            Lang::Chinese  => "暂无历史",
+        }
+    }
+
+    pub fn tag_gen_restore(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ロールバックする",
+            Lang::English  => "Roll back",
+            Lang::Chinese  => "回滚",
+        }
+    }
+
+    pub fn tag_gen_trial_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "試用中は戻せません。先に確定か破棄をしてください",
+            Lang::English  => "Cannot restore during a trial. Confirm or discard the trial first",
+            Lang::Chinese  => "试用期间无法恢复。请先确认或放弃试用",
+        }
+    }
+
+    pub fn tag_gen_confirm_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ロールバック",
+            Lang::English  => "Rollback",
+            Lang::Chinese  => "回滚",
+        }
+    }
+
+    pub fn tag_gen_confirm_body(self, when: &str) -> String {
+        match self {
+            Lang::Japanese => format!("{when} の状態に戻します。いまの状態は世代に残り、DBのバックアップも1つ作ります。ファイルに付いたタグは変わりませんが、その世代に無い要素のタグは使えなくなります。"),
+            Lang::English  => format!("Restore the tag master to its state at {when}. The current state is kept as a generation and a database backup is made. Tags on files are unchanged, but tags for elements missing from that generation will stop working."),
+            Lang::Chinese  => format!("将标签主表恢复到 {when} 的状态。当前状态会保留为版本，并创建一份数据库备份。文件上的标签不变，但该版本中不存在的元素的标签将无法使用。"),
+        }
+    }
+
+    pub fn tag_gen_restored_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグマスターをロールバックしました",
+            Lang::English  => "Tag master rolled back",
+            Lang::Chinese  => "已回滚标签主表",
+        }
+    }
+
+    pub fn tag_gen_restore_failed_toast(self) -> &'static str {
+        match self {
+            Lang::Japanese => "この世代を読み込めませんでした（何も変更していません）",
+            Lang::English  => "Could not read this generation (nothing was changed)",
+            Lang::Chinese  => "无法读取此版本（未做任何更改）",
+        }
+    }
+
     pub fn tag_main_category_name(self) -> &'static str {
         match self {
             Lang::Japanese => "メイン",
@@ -3763,6 +5171,1366 @@ impl Lang {
             Lang::Japanese => "メインカテゴリは要素0件を許容しないため、デフォルト要素を自動追加しました",
             Lang::English  => "The main category cannot be empty, so a default item was added automatically",
             Lang::Chinese  => "主分类不允许没有元素，已自动添加默认元素",
+        }
+    }
+
+
+    // ── タグ学習（日本語のみ。英・中は未実装＝None/空で、日本語にフォールバックする） ──
+    // 日本語の文言がまだ確定していないため、3言語化は文言確定後に行う（英・中の分岐に値を入れるだけで済む形にしてある）。
+
+    fn learn_pick(self, ja: &'static str, en: &'static str, zh: &'static str) -> &'static str {
+        let local = match self {
+            Lang::Japanese => ja,
+            Lang::English => en,
+            Lang::Chinese => zh,
+        };
+        if local.is_empty() { ja } else { local }
+    }
+
+    /// タグパネル: 学習データの件数の表示
+    pub fn tag_learn_status(self, n: usize) -> String {
+        let ja = if n == 0 { "未学習".to_string() } else { format!("学習済 {n}件") };
+        let local: Option<String> = match self {
+            Lang::Japanese => None,
+            Lang::English => Some(if n == 0 { "Not learned".to_string() } else { format!("Learned: {n}") }),
+            Lang::Chinese => Some(if n == 0 { "未学习".to_string() } else { format!("已学习 {n}条") }),
+        };
+        local.unwrap_or(ja)
+    }
+
+    pub fn tag_learn_status_hover(self) -> &'static str {
+        self.learn_pick("一括取得の判定を、振り分けたファイル名から学習した件数", "Number of file names you sorted that the bulk scan has learned from", "批量获取的判定所学习的、已归类文件名的数量")
+    }
+
+
+
+
+    /// 学習窓・ラベル窓（日本語のみ。英・中は空で日本語にフォールバック）
+    pub fn tag_learn_open_button(self) -> &'static str { self.learn_pick("タグ学習…", "Tag learning…", "标签学习…") }
+    pub fn tag_learn_window_title(self) -> &'static str { self.learn_pick("タグ抽出用データ学習", "Learn data for tag extraction", "标签提取用数据学习") }
+    pub fn tag_learn_label_window_title(self) -> &'static str { self.learn_pick("タグ抽出用データ学習 — ラベル付け", "Learn data for tag extraction — labeling", "标签提取用数据学习 — 标注") }
+    pub fn tag_learn_use_checkbox(self) -> &'static str { self.learn_pick("学習結果を使う（OFFなら従来のルールだけで判定）", "Use learned results (when off, only the conventional rules decide)", "使用学习结果（关闭时仅用原有规则判定）") }
+    pub fn tag_learn_estimate_none(self) -> &'static str { self.learn_pick("目安の一致率: 学習データが10件以上になると表示します", "Estimated match rate: shown once there are 10 or more learning items", "参考匹配率：学习数据达到10条以上后显示") }
+    pub fn tag_learn_estimate(self, percent: u32) -> String {
+        let ja = format!("目安の一致率 約{percent}%（学習データ内の5分割検証。件数が少ないと揺れが大きい）");
+        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => Some(format!("Estimated match rate: about {percent}% (5-fold validation within the learning data; fluctuates a lot when there are few items)")), Lang::Chinese => Some(format!("参考匹配率 约{percent}%（学习数据内的5折验证。条数较少时波动较大）")) };
+        local.unwrap_or(ja)
+    }
+    pub fn tag_learn_count_heading(self) -> &'static str { self.learn_pick("追加で学習する件数（現在のフォルダから選びます）", "Number of additional items to learn (picked from the current folder)", "追加学习的数量（从当前文件夹中选取）") }
+    pub fn tag_learn_count_label(self, n: usize) -> &'static str {
+        match n {
+            10 => self.learn_pick("10件　手軽だが不安定", "10 items – quick but unstable", "10条　简便但不稳定"),
+            20 => self.learn_pick("20件　バランス", "20 items – balanced", "20条　均衡"),
+            _ => self.learn_pick("30件　手堅い（手間は中程度）", "30 items – solid (moderate effort)", "30条　稳妥（工作量适中）"),
+        }
+    }
+    pub fn tag_learn_folder_info(self, available: usize, will_pick: usize) -> String {
+        let ja = format!("このフォルダの対象: 括弧のある未学習のファイル {available}件 → {will_pick}件を選びます");
+        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => Some(format!("Targets in this folder: {available} unlearned files with brackets → {will_pick} will be picked")), Lang::Chinese => Some(format!("此文件夹的对象：带括号的未学习文件 {available} 个 → 将选取 {will_pick} 个")) };
+        local.unwrap_or(ja)
+    }
+    pub fn tag_learn_start_button(self) -> &'static str { self.learn_pick("学習を始める", "Start learning", "开始学习") }
+    pub fn tag_learn_start_disabled_hover(self) -> &'static str { self.learn_pick("括弧のある未学習のファイルが、現在のフォルダにありません", "There are no unlearned files with brackets in the current folder", "当前文件夹中没有带括号的未学习文件") }
+    pub fn tag_learn_close_button(self) -> &'static str { self.learn_pick("閉じる", "Close", "关闭") }
+    pub fn tag_learn_label_help(self) -> &'static str { self.learn_pick("ファイル名の括弧ごとに種別を確認し、違うものだけ直してください。直した行は確認済みになります。", "Check the kind of each bracket in the file name and fix only the wrong ones. Rows you fix become confirmed.", "请逐个确认文件名中括号的种类，只修改不对的。修改过的行会变为已确认。") }
+    pub fn tag_learn_confirmed_count(self, confirmed: usize, total: usize) -> String {
+        let ja = format!("確認済 {confirmed}/{total}");
+        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => Some(format!("Confirmed {confirmed}/{total}")), Lang::Chinese => Some(format!("已确认 {confirmed}/{total}")) };
+        local.unwrap_or(ja)
+    }
+    pub fn tag_learn_confirm_all(self) -> &'static str { self.learn_pick("すべて確認済にする", "Mark all as confirmed", "全部标记为已确认") }
+    pub fn tag_learn_commit_button(self) -> &'static str { self.learn_pick("学習する", "Learn", "学习") }
+    pub fn tag_learn_commit_hover(self, confirmed: usize, total: usize) -> String {
+        let ja = if confirmed < total { format!("確認済の{confirmed}件だけで学習します（未確認の行は学習しません）") } else { "確認済のすべてで学習します".to_string() };
+        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => Some(if confirmed < total { format!("Learns from only the {confirmed} confirmed rows (unconfirmed rows are not learned)") } else { "Learns from all confirmed rows".to_string() }), Lang::Chinese => Some(if confirmed < total { format!("仅使用已确认的 {confirmed} 条进行学习（未确认的行不会被学习）") } else { "使用所有已确认的行进行学习".to_string() }) };
+        local.unwrap_or(ja)
+    }
+    pub fn tag_learn_commit_disabled_hover(self) -> &'static str { self.learn_pick("確認済の行がありません", "No confirmed rows", "没有已确认的行") }
+    pub fn tag_learn_cancel_button(self) -> &'static str { self.learn_pick("キャンセル", "Cancel", "取消") }
+    pub fn tag_learn_done_toast(self, n: usize) -> String {
+        let ja = format!("{n}件を学習しました");
+        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => Some(format!("Learned {n} items")), Lang::Chinese => Some(format!("已学习 {n} 条")) };
+        local.unwrap_or(ja)
+    }
+    pub fn tag_learn_save_failed_toast(self) -> &'static str { self.learn_pick("学習データを保存できませんでした", "Could not save the learning data", "无法保存学习数据") }
+
+
+    pub fn tag_confirm_review_learned(self) -> &'static str { self.learn_pick("要確認: 学習で無視と判定", "Needs review: judged to be ignored by learning", "需确认：经学习被判定为忽略") }
+    pub fn tag_confirm_role_performer(self) -> &'static str { self.learn_pick("演者", "Performer", "演员") }
+    pub fn tag_confirm_role_character(self) -> &'static str { self.learn_pick("キャラ", "Character", "角色") }
+    pub fn tag_confirm_role_parody(self) -> &'static str { self.learn_pick("パロディ元", "Parody", "原作") }
+    pub fn tag_confirm_role_attribute(self) -> &'static str { self.learn_pick("属性", "Attribute", "属性") }
+    pub fn tag_confirm_role_year_month(self) -> &'static str { self.learn_pick("年月", "Year-Month", "年月") }
+    /// タグ抽出ルールの入口（仮。日本語のみ。英・中は空で日本語にフォールバック）
+    /// 「タグ管理」メニューの項目（日本語のみ。英・中は空で日本語にフォールバック）
+    pub fn tag_menu_learn_item(self) -> &'static str { self.learn_pick("現フォルダに対するタグ抽出用学習…", "Learn for tag extraction in the current folder…", "针对当前文件夹的标签提取学习…") }
+    pub fn tag_menu_learn_use(self) -> &'static str { self.learn_pick("学習内容を使う", "Use learned content", "使用学习内容") }
+    pub fn tag_menu_scan_item(self) -> &'static str { self.learn_pick("現フォルダファイルのタグ自動抽出＆付与", "Auto-extract and apply tags for files in the current folder", "自动提取并添加当前文件夹文件的标签") }
+    pub fn tag_menu_edit_item(self) -> &'static str { self.learn_pick("タグ・カテゴリ編集", "Edit tags and categories", "编辑标签和分类") }
+    pub fn tag_rules_open_button(self) -> &'static str { self.learn_pick("（上級者向け）タグ抽出ルール定義開始", "(Advanced) Define tag extraction rules", "（高级用户）开始定义标签提取规则") }
+    pub fn tag_rules_open_hover(self) -> &'static str { self.learn_pick("タグ取得の前処理（AI generated・cosplay などのタグ抽出ルール）の一覧を開く", "Open the list of preprocessing rules for tag extraction (e.g. AI generated, cosplay)", "打开标签获取预处理（AI generated、cosplay 等标签提取规则）的列表") }
+    /// メニューの項目の右に出す、ルールの件数（有効 / 全部）。
+    pub fn tag_rules_count(self, enabled: usize, total: usize) -> String {
+        match self {
+            Lang::Japanese => if total == 0 { "ルール無し".to_string() } else { format!("有効 {enabled}件 / 全{total}件") },
+            Lang::English  => if total == 0 { "No rules".to_string() } else { format!("{enabled} on / {total} total") },
+            Lang::Chinese  => if total == 0 { "无规则".to_string() } else { format!("启用 {enabled} 条 / 共 {total} 条") },
+        }
+    }
+    pub fn tag_rules_list_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "有効・無効の切り替え、削除、コピーは、押したときに保存されます。取得の確認ウィンドウをすでに開いている間は、次の取得から反映されます。",
+            Lang::English  => "Toggling, deleting and copying are saved immediately. A confirmation window that is already open keeps its old rules; changes apply from the next collection.",
+            Lang::Chinese  => "启用/停用、删除和复制会立即保存。已打开的确认窗口不受影响，下次获取时生效。",
+        }
+    }
+    pub fn tag_rules_toggle(self, on: bool) -> &'static str {
+        match (self, on) {
+            (Lang::Japanese, true)  => "● 有効",
+            (Lang::Japanese, false) => "○ 無効",
+            (Lang::English, true)   => "● On",
+            (Lang::English, false)  => "○ Off",
+            (Lang::Chinese, true)   => "● 启用",
+            (Lang::Chinese, false)  => "○ 停用",
+        }
+    }
+    pub fn tag_rules_edit_button(self) -> &'static str {
+        match self { Lang::Japanese => "編集", Lang::English => "Edit", Lang::Chinese => "编辑" }
+    }
+
+    pub fn tag_rules_delete_button(self) -> &'static str {
+        match self { Lang::Japanese => "削除", Lang::English => "Delete", Lang::Chinese => "删除" }
+    }
+    pub fn tag_rules_delete_ask(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このルールを削除する?",
+            Lang::English  => "Delete this rule?",
+            Lang::Chinese  => "删除此规则？",
+        }
+    }
+    pub fn tag_rules_delete_do(self) -> &'static str {
+        match self { Lang::Japanese => "削除する", Lang::English => "Delete", Lang::Chinese => "删除" }
+    }
+    pub fn tag_rules_delete_cancel(self) -> &'static str {
+        match self { Lang::Japanese => "やめる", Lang::English => "Cancel", Lang::Chinese => "取消" }
+    }
+    pub fn tag_rules_copy_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "既に設定したルールをコピーして編集",
+            Lang::English  => "Copy an existing rule to edit",
+            Lang::Chinese  => "复制已有规则后编辑",
+        }
+    }
+    pub fn tag_rules_copy_button(self) -> &'static str {
+        match self { Lang::Japanese => "コピー開始", Lang::English => "Copy", Lang::Chinese => "开始复制" }
+    }
+    pub fn tag_rules_copy_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "選んだルールの条件と結果を引き継いだ、新しいルールを一覧に足します。",
+            Lang::English  => "Adds a new rule to the list with the conditions and effects of the selected rule.",
+            Lang::Chinese  => "将所选规则的条件和效果复制为一条新规则，加入列表。",
+        }
+    }
+    pub fn tag_rules_copy_suffix(self) -> &'static str {
+        match self { Lang::Japanese => " のコピー", Lang::English => " (copy)", Lang::Chinese => "（副本）" }
+    }
+    pub fn tag_rules_copied(self, name: &str) -> String {
+        match self {
+            Lang::Japanese => format!("「{name}」をコピーしました"),
+            Lang::English  => format!("Copied \"{name}\""),
+            Lang::Chinese  => format!("已复制“{name}”"),
+        }
+    }
+    pub fn tag_rules_restore_button(self) -> &'static str {
+        match self { Lang::Japanese => "初期ルールを足し直す", Lang::English => "Restore initial rules", Lang::Chinese => "补回初始规则" }
+    }
+    pub fn tag_rules_restore_hover(self) -> &'static str {
+        match self {
+            Lang::Japanese => "削除した初期ルールを、「無効」で足し直します。同じ名前のルールがあれば足しません。",
+            Lang::English  => "Adds back deleted initial rules as disabled. Rules with the same name are not added again.",
+            Lang::Chinese  => "将已删除的初始规则以“停用”状态补回。已有同名规则时不会重复添加。",
+        }
+    }
+    pub fn tag_rules_restore_none(self) -> &'static str {
+        match self {
+            Lang::Japanese => "足す初期ルールはありません",
+            Lang::English  => "No initial rules to add",
+            Lang::Chinese  => "没有需要补回的初始规则",
+        }
+    }
+    pub fn tag_rules_restored(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("初期ルールを{n}件足しました（無効）"),
+            Lang::English  => format!("Added {n} initial rule(s) (disabled)"),
+            Lang::Chinese  => format!("已补回 {n} 条初始规则（停用）"),
+        }
+    }
+    pub fn tag_rules_enable_needs_effect(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このルールは効果が空のため、有効にできません（効果を選んでから有効にします）",
+            Lang::English  => "This rule has no effect yet, so it cannot be enabled (choose an effect first)",
+            Lang::Chinese  => "此规则尚未设置效果，无法启用（请先选择效果）",
+        }
+    }
+    pub fn tag_rules_save_failed(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ルールを保存できませんでした。変更は反映していません",
+            Lang::English  => "Could not save the rules. The change was not applied",
+            Lang::Chinese  => "无法保存规则，更改未生效",
+        }
+    }
+    pub fn tag_rules_step_name(self, i: usize) -> &'static str {
+        match (self, i) {
+            (Lang::Japanese, 0) => "① 名前",
+            (Lang::Japanese, 1) => "② 条件",
+            (Lang::Japanese, 2) => "③ 結果",
+            (Lang::Japanese, _) => "④ 確認",
+            (Lang::English, 0)  => "1 Name",
+            (Lang::English, 1)  => "2 Conditions",
+            (Lang::English, 2)  => "3 Effects",
+            (Lang::English, _)  => "4 Review",
+            (Lang::Chinese, 0)  => "① 名称",
+            (Lang::Chinese, 1)  => "② 条件",
+            (Lang::Chinese, 2)  => "③ 效果",
+            (Lang::Chinese, _)  => "④ 确认",
+        }
+    }
+    pub fn tag_rules_step_pending_hover(self) -> &'static str {
+        match self {
+            Lang::Japanese => "この画面は準備中です",
+            Lang::English  => "This step is not available yet",
+            Lang::Chinese  => "此步骤准备中",
+        }
+    }
+    pub fn tag_rules_name_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このルールの名前",
+            Lang::English  => "Name of this rule",
+            Lang::Chinese  => "此规则的名称",
+        }
+    }
+    pub fn tag_rules_name_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "一覧に出る名前です。有効・無効の切り替えと削除は、一覧のカードから行います。",
+            Lang::English  => "Shown in the list. Enabling, disabling and deleting are done from the cards in the list.",
+            Lang::Chinese  => "显示在列表中。启用/停用和删除请在列表的卡片上进行。",
+        }
+    }
+    pub fn tag_rules_cond_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "どんなファイルに当てはめる?",
+            Lang::English  => "Which files does this rule apply to?",
+            Lang::Chinese  => "适用于哪些文件？",
+        }
+    }
+    pub fn tag_rules_cond_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "文字列は、ファイル名・info.txt の見出し行・Category・題名を、自動ですべて見ます。",
+            Lang::English  => "Text is checked automatically against the file name, the info.txt title lines, Category and the title.",
+            Lang::Chinese  => "文字串会自动检查文件名、info.txt 的标题行、Category 和标题。",
+        }
+    }
+    pub fn tag_rules_text_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "文字列",
+            Lang::English  => "Text",
+            Lang::Chinese  => "文字串",
+        }
+    }
+    pub fn tag_rules_how_contains(self) -> &'static str {
+        match self {
+            Lang::Japanese => "を含む",
+            Lang::English  => "contains",
+            Lang::Chinese  => "包含",
+        }
+    }
+    pub fn tag_rules_how_prefix(self) -> &'static str {
+        match self {
+            Lang::Japanese => "で始まる",
+            Lang::English  => "starts with",
+            Lang::Chinese  => "开头为",
+        }
+    }
+    pub fn tag_rules_how_exact(self) -> &'static str {
+        match self {
+            Lang::Japanese => "と一致する",
+            Lang::English  => "equals",
+            Lang::Chinese  => "完全一致",
+        }
+    }
+    pub fn tag_rules_shape_prefix(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイル名が",
+            Lang::English  => "File name has the form",
+            Lang::Chinese  => "文件名的形式为",
+        }
+    }
+    pub fn tag_rules_shape_suffix(self) -> &'static str {
+        match self {
+            Lang::Japanese => "の形（区切りは、前後に半角スペースのある「 - 」）",
+            Lang::English  => "(separator: \" - \" with spaces on both sides)",
+            Lang::Chinese  => "（分隔符为前后带空格的“ - ”）",
+        }
+    }
+    pub fn tag_rules_add_text(self) -> &'static str {
+        match self {
+            Lang::Japanese => "+ 文字列の条件",
+            Lang::English  => "+ Text condition",
+            Lang::Chinese  => "+ 文字串条件",
+        }
+    }
+    pub fn tag_rules_add_shape(self) -> &'static str {
+        match self {
+            Lang::Japanese => "+ ファイル名の形",
+            Lang::English  => "+ File name form",
+            Lang::Chinese  => "+ 文件名形式",
+        }
+    }
+    pub fn tag_rules_unlimit(self) -> &'static str {
+        match self {
+            Lang::Japanese => "限定を解除",
+            Lang::English  => "Remove limit",
+            Lang::Chinese  => "解除限定",
+        }
+    }
+    pub fn tag_rules_limited(self, targets: &str) -> String {
+        match self {
+            Lang::Japanese => format!("対象を限定中: {targets}"),
+            Lang::English  => format!("Limited to: {targets}"),
+            Lang::Chinese  => format!("已限定对象：{targets}"),
+        }
+    }
+    pub fn tag_rules_target_file_name(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイル名",
+            Lang::English  => "File name",
+            Lang::Chinese  => "文件名",
+        }
+    }
+    pub fn tag_rules_target_info_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "info.txtの見出し行",
+            Lang::English  => "info.txt title lines",
+            Lang::Chinese  => "info.txt 标题行",
+        }
+    }
+    pub fn tag_rules_target_info_category(self) -> &'static str {
+        match self {
+            Lang::Japanese => "info.txtのCategory",
+            Lang::English  => "info.txt Category",
+            Lang::Chinese  => "info.txt 的 Category",
+        }
+    }
+    pub fn tag_rules_target_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "題名",
+            Lang::English  => "Title",
+            Lang::Chinese  => "标题",
+        }
+    }
+    pub fn tag_rules_mode_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "条件が複数あるとき:",
+            Lang::English  => "With several conditions:",
+            Lang::Chinese  => "有多个条件时：",
+        }
+    }
+    pub fn tag_rules_mode_any(self) -> &'static str {
+        match self {
+            Lang::Japanese => "いずれかに当てはまる",
+            Lang::English  => "Any matches",
+            Lang::Chinese  => "满足任一条件",
+        }
+    }
+    pub fn tag_rules_mode_all(self) -> &'static str {
+        match self {
+            Lang::Japanese => "すべてに当てはまる",
+            Lang::English  => "All match",
+            Lang::Chinese  => "满足所有条件",
+        }
+    }
+    pub fn tag_rules_back_to_list(self) -> &'static str {
+        match self {
+            Lang::Japanese => "← 一覧へ",
+            Lang::English  => "← Back to list",
+            Lang::Chinese  => "← 返回列表",
+        }
+    }
+    pub fn tag_rules_prev(self) -> &'static str {
+        match self {
+            Lang::Japanese => "戻る",
+            Lang::English  => "Back",
+            Lang::Chinese  => "上一步",
+        }
+    }
+    pub fn tag_rules_next(self) -> &'static str {
+        match self {
+            Lang::Japanese => "次へ",
+            Lang::English  => "Next",
+            Lang::Chinese  => "下一步",
+        }
+    }
+    pub fn tag_rules_save_and_back(self) -> &'static str {
+        match self {
+            Lang::Japanese => "保存して一覧へ",
+            Lang::English  => "Save and back to list",
+            Lang::Chinese  => "保存并返回列表",
+        }
+    }
+    pub fn tag_rules_save_blocked_hover(self) -> &'static str {
+        match self {
+            Lang::Japanese => "❗の付いたステップを直すと、保存できます",
+            Lang::English  => "Fix the steps marked with ❗ to save",
+            Lang::Chinese  => "修正标有 ❗ 的步骤后即可保存",
+        }
+    }
+    pub fn tag_rules_leave_ask(self) -> &'static str {
+        match self {
+            Lang::Japanese => "変更が保存されていません。破棄しますか?",
+            Lang::English  => "There are unsaved changes. Discard them?",
+            Lang::Chinese  => "有未保存的更改。要放弃吗？",
+        }
+    }
+    pub fn tag_rules_leave_discard(self) -> &'static str {
+        match self {
+            Lang::Japanese => "破棄する",
+            Lang::English  => "Discard",
+            Lang::Chinese  => "放弃",
+        }
+    }
+    pub fn tag_rules_leave_stay(self) -> &'static str {
+        match self {
+            Lang::Japanese => "編集を続ける",
+            Lang::English  => "Keep editing",
+            Lang::Chinese  => "继续编辑",
+        }
+    }
+    pub fn tag_rules_err_name_empty(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ルールの名前を入力してください",
+            Lang::English  => "Enter a name for the rule",
+            Lang::Chinese  => "请输入规则名称",
+        }
+    }
+    pub fn tag_rules_err_name_dup(self) -> &'static str {
+        match self {
+            Lang::Japanese => "同じ名前のルールがあります",
+            Lang::English  => "A rule with the same name already exists",
+            Lang::Chinese  => "已有同名规则",
+        }
+    }
+    pub fn tag_rules_err_no_condition(self) -> &'static str {
+        match self {
+            Lang::Japanese => "条件がありません。条件を1つ以上足してください",
+            Lang::English  => "No conditions. Add at least one",
+            Lang::Chinese  => "没有条件。请至少添加一个",
+        }
+    }
+    pub fn tag_rules_err_text_empty(self) -> &'static str {
+        match self {
+            Lang::Japanese => "文字列が空の条件があります",
+            Lang::English  => "There is a condition with empty text",
+            Lang::Chinese  => "有文字串为空的条件",
+        }
+    }
+    pub fn tag_rules_new_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "+ 空のルール",
+            Lang::English  => "+ New rule",
+            Lang::Chinese  => "+ 空规则",
+        }
+    }
+    pub fn tag_rules_new_name(self) -> &'static str {
+        match self {
+            Lang::Japanese => "新しいルール",
+            Lang::English  => "New rule",
+            Lang::Chinese  => "新规则",
+        }
+    }
+    pub fn tag_rules_saved(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ルールを保存しました",
+            Lang::English  => "Rule saved",
+            Lang::Chinese  => "已保存规则",
+        }
+    }
+    pub fn tag_rules_describe_text(self, text: &str, how: &str) -> String {
+        match self {
+            Lang::Japanese => format!("「{text}」{how}"),
+            Lang::English  => format!("\"{text}\" {how}"),
+            Lang::Chinese  => format!("“{text}”{how}"),
+        }
+    }
+    pub fn tag_rules_describe_shape(self, shape: &str) -> String {
+        match self {
+            Lang::Japanese => format!("ファイル名が {shape} の形"),
+            Lang::English  => format!("File name has the form {shape}"),
+            Lang::Chinese  => format!("文件名形式为 {shape}"),
+        }
+    }
+    pub fn tag_rules_effect_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "当てはまったら、種類ごとにどうする?",
+            Lang::English  => "When it matches, what to do for each kind?",
+            Lang::Chinese  => "满足条件时，各类别如何处理？",
+        }
+    }
+    pub fn tag_rules_effect_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "「無効」にした種類の言及は、候補から外れ、「未採用・要確認」で残ります。",
+            Lang::English  => "Mentions of a kind set to \"Off\" are dropped from the candidates and kept as \"not adopted / needs review\".",
+            Lang::Chinese  => "设为“停用”的类别，其提及会从候选中移除，并以“未采用、需确认”保留。",
+        }
+    }
+    pub fn tag_rules_effect_group_existing(self) -> &'static str {
+        match self {
+            Lang::Japanese => "従来の種類（属性・年月は、XML/JSONがあるときに取ります）",
+            Lang::English  => "Existing kinds (Attribute and Year-Month are taken when XML/JSON is present)",
+            Lang::Chinese  => "现有类别（属性和年月在有 XML/JSON 时获取）",
+        }
+    }
+    pub fn tag_rules_effect_group_new(self) -> &'static str {
+        match self {
+            Lang::Japanese => "新しい種類",
+            Lang::English  => "New kinds",
+            Lang::Chinese  => "新类别",
+        }
+    }
+    pub fn tag_rules_effect_new_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "新しい種類は、普段は取りません。「有効」にしたルールが当てはまったファイルだけ取ります。",
+            Lang::English  => "New kinds are not collected normally. They are collected only for files matched by a rule that sets them to \"On\".",
+            Lang::Chinese  => "新类别平时不获取，仅在设为“启用”的规则匹配的文件上获取。",
+        }
+    }
+    pub fn tag_rules_eff_none(self) -> &'static str {
+        match self {
+            Lang::Japanese => "そのまま",
+            Lang::English  => "As is",
+            Lang::Chinese  => "不变",
+        }
+    }
+    pub fn tag_rules_eff_disable(self) -> &'static str {
+        match self {
+            Lang::Japanese => "無効",
+            Lang::English  => "Off",
+            Lang::Chinese  => "停用",
+        }
+    }
+    pub fn tag_rules_eff_enable(self) -> &'static str {
+        match self {
+            Lang::Japanese => "有効",
+            Lang::English  => "On",
+            Lang::Chinese  => "启用",
+        }
+    }
+    pub fn tag_rules_err_effect_empty(self) -> &'static str {
+        match self {
+            Lang::Japanese => "効果がありません。種類を1つ以上選ぶか、一覧でこのルールを無効にしてください",
+            Lang::English  => "No effect is set. Choose at least one kind, or disable this rule in the list",
+            Lang::Chinese  => "未设置效果。请至少选择一个类别，或在列表中停用此规则",
+        }
+    }
+    pub fn tag_rules_review_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このルールの内容",
+            Lang::English  => "Summary of this rule",
+            Lang::Chinese  => "此规则的内容",
+        }
+    }
+    pub fn tag_rules_trial_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ためし判定",
+            Lang::English  => "Test",
+            Lang::Chinese  => "试判定",
+        }
+    }
+    pub fn tag_rules_trial_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイル名などを入れると、このルールが当てはまるかを確かめられます（保存はされません）。",
+            Lang::English  => "Enter a file name and so on to check whether this rule matches (nothing is saved).",
+            Lang::Chinese  => "输入文件名等，可检查此规则是否匹配（不会保存）。",
+        }
+    }
+    pub fn tag_rules_trial_file_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイル名（例: [Circle (Author)] Book [AI Generated].zip）",
+            Lang::English  => "File name (e.g. [Circle (Author)] Book [AI Generated].zip)",
+            Lang::Chinese  => "文件名（例：[Circle (Author)] Book [AI Generated].zip）",
+        }
+    }
+    pub fn tag_rules_trial_titles_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "info.txt の見出し行（任意・複数行可）",
+            Lang::English  => "info.txt title lines (optional, multiple lines allowed)",
+            Lang::Chinese  => "info.txt 标题行（可选，可多行）",
+        }
+    }
+    pub fn tag_rules_trial_category_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "info.txt の Category（任意）",
+            Lang::English  => "info.txt Category (optional)",
+            Lang::Chinese  => "info.txt 的 Category（可选）",
+        }
+    }
+    pub fn tag_rules_trial_need_file(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ファイル名を入れると、判定します",
+            Lang::English  => "Enter a file name to run the test",
+            Lang::Chinese  => "输入文件名后进行判定",
+        }
+    }
+    pub fn tag_rules_trial_hit(self) -> &'static str {
+        match self {
+            Lang::Japanese => "当てはまる",
+            Lang::English  => "Matches",
+            Lang::Chinese  => "匹配",
+        }
+    }
+    pub fn tag_rules_trial_miss(self) -> &'static str {
+        match self {
+            Lang::Japanese => "当てはまらない",
+            Lang::English  => "Does not match",
+            Lang::Chinese  => "不匹配",
+        }
+    }
+    pub fn tag_rules_trial_no_effect(self) -> &'static str {
+        match self {
+            Lang::Japanese => "効果なし（どの種類も「そのまま」）",
+            Lang::English  => "No effect (every kind is \"As is\")",
+            Lang::Chinese  => "无效果（所有类别均为“不变”）",
+        }
+    }
+    pub fn tag_rules_trial_effect_disable(self, list: &str) -> String {
+        match self {
+            Lang::Japanese => format!("無効にする種類: {list}"),
+            Lang::English  => format!("Kinds turned off: {list}"),
+            Lang::Chinese  => format!("停用的类别：{list}"),
+        }
+    }
+    pub fn tag_rules_trial_effect_enable(self, list: &str) -> String {
+        match self {
+            Lang::Japanese => format!("有効にする種類: {list}"),
+            Lang::English  => format!("Kinds turned on: {list}"),
+            Lang::Chinese  => format!("启用的类别：{list}"),
+        }
+    }
+    pub fn tag_rules_trial_disabled_note(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このルールは無効のため、実際の取得では成立しません（効果は、有効にしたと仮定して表示しています）",
+            Lang::English  => "This rule is disabled, so it does not take effect in a real collection (effects are shown as if enabled)",
+            Lang::Chinese  => "此规则已停用，实际获取时不会生效（效果按启用状态显示）",
+        }
+    }
+    pub fn tag_rules_window_title(self) -> &'static str { self.learn_pick("タグ抽出ルール定義", "Tag extraction rules", "标签提取规则定义") }
+    pub fn tag_rules_empty(self) -> &'static str { self.learn_pick("ルールはありません", "No rules", "没有规则") }
+    pub fn tag_rules_disabled(self) -> &'static str { self.learn_pick("（無効）", "(disabled)", "（停用）") }
+    pub fn tag_rules_summary(self, conditions: usize, match_all: bool, disable: &str, enable: &str) -> String {
+        let mode = if match_all { "すべて" } else { "いずれか" };
+        let dash = |s: &str| if s.is_empty() { "なし".to_string() } else { s.to_string() };
+        let ja = format!("条件 {conditions}件（{mode}） / 無効: {} / 有効: {}", dash(disable), dash(enable));
+        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => Some({ let m = if match_all { "all" } else { "any" }; let d = |x: &str| if x.is_empty() { "none".to_string() } else { x.to_string() }; format!("Conditions: {conditions} ({m}) / Disable: {} / Enable: {}", d(disable), d(enable)) }), Lang::Chinese => Some({ let m = if match_all { "全部" } else { "任一" }; let d = |x: &str| if x.is_empty() { "无".to_string() } else { x.to_string() }; format!("条件 {conditions} 个（{m}） / 停用：{} / 启用：{}", d(disable), d(enable)) }) };
+        local.unwrap_or(ja)
+    }
+    pub fn tag_rules_reload_button(self) -> &'static str { self.learn_pick("再読込", "Reload", "重新加载") }
+    pub fn tag_rules_reload_hover(self) -> &'static str { self.learn_pick("設定フォルダのルールファイルを読み直す", "Reload the rule file from the settings folder", "重新读取设置文件夹中的规则文件") }
+    pub fn tag_rules_reloaded(self, n: usize) -> String {
+        let ja = format!("タグ抽出ルールを読み込みました（{n}件）");
+        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => Some(format!("Loaded the tag extraction rules ({n})")), Lang::Chinese => Some(format!("已加载标签提取规则（{n}条）")) };
+        local.unwrap_or(ja)
+    }
+    pub fn tag_rules_reload_failed(self) -> &'static str { self.learn_pick("ルールファイルを読み込めませんでした（形式が壊れているか、新しい版です）", "Could not read the rule file (the format is broken or it is from a newer version)", "无法读取规则文件（格式已损坏，或是较新的版本）") }
+    pub fn tag_learn_view_button(self) -> &'static str { self.learn_pick("既存の学習データを見る", "View existing learning data", "查看已有的学习数据") }
+    pub fn tag_learn_clear_button(self) -> &'static str { self.learn_pick("既存の学習データを全て消去", "Delete all existing learning data", "清除所有已有的学习数据") }
+    pub fn tag_learn_clear_confirm(self) -> &'static str { self.learn_pick("学習データをすべて消去します。元に戻せません。", "All learning data will be deleted. This cannot be undone.", "将清除所有学习数据，且无法恢复。") }
+    pub fn tag_learn_clear_do(self) -> &'static str { self.learn_pick("消去する", "Delete", "清除") }
+    pub fn tag_learn_clear_cancel(self) -> &'static str { self.learn_pick("やめる", "Cancel", "取消") }
+    pub fn tag_learn_viewer_title(self) -> &'static str { self.learn_pick("学習済みデータ一覧", "Learned data list", "已学习数据列表") }
+    pub fn tag_learn_viewer_empty(self) -> &'static str { self.learn_pick("学習データはありません", "No learning data", "没有学习数据") }
+    pub fn tag_learn_viewer_back(self) -> &'static str { self.learn_pick("戻る", "Back", "返回") }
+    pub fn tag_learn_viewer_delete(self) -> &'static str { self.learn_pick("削除", "Delete", "删除") }
+    pub fn tag_learn_viewer_no_labels(self) -> &'static str { self.learn_pick("（ラベルなし＝括弧はすべて無視）", "(no labels = all brackets ignored)", "（无标注＝所有括号均被忽略）") }
+    pub fn tag_learn_viewer_remove_label_hover(self) -> &'static str { self.learn_pick("このラベルだけ消す", "Remove only this label", "仅删除此标注") }
+    pub fn tag_learn_intro_title(self) -> &'static str { self.learn_pick("タグ学習のご案内", "About tag learning", "标签学习说明") }
+    pub fn tag_learn_intro_body(self) -> &'static str { self.learn_pick("学習データがありません。数十件のファイル名で判定を学習させると、作者・グループ・イベントなどの判定が改善します。", "There is no learning data. Teaching the judgment with a few dozen file names improves the detection of authors, groups, events and so on.", "目前没有学习数据。用几十个文件名来学习判定，可以改善对作者、团体、活动等的判定。") }
+    pub fn tag_learn_intro_start(self) -> &'static str { self.learn_pick("学習する", "Learn", "学习") }
+    pub fn tag_learn_intro_skip(self) -> &'static str { self.learn_pick("今回は学習せず取得", "Scan without learning this time", "本次不学习，直接获取") }
+    pub fn tag_learn_intro_hide(self) -> &'static str { self.learn_pick("今後このご案内を表示しない", "Do not show this guide again", "今后不再显示此说明") }
+    pub fn tag_learn_add_menu(self) -> &'static str { self.learn_pick("タグ学習に追加…", "Add to tag learning…", "添加到标签学习…") }
+    pub fn tag_learn_add_menu_disabled(self) -> &'static str { self.learn_pick("括弧のないファイル名は学習できません", "File names without brackets cannot be learned", "不带括号的文件名无法学习") }
+    /// ラベルの種別名（ドロップダウンの表示）
+    pub fn tag_learn_label_name(self, label: crate::tag_corpus::Label) -> &'static str {
+        use crate::tag_corpus::Label;
+        match label {
+            Label::Author => self.learn_pick("作者", "Author", "作者"),
+            Label::Group => self.learn_pick("グループ", "Group", "团体"),
+            Label::Event => self.learn_pick("イベント", "Event", "活动"),
+            Label::Language => self.learn_pick("言語", "Language", "语言"),
+            Label::Ignore => self.learn_pick("無視", "Ignore", "忽略"),
+        }
+    }
+
+    pub fn tag_trial_banner(self) -> &'static str {
+        match self {
+            Lang::Japanese => "試用中",
+            Lang::English  => "Trial",
+            Lang::Chinese  => "试用中",
+        }
+    }
+
+    pub fn tag_trial_banner_hover(self) -> &'static str {
+        match self {
+            Lang::Japanese => "適用したタグは仮の状態です。使い心地を見て、確定か破棄を選んでください",
+            Lang::English  => "The applied tags are provisional. Try them out, then confirm or discard",
+            Lang::Chinese  => "已应用的标签为临时状态。试用后请选择确认或放弃",
+        }
+    }
+
+    pub fn tag_trial_confirm_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "確定",
+            Lang::English  => "Confirm",
+            Lang::Chinese  => "确认",
+        }
+    }
+
+    pub fn tag_trial_confirm_hover(self) -> &'static str {
+        match self {
+            Lang::Japanese => "仮のタグマスターを本物にします",
+            Lang::English  => "Make the provisional tag master permanent",
+            Lang::Chinese  => "将临时标签主表设为正式",
+        }
+    }
+
+    pub fn tag_trial_discard_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "破棄",
+            Lang::English  => "Discard",
+            Lang::Chinese  => "放弃",
+        }
+    }
+
+    pub fn tag_trial_discard_hover(self) -> &'static str {
+        match self {
+            Lang::Japanese => "適用で足したタグを外し、タグマスターを適用前に戻します",
+            Lang::English  => "Remove the tags added by the apply and restore the tag master",
+            Lang::Chinese  => "移除应用时添加的标签，并将标签主表恢复原状",
+        }
+    }
+
+    pub fn tag_trial_discard_no_db(self) -> &'static str {
+        match self {
+            Lang::Japanese => "データベースを開けていないため、破棄できません",
+            Lang::English  => "Cannot discard because the database is not open",
+            Lang::Chinese  => "数据库未打开，无法放弃",
+        }
+    }
+
+    pub fn tag_trial_confirm_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "試用の確定",
+            Lang::English  => "Confirm the trial",
+            Lang::Chinese  => "确认试用",
+        }
+    }
+
+    pub fn tag_trial_confirm_body(self) -> &'static str {
+        match self {
+            Lang::Japanese => "仮のタグマスターを本物にします。確定すると、適用前の状態には戻せなくなります（適用前に作ったデータベースのバックアップ世代からは復元できます）。",
+            Lang::English  => "The provisional tag master becomes permanent. After this, the pre-apply state cannot be restored here (you can still restore the database backup made before the apply).",
+            Lang::Chinese  => "临时标签主表将变为正式。确认后无法在此恢复到应用前的状态（仍可使用应用前创建的数据库备份恢复）。",
+        }
+    }
+
+    pub fn tag_trial_discard_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "試用の破棄",
+            Lang::English  => "Discard the trial",
+            Lang::Chinese  => "放弃试用",
+        }
+    }
+
+    pub fn tag_trial_discard_body(self, files: usize, ids: usize) -> String {
+        match self {
+            Lang::Japanese => format!("適用で足した {ids} 件のタグ（{files} ファイル）を外し、タグマスターを適用前に戻します。試用中にタグ管理で行った編集も失われます。適用のあとに手で付けたタグには触りません。"),
+            Lang::English  => format!("The {ids} tag(s) added by the apply ({files} file(s)) will be removed and the tag master restored. Edits made in the tag manager during the trial are lost too. Tags you added by hand afterwards are kept."),
+            Lang::Chinese  => format!("将移除应用时添加的 {ids} 个标签（{files} 个文件），并恢复标签主表。试用期间在标签管理中的编辑也会丢失。应用之后手动添加的标签不受影响。"),
+        }
+    }
+
+    pub fn tag_confirm_reattach(self) -> &'static str {
+        match self {
+            Lang::Japanese => "前回の自動付与分を外して付け直す",
+            Lang::English  => "Remove previous auto-tags and re-apply",
+            Lang::Chinese  => "移除上次自动标记后重新标记",
+        }
+    }
+
+    pub fn tag_confirm_reattach_hover(self) -> &'static str {
+        match self {
+            Lang::Japanese => "前回「確定」した自動付与のうち、いまも付いているタグを先に外してから、今回の分を付けます。手動で付けたタグには触れません。「破棄」すると、外した分も元に戻ります。",
+            Lang::English  => "Before applying, removes the tags that were auto-applied at the last confirmation and are still attached, then applies this time's tags. Tags you added manually are left alone. \"Discard\" restores the removed tags.",
+            Lang::Chinese  => "先移除上次确认时自动添加且仍存在的标签，再添加本次的标签。手动添加的标签不会被改动。“放弃”时会恢复被移除的标签。",
+        }
+    }
+
+    pub fn tag_trial_confirmed_record_failed(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("確定しました。ただし{n}件のファイルは、自動付与の記録を残せませんでした（ファイルが見つからない等）"),
+            Lang::English  => format!("Confirmed. However, the auto-tagging record could not be saved for {n} file(s) (e.g. file not found)"),
+            Lang::Chinese  => format!("已确认。但有{n}个文件未能保存自动标记记录（例如找不到文件）"),
+        }
+    }
+
+    pub fn tag_trial_confirmed(self) -> &'static str {
+        match self {
+            Lang::Japanese => "試用を確定しました",
+            Lang::English  => "Trial confirmed",
+            Lang::Chinese  => "已确认试用",
+        }
+    }
+
+    pub fn tag_trial_confirm_failed(self) -> &'static str {
+        match self {
+            Lang::Japanese => "確定に失敗しました（試用中のままです）",
+            Lang::English  => "Failed to confirm (still in trial)",
+            Lang::Chinese  => "确认失败（仍处于试用中）",
+        }
+    }
+
+    pub fn tag_trial_discard_progress(self) -> &'static str {
+        match self {
+            Lang::Japanese => "試用を破棄しています…",
+            Lang::English  => "Discarding the trial…",
+            Lang::Chinese  => "正在放弃试用…",
+        }
+    }
+
+    pub fn tag_trial_resumed(self) -> &'static str {
+        match self {
+            Lang::Japanese => "一括タグ付けの試用中です。タグパネルの「確定」か「破棄」を選んでください",
+            Lang::English  => "A bulk-tagging trial is in progress. Choose Confirm or Discard in the tag panel",
+            Lang::Chinese  => "批量打标签正在试用中。请在标签面板中选择“确认”或“放弃”",
+        }
+    }
+
+    pub fn tag_trial_discarded(self, r: &crate::tag_trial::DiscardReport) -> String {
+        let (ja, en, zh) = (
+            if r.missing > 0 { format!("・見つからず{}件", r.missing) } else { String::new() },
+            if r.missing > 0 { format!(", not found {}", r.missing) } else { String::new() },
+            if r.missing > 0 { format!("、未找到 {} 个", r.missing) } else { String::new() },
+        );
+        let (fja, fen, fzh) = (
+            if r.failed > 0 { format!("・失敗{}件", r.failed) } else { String::new() },
+            if r.failed > 0 { format!(", failed {}", r.failed) } else { String::new() },
+            if r.failed > 0 { format!("、失败 {} 个", r.failed) } else { String::new() },
+        );
+        match self {
+            Lang::Japanese => format!("試用を破棄しました: タグを外したファイル{}件（変化なし{}件{}{}）", r.restored, r.unchanged, ja, fja),
+            Lang::English  => format!("Trial discarded: tags removed from {} file(s) (unchanged {}{}{})", r.restored, r.unchanged, en, fen),
+            Lang::Chinese  => format!("已放弃试用：已从 {} 个文件移除标签（无变化 {} 个{}{}）", r.restored, r.unchanged, zh, fzh),
+        }
+    }
+
+    pub fn tag_scan_trial_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "試用中です。先に確定か破棄をしてください",
+            Lang::English  => "A trial is in progress. Confirm or discard it first",
+            Lang::Chinese  => "正在试用中，请先确认或放弃",
+        }
+    }
+
+    pub fn tag_apply_record_failed(self) -> &'static str {
+        match self {
+            Lang::Japanese => "試用の記録を保存できなかったため、適用を中止しました（何も変更していません）",
+            Lang::English  => "Could not save the trial record, so the apply was aborted (nothing was changed)",
+            Lang::Chinese  => "无法保存试用记录，已中止应用（未做任何更改）",
+        }
+    }
+
+    pub fn tag_scan_unavailable_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "フォルダ（仮想フォルダを含む）を表示していて、アーカイブがあるときだけ使えます",
+            Lang::English  => "Available only while viewing a folder (virtual folders included) that contains archives",
+            Lang::Chinese  => "仅在查看包含压缩包的文件夹（含虚拟文件夹）时可用",
+        }
+    }
+
+    /// 走査中の進捗表示
+    pub fn tag_scan_progress(self, done: usize, total: usize) -> String {
+        match self {
+            Lang::Japanese => format!("タグ情報を取得中… {done} / {total}"),
+            Lang::English  => format!("Collecting tag info… {done} / {total}"),
+            Lang::Chinese  => format!("正在获取标签信息… {done} / {total}"),
+        }
+    }
+
+    /// 走査完了のトースト（info.txt あり／なし／対象外の内訳）
+    pub fn tag_scan_done(self, total: usize, found: usize, absent: usize, other: usize) -> String {
+        match self {
+            Lang::Japanese => format!("{total}件を走査: info.txt あり {found}件 / なし {absent}件 / zip以外 {other}件"),
+            Lang::English  => format!("Scanned {total}: info.txt found {found} / none {absent} / non-zip {other}"),
+            Lang::Chinese  => format!("已扫描 {total} 个：有 info.txt {found} 个 / 无 {absent} 个 / 非 zip {other} 个"),
+        }
+    }
+
+    /// 候補生成の結果（件数は 形式・メイン・言語・イベント・作者・グループ の順）と、窓ごとの新規要素数・警告
+    pub fn tag_candidates_summary(self, counts: [usize; 6], new_elements: (usize, usize)) -> String {
+        let [f, m, l, e, a, g] = counts;
+        let (w1, w2) = new_elements;
+        match self {
+            Lang::Japanese => format!("候補: 形式{f}・カテゴリ{m}・言語{l}・イベント{e}・作者{a}・グループ{g} / 新規要素 窓1:{w1}個 窓2:{w2}個"),
+            Lang::English  => format!("Candidates: format {f}, category {m}, language {l}, event {e}, author {a}, group {g} / new elements: window1 {w1}, window2 {w2}"),
+            Lang::Chinese  => format!("候选：格式{f}、类别{m}、语言{l}、活动{e}、作者{a}、团体{g} / 新元素：窗口1 {w1}、窗口2 {w2}"),
+        }
+    }
+
+    pub fn tag_confirm_title_one(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグ候補の確認 (1/2): 形式・カテゴリ・言語・イベント",
+            Lang::English  => "Confirm tag candidates (1/2): format, category, language, event",
+            Lang::Chinese  => "确认标签候选 (1/2)：格式、类别、语言、活动",
+        }
+    }
+
+    pub fn tag_confirm_title_two(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグ候補の確認 (2/2): 作者・グループ",
+            Lang::English  => "Confirm tag candidates (2/2): authors and groups",
+            Lang::Chinese  => "确认标签候选 (2/2)：作者、团体",
+        }
+    }
+
+    pub fn tag_confirm_opt_width(self) -> &'static str {
+        match self {
+            Lang::Japanese => "全角半角",
+            Lang::English  => "Full/half width",
+            Lang::Chinese  => "全角半角",
+        }
+    }
+
+    pub fn tag_confirm_opt_space(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スペース無視",
+            Lang::English  => "Ignore spaces",
+            Lang::Chinese  => "忽略空格",
+        }
+    }
+
+    pub fn tag_confirm_opt_hyphen(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ハイフン・アンダーバー無視",
+            Lang::English  => "Ignore hyphens/underscores",
+            Lang::Chinese  => "忽略连字符/下划线",
+        }
+    }
+
+    pub fn tag_confirm_opt_symbols(self) -> &'static str {
+        match self {
+            Lang::Japanese => "特殊文字を除く",
+            Lang::English  => "Remove special characters",
+            Lang::Chinese  => "去除特殊字符",
+        }
+    }
+
+    pub fn tag_confirm_opt_romaji(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ローマ字の表記ゆれ",
+            Lang::English  => "Romaji spelling variants",
+            Lang::Chinese  => "罗马字拼写差异",
+        }
+    }
+
+    pub fn tag_confirm_threshold(self) -> &'static str {
+        match self {
+            Lang::Japanese => "類似度のしきい値",
+            Lang::English  => "Similarity threshold",
+            Lang::Chinese  => "相似度阈值",
+        }
+    }
+
+
+
+
+
+
+
+
+    pub fn tag_confirm_empty(self) -> &'static str {
+        match self {
+            Lang::Japanese => "表示する候補がありません",
+            Lang::English  => "No candidates to show",
+            Lang::Chinese  => "没有可显示的候选",
+        }
+    }
+
+
+    pub fn tag_confirm_back(self) -> &'static str {
+        match self {
+            Lang::Japanese => "戻る",
+            Lang::English  => "Back",
+            Lang::Chinese  => "返回",
+        }
+    }
+
+
+    pub fn tag_confirm_apply_pending(self) -> &'static str {
+        match self {
+            Lang::Japanese => "いまは適用できません（DBが使えないか、適用中です）",
+            Lang::English  => "Cannot apply now (the database is unavailable or an apply is in progress)",
+            Lang::Chinese  => "目前无法应用（数据库不可用或正在应用）",
+        }
+    }
+
+    pub fn tag_confirm_no_candidates(self) -> &'static str {
+        match self {
+            Lang::Japanese => "付けられるタグ候補がありませんでした",
+            Lang::English  => "No tag candidates were found",
+            Lang::Chinese  => "没有可添加的标签候选",
+        }
+    }
+
+    pub fn tag_confirm_role_format(self) -> &'static str {
+        match self {
+            Lang::Japanese => "アーカイブ形式",
+            Lang::English  => "Archive format",
+            Lang::Chinese  => "压缩包格式",
+        }
+    }
+
+    pub fn tag_confirm_role_main(self) -> &'static str {
+        match self {
+            Lang::Japanese => "カテゴリ（メインタグ）",
+            Lang::English  => "Category (main tag)",
+            Lang::Chinese  => "类别（主标签）",
+        }
+    }
+
+    pub fn tag_confirm_role_language(self) -> &'static str {
+        match self {
+            Lang::Japanese => "言語",
+            Lang::English  => "Language",
+            Lang::Chinese  => "语言",
+        }
+    }
+
+    pub fn tag_confirm_role_event(self) -> &'static str {
+        match self {
+            Lang::Japanese => "イベント",
+            Lang::English  => "Event",
+            Lang::Chinese  => "活动",
+        }
+    }
+
+    pub fn tag_confirm_role_author(self) -> &'static str {
+        match self {
+            Lang::Japanese => "作者",
+            Lang::English  => "Authors",
+            Lang::Chinese  => "作者",
+        }
+    }
+
+    pub fn tag_confirm_role_group(self) -> &'static str {
+        match self {
+            Lang::Japanese => "グループ",
+            Lang::English  => "Groups",
+            Lang::Chinese  => "团体",
+        }
+    }
+
+
+
+    /// 「DB」タブ: 一括タグ取得の、カテゴリごとの新規要素数の上限
+    pub fn settings_tag_new_limit_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "一括タグ取得: 1カテゴリあたりの新規要素の上限",
+            Lang::English  => "Bulk tag collection: new-element limit per category",
+            Lang::Chinese  => "批量获取标签：每个分类的新元素上限",
+        }
+    }
+
+    pub fn settings_tag_new_limit_value(self, n: u32) -> String {
+        match self {
+            Lang::Japanese => format!("{n} 個"),
+            Lang::English  => format!("{n}"),
+            Lang::Chinese  => format!("{n} 个"),
+        }
+    }
+
+    pub fn settings_tag_new_limit_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "作者・グループなど、カテゴリごとに数えます。上限を超えると、確認ウィンドウで「5000個拡張する」か「上限を維持して切り捨てる」かを選べます。",
+            Lang::English  => "Counted per category (author, group, etc.). When exceeded, the confirmation window lets you either expand the limit by 5000 or keep it and cut the excess.",
+            Lang::Chinese  => "按分类（作者、团体等）分别计数。超过上限时，可在确认窗口中选择“扩展5000个”或“保持上限并舍弃超出部分”。",
+        }
+    }
+
+    /// 設定窓（DB）: 新規に登録する要素の主表記の言語
+    pub fn settings_tag_register_name_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "新規要素の登録表記",
+            Lang::English  => "Name form for new elements",
+            Lang::Chinese  => "新建元素的登记写法",
+        }
+    }
+
+    pub fn settings_tag_register_name_follow(self) -> &'static str {
+        match self {
+            Lang::Japanese => "表示言語に合わせる",
+            Lang::English  => "Follow display language",
+            Lang::Chinese  => "跟随显示语言",
+        }
+    }
+
+    pub fn settings_tag_register_name_japanese(self) -> &'static str {
+        match self {
+            Lang::Japanese => "日本語優先",
+            Lang::English  => "Japanese first",
+            Lang::Chinese  => "日语优先",
+        }
+    }
+
+    pub fn settings_tag_register_name_english(self) -> &'static str {
+        match self {
+            Lang::Japanese => "英語優先",
+            Lang::English  => "English first",
+            Lang::Chinese  => "英语优先",
+        }
+    }
+
+    pub fn settings_tag_register_name_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "一括タグ取得で新しく作る要素の主表記（A|B の先頭）を選びます。英日の表記が両方あるときだけ効き、もう一方は別名になります。すでに登録した要素は書き換えません。表示言語に合わせると、日本語表示なら日本語、それ以外は英字だけの表記になります。",
+            Lang::English  => "Chooses the main form (the first of A|B) of elements newly created by the bulk tag collection. It only matters when both an English and a Japanese form exist; the other becomes an alias. Existing elements are never rewritten. \"Follow display language\" uses Japanese for the Japanese UI and the Latin-only form otherwise.",
+            Lang::Chinese  => "选择批量获取标签时新建元素的主写法（A|B 的第一项）。仅在同时存在英文和日文写法时生效，另一种写法作为别名。已登记的元素不会被改写。“跟随显示语言”在日语界面下使用日文写法，其他界面使用纯英文写法。",
+        }
+    }
+
+
+
+    /// 上限超過ダイアログ: 1カテゴリぶんの行
+    pub fn tag_limit_row(self, category: &str, new_count: usize, over: usize) -> String {
+        match self {
+            Lang::Japanese => format!("・{category}: 新規 {new_count}個（{over}個超過）"),
+            Lang::English  => format!("- {category}: {new_count} new ({over} over)"),
+            Lang::Chinese  => format!("- {category}：新增 {new_count} 个（超出 {over} 个）"),
+        }
+    }
+
+    pub fn tag_limit_expand(self, step: usize) -> String {
+        match self {
+            Lang::Japanese => format!("{step}個拡張する"),
+            Lang::English  => format!("Expand by {step}"),
+            Lang::Chinese  => format!("扩展{step}个"),
+        }
+    }
+
+    pub fn tag_limit_keep(self) -> &'static str {
+        match self {
+            Lang::Japanese => "上限を維持する",
+            Lang::English  => "Keep the limit",
+            Lang::Chinese  => "保持上限",
+        }
+    }
+
+    /// 確認ウィンドウ: 上限のため除いた件数の表示。`rows` は「作者 123個」などを並べたもの。
+    pub fn tag_confirm_truncated(self, rows: &str) -> String {
+        match self {
+            Lang::Japanese => format!("⚠ 上限のため、新規登録しない要素があります（{rows}）。その要素が付くはずだったファイルにはタグが付きません"),
+            Lang::English  => format!("⚠ Some elements are not registered because of the limit ({rows}). Files that would have received them get no tag"),
+            Lang::Chinese  => format!("⚠ 因上限，部分元素不会新建（{rows}）。本应附带这些元素的文件将不会获得标签"),
+        }
+    }
+
+    pub fn tag_confirm_limit_pending(self) -> &'static str {
+        match self {
+            Lang::Japanese => "新規要素が上限を超えています。拡張するか、上限を維持するかを選んでください",
+            Lang::English  => "New elements exceed the limit. Choose to expand it or keep it",
+            Lang::Chinese  => "新元素超过上限。请选择扩展或保持上限",
+        }
+    }
+
+
+
+
+
+
+
+    pub fn tag_confirm_filter_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "名前で絞り込み",
+            Lang::English  => "Filter by name",
+            Lang::Chinese  => "按名称筛选",
+        }
+    }
+
+    pub fn tag_confirm_filter_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "別名を含む部分一致",
+            Lang::English  => "Partial match (incl. aliases)",
+            Lang::Chinese  => "部分匹配（含别名）",
+        }
+    }
+
+
+
+
+
+
+
+
+    pub fn tag_confirm_primary_alias(self) -> &'static str {
+        match self {
+            Lang::Japanese => "先頭見出しにする別名",
+            Lang::English  => "Alias shown first",
+            Lang::Chinese  => "作为首要显示的别名",
+        }
+    }
+
+
+    pub fn tag_confirm_merge_err_too_few(self) -> &'static str {
+        match self {
+            Lang::Japanese => "まとめるには2件以上チェックしてください",
+            Lang::English  => "Check at least 2 rows to merge",
+            Lang::Chinese  => "请至少勾选 2 项",
+        }
+    }
+
+    pub fn tag_confirm_merge_err_mixed(self) -> &'static str {
+        match self {
+            Lang::Japanese => "種類が違う行はまとめられません",
+            Lang::English  => "Rows of different kinds cannot be merged",
+            Lang::Chinese  => "不同种类的行无法合并",
+        }
+    }
+
+    pub fn tag_confirm_merge_err_multiple(self, a: &str, b: &str) -> String {
+        match self {
+            Lang::Japanese => format!("異なる既存要素「{a}」「{b}」に一致するため、まとめられません（既存要素どうしの統合は非対応）"),
+            Lang::English  => format!("Cannot merge: matches different existing elements \"{a}\" and \"{b}\" (merging existing elements is not supported)"),
+            Lang::Chinese  => format!("无法合并：匹配了不同的现有元素“{a}”“{b}”（不支持合并现有元素）"),
+        }
+    }
+
+    pub fn tag_confirm_merge_err_overlap(self, alias: &str, element: &str) -> String {
+        match self {
+            Lang::Japanese => format!("別名「{alias}」が既存要素「{element}」の別名と重なるため、まとめられません"),
+            Lang::English  => format!("Cannot merge: alias \"{alias}\" overlaps the existing element \"{element}\""),
+            Lang::Chinese  => format!("无法合并：别名“{alias}”与现有元素“{element}”重叠"),
+        }
+    }
+
+    pub fn tag_rename_review_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "既存要素の名前の書き換え",
+            Lang::English  => "Renaming existing elements",
+            Lang::Chinese  => "重命名现有元素",
+        }
+    }
+
+    pub fn tag_rename_review_intro(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("次の既存要素{n}個に別名を追加して、名前を書き換えます（適用前にDBのバックアップを取ります）。"),
+            Lang::English  => format!("{n} existing element(s) will be renamed by adding aliases (the DB is backed up first)."),
+            Lang::Chinese  => format!("将为 {n} 个现有元素添加别名并重命名（应用前会备份数据库）。"),
+        }
+    }
+
+    pub fn tag_rename_review_conflicts(self, n: usize) -> String {
+        match self {
+            Lang::Japanese => format!("別名が他の要素と重なるため、名前を書き換えない候補が{n}件あります（タグだけ付きます）。"),
+            Lang::English  => format!("{n} candidate(s) will not be renamed because the alias overlaps another element (tags are still applied)."),
+            Lang::Chinese  => format!("有 {n} 项因别名与其他元素重叠而不会重命名（仍会添加标签）。"),
+        }
+    }
+
+    pub fn tag_rename_review_apply(self) -> &'static str {
+        match self {
+            Lang::Japanese => "このまま適用",
+            Lang::English  => "Apply",
+            Lang::Chinese  => "应用",
+        }
+    }
+
+    pub fn tag_confirm_apply_none(self) -> &'static str {
+        match self {
+            Lang::Japanese => "付けるタグがありません（採用された候補がありません）",
+            Lang::English  => "Nothing to apply (no adopted candidates)",
+            Lang::Chinese  => "没有可应用的标签（没有已采用的候选）",
+        }
+    }
+
+    pub fn tag_apply_progress(self) -> &'static str {
+        match self {
+            Lang::Japanese => "バックアップを作成して、タグを付けています…",
+            Lang::English  => "Backing up and applying tags…",
+            Lang::Chinese  => "正在备份并添加标签…",
+        }
+    }
+
+    pub fn tag_apply_backup_failed(self) -> &'static str {
+        match self {
+            Lang::Japanese => "バックアップに失敗したため、何も変更せずに中止しました",
+            Lang::English  => "Backup failed; aborted without changing anything",
+            Lang::Chinese  => "备份失败，已中止，未做任何更改",
+        }
+    }
+
+    pub fn tag_apply_done(self, r: &crate::tag_apply::ApplyReport) -> String {
+        let fail_ja = if r.failed > 0 { format!("・失敗{}件", r.failed) } else { String::new() };
+        let fail_en = if r.failed > 0 { format!(", failed {}", r.failed) } else { String::new() };
+        let fail_zh = if r.failed > 0 { format!("、失败 {} 个", r.failed) } else { String::new() };
+        // 別名まわり（あるときだけ付ける）。
+        let (rn_ja, rn_en, rn_zh) = if r.renamed_elements > 0 {
+            (
+                format!("・別名を追加した既存要素{}個", r.renamed_elements),
+                format!(", existing elements given aliases {}", r.renamed_elements),
+                format!("、添加别名的现有元素 {} 个", r.renamed_elements),
+            )
+        } else {
+            (String::new(), String::new(), String::new())
+        };
+        let (cf_ja, cf_en, cf_zh) = if r.alias_conflicts > 0 {
+            (
+                format!(" / 別名が重なり追加しなかった{}件", r.alias_conflicts),
+                format!(" / aliases skipped due to overlap: {}", r.alias_conflicts),
+                format!(" / 因别名重叠未添加：{} 项", r.alias_conflicts),
+            )
+        } else {
+            (String::new(), String::new(), String::new())
+        };
+        // 前回の自動付与分を外して付け直したとき（あるときだけ付ける）。
+        let (dt_ja, dt_en, dt_zh) = if r.detached_files > 0 {
+            (
+                format!(" / 前回の自動付与分を外したファイル{}件", r.detached_files),
+                format!(" / files whose previous auto-tags were removed: {}", r.detached_files),
+                format!(" / 已移除上次自动标记的文件：{} 个", r.detached_files),
+            )
+        } else {
+            (String::new(), String::new(), String::new())
+        };
+        match self {
+            Lang::Japanese => format!(
+                "タグを付けました: {}件（変化なし{}件{}） / 新規要素{}個・新規カテゴリ{}個{}{}{} / バックアップ: {}",
+                r.tagged, r.unchanged, fail_ja, r.new_elements, r.new_categories, rn_ja, cf_ja, dt_ja, r.backup
+            ),
+            Lang::English => format!(
+                "Tags applied: {} file(s) (unchanged {}{}) / new elements {}, new categories {}{}{}{} / backup: {}",
+                r.tagged, r.unchanged, fail_en, r.new_elements, r.new_categories, rn_en, cf_en, dt_en, r.backup
+            ),
+            Lang::Chinese => format!(
+                "已添加标签：{} 个文件（无变化 {} 个{}） / 新元素 {} 个、新类别 {} 个{}{}{} / 备份：{}",
+                r.tagged, r.unchanged, fail_zh, r.new_elements, r.new_categories, rn_zh, cf_zh, dt_zh, r.backup
+            ),
+        }
+    }
+
+    /// 新規要素が上限を超えたときのエラー（何もせず終了する）
+    pub fn tag_scan_cancelled(self, done: usize, total: usize) -> String {
+        match self {
+            Lang::Japanese => format!("タグ情報の取得をキャンセルしました（{done} / {total}件まで）"),
+            Lang::English  => format!("Tag info collection cancelled ({done} / {total})"),
+            Lang::Chinese  => format!("已取消获取标签信息（{done} / {total}）"),
         }
     }
 
@@ -3944,38 +6712,41 @@ impl Lang {
         }
     }
 
-    pub fn folder_book_access_toggle_button(self, on: bool) -> &'static str {
-        match (self, on) {
-            (Lang::Japanese, true)  => "フォルダ本アクセスON",
-            (Lang::Japanese, false) => "フォルダ本アクセスOFF",
-            (Lang::English, true)   => "Folder-as-Book: ON",
-            (Lang::English, false)  => "Folder-as-Book: OFF",
-            (Lang::Chinese, true)   => "文件夹当书：开",
-            (Lang::Chinese, false)  => "文件夹当书：关",
+    /// メニューバーの「ビューアー復帰」ボタン（画面外へ行ったビューアー窓を中央へ戻す）。
+    pub fn viewer_recover_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "[ビューアー復帰]",
+            Lang::English  => "[Recover Viewer]",
+            Lang::Chinese  => "[找回查看器]",
         }
     }
 
-    pub fn folder_book_access_notice_title(self) -> &'static str {
+    pub fn help_viewer_recover(self) -> HelpDoc {
         match self {
-            Lang::Japanese => "フォルダ本アクセスについて",
-            Lang::English  => "About Folder-as-Book",
-            Lang::Chinese  => "关于文件夹当书",
-        }
-    }
-
-    pub fn folder_book_access_notice_body(self) -> &'static str {
-        match self {
-            Lang::Japanese => "単体画像だけで構成されているフォルダにアクセスしたときアーカイブに見立てて閲覧できるモードです。単体画像+サブフォルダ構成も対象ですが単体画像+アーカイブファイルの構成はこの機能の対象外です\n\nこの閲覧はあくまで仮のものです。しおり・見開き・ソート・サムネイル登録・お気に入り・評価など、本物のアーカイブで使える各種保存機能は利用できません。",
-            Lang::English  => "This mode lets you view a folder made up only of standalone images as if it were an archive. Folders containing standalone images plus subfolders are also supported, but folders mixing standalone images with archive files are not.\n\nThis is a temporary, virtual view only. Save features available for real archives — bookmarks, spread mode, sort order, thumbnail selection, favorites, and ratings — are not available here.",
-            Lang::Chinese  => "此模式可让您像浏览档案一样查看仅由独立图片组成的文件夹。包含独立图片和子文件夹的结构也支持，但独立图片与档案文件混合的结构不在此功能范围内。\n\n此浏览仅为临时的虚拟视图。书签、跨页模式、排序、缩略图选择、收藏、评分等仅适用于真实档案的保存功能，在此均不可用。",
-        }
-    }
-
-    pub fn folder_book_access_notice_dont_show_again(self) -> &'static str {
-        match self {
-            Lang::Japanese => "次回から表示しない",
-            Lang::English  => "Don't show this again",
-            Lang::Chinese  => "下次不再显示",
+            Lang::Japanese => HelpDoc {
+                title: "ビューアー復帰",
+                sections: &[(
+                    "[ビューアー復帰]",
+                    "画面外に出てしまったビューアーを、いまいるモニターの中央へ戻す。\n\
+                     ビューアーが開いているときだけ押せる。",
+                )],
+            },
+            Lang::English => HelpDoc {
+                title: "Recover Viewer",
+                sections: &[(
+                    "[Recover Viewer]",
+                    "Brings a viewer window that has gone off-screen back to the center of its monitor.\n\
+                     Available only while the viewer is open.",
+                )],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "找回查看器",
+                sections: &[(
+                    "[找回查看器]",
+                    "将跑到屏幕之外的查看器窗口移回所在显示器的中央。\n\
+                     仅在查看器打开时可用。",
+                )],
+            },
         }
     }
 
@@ -4139,11 +6910,60 @@ impl Lang {
         }
     }
 
+    /// 「DB」タブ: 本体データベースのセクション見出し
     pub fn settings_database_heading(self) -> &'static str {
         match self {
-            Lang::Japanese => "データベース管理",
-            Lang::English  => "Database management",
-            Lang::Chinese  => "数据库管理",
+            Lang::Japanese => "本体データベース（評価・タグ付け・お気に入りなど）",
+            Lang::English  => "Main database (ratings, tagging, favorites, etc.)",
+            Lang::Chinese  => "主数据库（评分、标签、收藏等）",
+        }
+    }
+
+    pub fn settings_tab_database(self) -> &'static str {
+        match self {
+            Lang::Japanese => "DB",
+            Lang::English  => "DB",
+            Lang::Chinese  => "数据库",
+        }
+    }
+
+    pub fn settings_tag_master_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグマスター（カテゴリ・要素の定義）",
+            Lang::English  => "Tag master (category and element definitions)",
+            Lang::Chinese  => "标签主表（分类和元素的定义）",
+        }
+    }
+
+    pub fn settings_tag_master_generations_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "履歴を残す世代数",
+            Lang::English  => "Generations to keep",
+            Lang::Chinese  => "保留的版本数",
+        }
+    }
+
+    pub fn settings_tag_master_generations_value(self, n: u32) -> String {
+        match self {
+            Lang::Japanese => format!("{n} 世代"),
+            Lang::English  => format!("{n} generations"),
+            Lang::Chinese  => format!("{n} 个版本"),
+        }
+    }
+
+    pub fn settings_tag_master_generations_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグ管理画面を開いて編集するたびに、開く前の状態が履歴に残ります。履歴から戻すには、タグ管理画面の「ロールバック」を使います。超えた分は古い順に消えます。",
+            Lang::English  => "Each time you open the tag manager and edit, the state before opening is kept. To go back, use \"Rollback\" in the tag manager. Older generations beyond this number are deleted first.",
+            Lang::Chinese  => "每次打开标签管理并编辑时，打开前的状态会被保留。要恢复请使用标签管理中的“回滚”。超出的部分按从旧到新的顺序删除。",
+        }
+    }
+
+    pub fn settings_backup_folder_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "バックアップの場所",
+            Lang::English  => "Backup location",
+            Lang::Chinese  => "备份位置",
         }
     }
 
@@ -4168,6 +6988,46 @@ impl Lang {
             Lang::Japanese => "ファイルが見つからなくなっても、評価・タグ・お気に入りなどの記録をこの日数だけ残します（1〜120日）。重複の解決画面の「削除まで」の日数の元です。",
             Lang::English  => "Keeps ratings, tags, favorites, etc. of a file for this many days after it goes missing (1-120). Used for the \"Until removal\" days in the duplicate-resolution screen.",
             Lang::Chinese  => "文件找不到后，评分、标签、收藏等记录会保留这么多天（1-120）。用于重复解决界面中的“距离删除”天数。",
+        }
+    }
+
+    pub fn settings_idle_thumb_toggle(self) -> &'static str {
+        match self {
+            Lang::Japanese => "操作が止まっている間に、現在地フォルダのサムネ生成を続ける",
+            Lang::English  => "Keep generating thumbnails for the current folder while idle",
+            Lang::Chinese  => "操作停止期间，继续生成当前文件夹的缩略图",
+        }
+    }
+
+    pub fn settings_idle_thumb_wait_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "最後の操作から始めるまでの待ち時間",
+            Lang::English  => "Wait after the last input before starting",
+            Lang::Chinese  => "最后一次操作后开始前的等待时间",
+        }
+    }
+
+    pub fn settings_idle_thumb_wait_value(self, secs: u32) -> String {
+        match self {
+            Lang::Japanese => format!("{secs} 秒"),
+            Lang::English  => format!("{secs} s"),
+            Lang::Chinese  => format!("{secs} 秒"),
+        }
+    }
+
+    pub fn settings_idle_thumb_while_viewer(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ビューアーを開いている間も続ける",
+            Lang::English  => "Keep going while the viewer window is open",
+            Lang::Chinese  => "查看器窗口打开时也继续",
+        }
+    }
+
+    pub fn settings_idle_thumb_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "画面に出ていない分のサムネを、1件ずつ先に作って貯めておきます。操作を再開すると新しい生成を止めます。外付けHDDなどでは、操作の再開直後に一瞬重く感じることがあります。ビューアーを開いている間も続けると、本のページ読み込みとディスクを取り合います。",
+            Lang::English  => "Thumbnails not yet on screen are generated one at a time and cached in advance. New generation stops as soon as you resume working. On external HDDs and similar, things may feel briefly slow right after you resume. Continuing while the viewer is open competes with page loading for the disk.",
+            Lang::Chinese  => "逐个预先生成尚未显示在屏幕上的缩略图并缓存。恢复操作后会立即停止新的生成。在外置硬盘等设备上，恢复操作的瞬间可能会略有卡顿。查看器打开时继续生成，会与书页加载争用磁盘。",
         }
     }
 
@@ -4805,22 +7665,6 @@ impl Lang {
         }
     }
 
-    pub fn settings_thumbbar_overlap_label(self) -> &'static str {
-        match self {
-            Lang::Japanese => "■ 本画像との重なりを許可",
-            Lang::English  => "■ Allow overlap with the main image",
-            Lang::Chinese  => "■ 允许与正文图像重叠",
-        }
-    }
-
-    pub fn settings_thumbbar_overlap_explain(self) -> &'static str {
-        match self {
-            Lang::Japanese => "ONの場合、本画像はサムネイルバーの領域を意識せずに描画し、サムネイルバーはその前面にオーバーレイ表示する。",
-            Lang::English  => "When on, the main image is drawn without reserving space for the thumbnail bar, and the bar overlays on top of it instead.",
-            Lang::Chinese  => "开启后，正文图像不为缩略图栏预留空间，缩略图栏将叠加显示在其上方。",
-        }
-    }
-
     pub fn settings_thumbbar_marker_label(self) -> &'static str {
         match self {
             Lang::Japanese => "■ 現在地マーカー色 (RGBA)",
@@ -4845,35 +7689,27 @@ impl Lang {
         }
     }
 
+    pub fn settings_near_unity_skip_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "■ 等倍に近い縮小をGPUに任せる（高速表示）",
+            Lang::English  => "■ Let the GPU downscale near-1:1 pages (faster display)",
+            Lang::Chinese  => "■ 接近原尺寸的缩小交给GPU（加速显示）",
+        }
+    }
+
+    pub fn settings_near_unity_skip_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ON（既定）にすると、表示サイズが元画像の85%以上のページは、CPUで縮小せず元の大きさのままGPUが縮める。1ページあたり6〜15ms速くなるが、縮小の画質が「画像フィルター」ではなくGPUの補間になる。基準解像度が「ウィンドウ追従」の通常表示のみに効き、原寸・虫眼鏡・サムネイルには影響しない。",
+            Lang::English  => "When on (default), pages whose display size is 85% or more of the source are not downscaled on the CPU; the GPU shrinks them instead. This saves 6-15 ms per page, but the downscale quality comes from GPU interpolation rather than the image filter. Applies only to normal display with the base resolution set to \"Follow window size\"; actual size, magnifier and thumbnails are unaffected.",
+            Lang::Chinese  => "开启（默认）后，显示尺寸达到原图85%以上的页面不再由CPU缩小，而是保持原尺寸由GPU缩小。每页可加速6-15毫秒，但缩小画质将由GPU插值而非“图像滤镜”决定。仅对基准分辨率为“跟随窗口”的普通显示有效，不影响原尺寸、放大镜和缩略图。",
+        }
+    }
+
     pub fn settings_exif_orientation_explain(self) -> &'static str {
         match self {
             Lang::Japanese => "OFFにすると、画像に埋め込まれたExif Orientationタグ（誤って付与されている場合を含む）を無視して表示する。ビューアーのみに効き、サムネイルには影響しない。",
             Lang::English  => "When off, the Exif Orientation tag embedded in images (including incorrectly-tagged ones) is ignored when displaying. Affects the viewer only, not thumbnails.",
             Lang::Chinese  => "关闭后，显示时将忽略图像内嵌的Exif Orientation标签（包括错误标签）。仅影响查看器，不影响缩略图。",
-        }
-    }
-
-    pub fn settings_default_slot_label(self) -> &'static str {
-        match self {
-            Lang::Japanese => "ビューアーを開くときの既定の位置・サイズ",
-            Lang::English  => "Default position/size when opening the viewer",
-            Lang::Chinese  => "打开查看器时的默认位置与大小",
-        }
-    }
-
-    pub fn settings_default_slot_none(self) -> &'static str {
-        match self {
-            Lang::Japanese => "なし",
-            Lang::English  => "None",
-            Lang::Chinese  => "无",
-        }
-    }
-
-    pub fn settings_default_slot_explain(self) -> &'static str {
-        match self {
-            Lang::Japanese => "F5〜F8で保存した位置・サイズを、ビューアーを開くたびに既定として適用する。該当スロットが未保存の場合はデフォルト無しと同じ扱いになる。適用後でもF5〜F8でその回だけ別スロットへ切り替えられる。",
-            Lang::English  => "Applies the position/size saved to F5-F8 as the default every time the viewer opens. If that slot isn't saved yet, it behaves as if none were selected. You can still switch to a different slot for just that session with F5-F8.",
-            Lang::Chinese  => "每次打开查看器时，将F5~F8保存的位置与大小作为默认应用。若该槽位尚未保存，则视为未选择。应用后仍可通过F5~F8临时切换到其他槽位。",
         }
     }
 
@@ -4983,6 +7819,62 @@ impl Lang {
         }
     }
 
+    pub fn settings_text_page_enabled(self) -> &'static str {
+        match self {
+            Lang::Japanese => "アーカイブ内のTXTを画像ページとして開く（zip/cbz）",
+            Lang::English  => "Open TXT files inside archives as image pages (zip/cbz)",
+            Lang::Chinese  => "将压缩包内的 TXT 作为图片页打开（zip/cbz）",
+        }
+    }
+
+    pub fn settings_text_page_height_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "TXTページの高さ上限",
+            Lang::English  => "TXT page height limit",
+            Lang::Chinese  => "TXT 页高度上限",
+        }
+    }
+
+    pub fn settings_text_page_truncate(self) -> &'static str {
+        match self {
+            Lang::Japanese => "超えたら切り詰める",
+            Lang::English  => "Truncate when exceeded",
+            Lang::Chinese  => "超出时截断",
+        }
+    }
+
+    pub fn settings_text_page_split(self) -> &'static str {
+        match self {
+            Lang::Japanese => "超えたらページ分割する",
+            Lang::English  => "Split into pages when exceeded",
+            Lang::Chinese  => "超出时分页",
+        }
+    }
+
+    pub fn settings_text_page_read_limit_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "TXTの読み込み上限サイズ（超えた分は読まない）",
+            Lang::English  => "TXT read size limit (the rest is not read)",
+            Lang::Chinese  => "TXT 读取大小上限（超出部分不读取）",
+        }
+    }
+
+    pub fn settings_text_page_count(self) -> &'static str {
+        match self {
+            Lang::Japanese => "リストのページ数にTXTページを含める",
+            Lang::English  => "Include TXT pages in the list's page count",
+            Lang::Chinese  => "列表页数中包含 TXT 页",
+        }
+    }
+
+    pub fn settings_text_page_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "TXTは横書き・等幅の白地黒文字で画像化する。ページ分割は一覧取得時に本文を読む。変更は次に開くアーカイブから効く。",
+            Lang::English  => "TXT is rendered as horizontal monospace black-on-white text. Splitting reads the text when the list is built. Changes apply to archives opened afterwards.",
+            Lang::Chinese  => "TXT 以横排等宽的白底黑字渲染。分页会在生成列表时读取正文。更改对之后打开的压缩包生效。",
+        }
+    }
+
     pub fn settings_thumb_size_label(self) -> &'static str {
         match self {
             Lang::Japanese => "■ サムネイルサイズ",
@@ -5020,14 +7912,6 @@ impl Lang {
             Lang::Japanese => "■ 隠しファイルを表示する",
             Lang::English  => "■ Show hidden files",
             Lang::Chinese  => "■ 显示隐藏文件",
-        }
-    }
-
-    pub fn settings_lang_label(self) -> &'static str {
-        match self {
-            Lang::Japanese => "■ 言語",
-            Lang::English  => "■ Language",
-            Lang::Chinese  => "■ 语言",
         }
     }
 
@@ -5749,6 +8633,83 @@ impl Lang {
         }
     }
 
+    pub fn tool_palette_toggle_label_fit_width(self) -> &'static str {
+        match self {
+            Lang::Japanese => "幅フィット",
+            Lang::English  => "Fit width",
+            Lang::Chinese  => "适应宽度",
+        }
+    }
+
+    pub fn tool_palette_toggle_label_fit_height(self) -> &'static str {
+        match self {
+            Lang::Japanese => "高さフィット",
+            Lang::English  => "Fit height",
+            Lang::Chinese  => "适应高度",
+        }
+    }
+
+    /// ツールバーのフィット基準軸ボタンの表示（現在の基準軸）。
+    pub fn toolbar_fit_mode_contain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "全体",
+            Lang::English  => "Fit all",
+            Lang::Chinese  => "全部",
+        }
+    }
+
+    pub fn toolbar_fit_mode_width(self) -> &'static str {
+        match self {
+            Lang::Japanese => "幅",
+            Lang::English  => "Width",
+            Lang::Chinese  => "宽度",
+        }
+    }
+
+    pub fn toolbar_fit_mode_height(self) -> &'static str {
+        match self {
+            Lang::Japanese => "高さ",
+            Lang::English  => "Height",
+            Lang::Chinese  => "高度",
+        }
+    }
+
+    pub fn toolbar_fit_mode_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "フィットの基準を切り替え（全体 → 幅 → 高さ）\n幅/高さのときは、はみ出す側をドラッグでスクロール。書庫を切り替えると全体に戻る",
+            Lang::English  => "Cycle the fit basis (all → width → height)\nIn width/height, drag to scroll the overflowing side. Resets to all when the archive changes",
+            Lang::Chinese  => "切换适应基准（全部 → 宽度 → 高度）\n宽度/高度时，拖动以滚动溢出的一侧。切换压缩包时恢复为全部",
+        }
+    }
+
+    /// ツールバーのホイール動作ボタンの表示（現在の動作）。
+    pub fn toolbar_wheel_mode_zoom(self) -> &'static str {
+        match self {
+            Lang::Japanese => "拡大",
+            Lang::English  => "Zoom",
+            Lang::Chinese  => "缩放",
+        }
+    }
+
+    pub fn toolbar_wheel_mode_scroll(self) -> &'static str {
+        match self {
+            Lang::Japanese => "スクロール",
+            Lang::English  => "Scroll",
+            Lang::Chinese  => "滚动",
+        }
+    }
+
+    pub fn toolbar_wheel_mode_tip(self, enabled: bool) -> &'static str {
+        match (self, enabled) {
+            (Lang::Japanese, true) => "ホイールの動作を切り替え（拡大 ⇔ スクロール）\nスクロール中も拡大はShift+ホイール。端に着いてもページは送られない",
+            (Lang::English,  true) => "Switch the wheel action (zoom ⇔ scroll)\nWhile scrolling, Shift+wheel still zooms. The page does not turn at the edge",
+            (Lang::Chinese,  true) => "切换滚轮动作（缩放 ⇔ 滚动）\n滚动时仍可用Shift+滚轮缩放。到达边缘不会翻页",
+            (Lang::Japanese, false) => "ホイールの動作切り替え（幅/高さフィット中のみ使えます）",
+            (Lang::English,  false) => "Wheel action switch (available only in fit-width/height)",
+            (Lang::Chinese,  false) => "滚轮动作切换（仅在适应宽度/高度时可用）",
+        }
+    }
+
     pub fn decode_edge_prompt_title(self) -> &'static str {
         match self {
             Lang::Japanese => "既定値の更新",
@@ -6028,6 +8989,31 @@ impl Lang {
             Lang::Japanese => "スロット適用切替",
             Lang::English  => "Cycle Apply Slot",
             Lang::Chinese  => "切换应用插槽",
+        }
+    }
+
+    pub fn tool_palette_action_label_cycle_thumbbar(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サムネバー切替",
+            Lang::English  => "Cycle Thumbnail Bar",
+            Lang::Chinese  => "切换缩略图栏",
+        }
+    }
+
+    /// サムネバー切替ボタンのマス内に出す現在状態の文字（配置の4方向、または非表示）。
+    pub fn tool_palette_thumbbar_state(self, pos: crate::gui_config::ThumbbarPos) -> &'static str {
+        use crate::gui_config::ThumbbarPos;
+        match (self, pos) {
+            (Lang::English, ThumbbarPos::Top) => "TOP",
+            (Lang::English, ThumbbarPos::Bottom) => "BOTTOM",
+            (Lang::English, ThumbbarPos::Left) => "LEFT",
+            (Lang::English, ThumbbarPos::Right) => "RIGHT",
+            (_, ThumbbarPos::Top) => "上",
+            (_, ThumbbarPos::Bottom) => "下",
+            (_, ThumbbarPos::Left) => "左",
+            (_, ThumbbarPos::Right) => "右",
+            (Lang::Chinese, ThumbbarPos::None) => "关闭",
+            (_, ThumbbarPos::None) => "OFF",
         }
     }
 
@@ -6362,6 +9348,19 @@ pub struct HelpDoc {
 }
 
 impl Lang {
+    /// UIベースカラー切替ボタンの表示。現在のモード名を出す（押すと反対側へ切り替わる）。
+    pub fn theme_button(self, mode: crate::ui_theme::ThemeMode) -> &'static str {
+        use crate::ui_theme::ThemeMode;
+        match (self, mode) {
+            (Lang::Japanese, ThemeMode::Dark)  => "ダーク",
+            (Lang::Japanese, ThemeMode::Light) => "ライト",
+            (Lang::English,  ThemeMode::Dark)  => "Dark",
+            (Lang::English,  ThemeMode::Light) => "Light",
+            (Lang::Chinese,  ThemeMode::Dark)  => "深色",
+            (Lang::Chinese,  ThemeMode::Light) => "浅色",
+        }
+    }
+
     pub fn help_toggle_button(self) -> &'static str {
         "[?]"
     }
@@ -6469,35 +9468,242 @@ impl Lang {
         }
     }
 
+    // ── カード帯の設定ダイアログ ──
+
+    /// メニューバーの[カード帯設定]ボタン（カード帯の設定ダイアログを開く）。
+    pub fn card_band_button(self) -> &'static str {
+        match self {
+            Lang::Japanese => "カード帯設定",
+            Lang::English  => "[Band Settings]",
+            Lang::Chinese  => "信息带设置",
+        }
+    }
+
+    pub fn band_dialog_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "カード帯の設定",
+            Lang::English  => "Card band settings",
+            Lang::Chinese  => "卡片信息带设置",
+        }
+    }
+
+    pub fn band_classic_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "従来方式",
+            Lang::English  => "Classic mode",
+            Lang::Chinese  => "经典方式",
+        }
+    }
+
+    pub fn band_custom_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "カスタム",
+            Lang::English  => "Custom",
+            Lang::Chinese  => "自定义",
+        }
+    }
+
+    pub fn band_classic_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "こちらを採用する（カスタム側の内容は保持されます）",
+            Lang::English  => "Use this mode (the custom layout is kept)",
+            Lang::Chinese  => "采用此方式（自定义内容会保留）",
+        }
+    }
+
+    pub fn band_custom_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "こちらを採用する（従来方式の選択は保持されます）",
+            Lang::English  => "Use this mode (the classic selection is kept)",
+            Lang::Chinese  => "采用此方式（经典方式的选择会保留）",
+        }
+    }
+
+    pub fn band_limits(self, items: usize, max_items: usize, lines: usize, max_lines: usize) -> String {
+        match self {
+            Lang::Japanese => format!("要素制限数 {items}/{max_items}　行制限数 {lines}/{max_lines}"),
+            Lang::English  => format!("Elements {items}/{max_items}   Lines {lines}/{max_lines}"),
+            Lang::Chinese  => format!("元素上限 {items}/{max_items}　行数上限 {lines}/{max_lines}"),
+        }
+    }
+
+    pub fn band_stack_empty(self) -> &'static str {
+        match self {
+            Lang::Japanese => "（要素ボタンを押して積む）",
+            Lang::English  => "(press an element button to add it)",
+            Lang::Chinese  => "（按元素按钮依次添加）",
+        }
+    }
+
+    pub fn band_remove_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "この項目を削除",
+            Lang::English  => "Remove this item",
+            Lang::Chinese  => "删除此项",
+        }
+    }
+
+    pub fn band_align_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "寄せを切替（左 → 中央 → 右 → 未設定）",
+            Lang::English  => "Change alignment (Left -> Center -> Right -> Unset)",
+            Lang::Chinese  => "切换对齐（左 → 居中 → 右 → 未设置）",
+        }
+    }
+
+    /// 要素ボタン・スタック欄の名称。
+    pub fn band_elem(self, e: crate::card_band::Elem) -> &'static str {
+        use crate::card_band::Elem;
+        match (self, e) {
+            (Lang::Japanese, Elem::Date) => "日付",
+            (Lang::Japanese, Elem::Title) => "タイトル",
+            (Lang::Japanese, Elem::Size) => "サイズ",
+            (Lang::Japanese, Elem::Stars) => "評価点★",
+            (Lang::Japanese, Elem::Score) => "評価点数値",
+            (Lang::Japanese, Elem::Visits) => "訪問回数",
+            (Lang::Japanese, Elem::Space) => "空白",
+            (Lang::Japanese, Elem::Newline) => "改行",
+            (Lang::Japanese, Elem::Divider) => "区切りバー",
+            (Lang::English, Elem::Date) => "Date",
+            (Lang::English, Elem::Title) => "Title",
+            (Lang::English, Elem::Size) => "Size",
+            (Lang::English, Elem::Stars) => "Rating ★",
+            (Lang::English, Elem::Score) => "Rating no.",
+            (Lang::English, Elem::Visits) => "Visits",
+            (Lang::English, Elem::Space) => "Space",
+            (Lang::English, Elem::Newline) => "Newline",
+            (Lang::English, Elem::Divider) => "Divider",
+            (Lang::Chinese, Elem::Date) => "日期",
+            (Lang::Chinese, Elem::Title) => "标题",
+            (Lang::Chinese, Elem::Size) => "大小",
+            (Lang::Chinese, Elem::Stars) => "评分★",
+            (Lang::Chinese, Elem::Score) => "评分数值",
+            (Lang::Chinese, Elem::Visits) => "访问次数",
+            (Lang::Chinese, Elem::Space) => "空格",
+            (Lang::Chinese, Elem::Newline) => "换行",
+            (Lang::Chinese, Elem::Divider) => "分隔线",
+        }
+    }
+
+    /// 寄せ属性の表示。未設定も明示する。
+    pub fn band_align(self, a: crate::card_band::Align) -> &'static str {
+        use crate::card_band::Align;
+        match (self, a) {
+            (Lang::Japanese, Align::Unset) => "未設定",
+            (Lang::Japanese, Align::Left) => "左",
+            (Lang::Japanese, Align::Center) => "中央",
+            (Lang::Japanese, Align::Right) => "右",
+            (Lang::English, Align::Unset) => "Unset",
+            (Lang::English, Align::Left) => "Left",
+            (Lang::English, Align::Center) => "Center",
+            (Lang::English, Align::Right) => "Right",
+            (Lang::Chinese, Align::Unset) => "未设置",
+            (Lang::Chinese, Align::Left) => "左",
+            (Lang::Chinese, Align::Center) => "居中",
+            (Lang::Chinese, Align::Right) => "右",
+        }
+    }
+
+    pub fn band_sample_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サンプル",
+            Lang::English  => "Sample",
+            Lang::Chinese  => "示例",
+        }
+    }
+
+    pub fn band_sample_of_classic(self) -> &'static str {
+        match self {
+            Lang::Japanese => "（従来方式の内容）",
+            Lang::English  => "(classic mode)",
+            Lang::Chinese  => "（经典方式的内容）",
+        }
+    }
+
+    pub fn band_sample_of_custom(self) -> &'static str {
+        match self {
+            Lang::Japanese => "（カスタムの内容）",
+            Lang::English  => "(custom layout)",
+            Lang::Chinese  => "（自定义的内容）",
+        }
+    }
+
+    pub fn band_sample_title(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サンプル_タイトル.zip",
+            Lang::English  => "Sample_title.zip",
+            Lang::Chinese  => "示例_标题.zip",
+        }
+    }
+
+    pub fn band_sample_thumb(self) -> &'static str {
+        match self {
+            Lang::Japanese => "サムネイル",
+            Lang::English  => "Thumbnail",
+            Lang::Chinese  => "缩略图",
+        }
+    }
+
+    /// 帯の背景の透過度ボタン（押すたびに10%ずつ変わる）。
+    pub fn band_transparency_button(self, pct: u8) -> String {
+        match self {
+            Lang::Japanese => format!("透過度 {pct}%"),
+            Lang::English  => format!("Transparency {pct}%"),
+            Lang::Chinese  => format!("透明度 {pct}%"),
+        }
+    }
+
+    pub fn band_transparency_tip(self) -> &'static str {
+        match self {
+            Lang::Japanese => "帯の背景の透過度。押すたびに10%ずつ変わる（100%の次は0%）。従来方式・カスタム共通",
+            Lang::English  => "Band background transparency. Changes by 10% per press (100% wraps to 0%). Applies to both modes",
+            Lang::Chinese  => "信息带背景的透明度。每按一次变化10%（100%之后回到0%）。两种方式通用",
+        }
+    }
+
+    pub fn band_confirm(self) -> &'static str {
+        match self {
+            Lang::Japanese => "確定",
+            Lang::English  => "OK",
+            Lang::Chinese  => "确定",
+        }
+    }
+
+    pub fn band_cancel(self) -> &'static str {
+        match self {
+            Lang::Japanese => "キャンセル",
+            Lang::English  => "Cancel",
+            Lang::Chinese  => "取消",
+        }
+    }
+
     pub fn help_card_info(self) -> HelpDoc {
         match self {
             Lang::Japanese => HelpDoc {
                 title: "サムネ情報帯",
                 sections: &[
                     (
-                        "[情報]",
-                        "サムネイル下部の帯に出す内容を切り替える。押すたびに循環する。\n\
-                         OFF → 名前 → 名前+日付 → 名前+日付+容量",
-                    ),
-                    (
-                        "[情報2]",
-                        "評価帯の内容を切り替える。押すたびに循環する。\n\
-                         OFF → ★（スコア） → 回数（訪問回数） → ★+回数",
+                        "[カード帯設定]",
+                        "サムネイル下部の帯の設定ダイアログを開く。\n\
+                         ・従来方式: 2つのボタンで、情報（OFF→名前→名前+日付→名前+日付+容量）と\n\
+                         　評価（OFF→★→回数→★+回数）を切り替える。\n\
+                         ・カスタム: 日付・タイトル・サイズ・評価・訪問回数などの要素を押した順に積んで書式を作る。\n\
+                         　各要素は左・中央・右に寄せられる。\n\
+                         見出しのボタンで、実際に使う方を選ぶ。透過度は両方に効く。",
                     ),
                 ],
             },
             Lang::English => HelpDoc {
-                title: "Thumbnail info bands",
+                title: "Thumbnail info band",
                 sections: &[
                     (
-                        "[Info]",
-                        "Changes what the band under each thumbnail shows. Cycles on every press.\n\
-                         OFF -> Name -> Name+Date -> Name+Date+Size",
-                    ),
-                    (
-                        "[Info2]",
-                        "Changes what the rating band shows. Cycles on every press.\n\
-                         OFF -> Stars (score) -> Visits -> Stars+Visits",
+                        "[Band Settings]",
+                        "Opens the settings dialog for the band under each thumbnail.\n\
+                         - Classic mode: two buttons cycle the info (OFF -> Name -> Name+Date -> Name+Date+Size)\n\
+                         \u{3000}and the rating (OFF -> Stars -> Visits -> Stars+Visits).\n\
+                         - Custom: build the layout by adding elements (date, title, size, rating, visits...) in order.\n\
+                         \u{3000}Each element can be aligned left, center or right.\n\
+                         The heading buttons choose which one is used. Transparency applies to both.",
                     ),
                 ],
             },
@@ -6505,14 +9711,13 @@ impl Lang {
                 title: "缩略图信息带",
                 sections: &[
                     (
-                        "[信息]",
-                        "切换缩略图下方信息带显示的内容，每按一次循环切换。\n\
-                         关闭 → 名称 → 名称+日期 → 名称+日期+大小",
-                    ),
-                    (
-                        "[信息2]",
-                        "切换评分带显示的内容，每按一次循环切换。\n\
-                         关闭 → ★（评分） → 次数（访问次数） → ★+次数",
+                        "[信息带设置]",
+                        "打开缩略图下方信息带的设置对话框。\n\
+                         ・经典方式：用两个按钮切换信息（关闭→名称→名称+日期→名称+日期+大小）\n\
+                         　和评分（关闭→★→次数→★+次数）。\n\
+                         ・自定义：按顺序添加日期、标题、大小、评分、访问次数等元素来组成格式。\n\
+                         　各元素可靠左、居中或靠右。\n\
+                         用标题按钮选择实际采用的方式。透明度对两种方式都有效。",
                     ),
                 ],
             },
@@ -6520,66 +9725,30 @@ impl Lang {
     }
 
     pub fn help_view_toggles(self) -> HelpDoc {
+        use crate::convenience_text::{DESC_FOLDER_BOOK, DESC_SCORING, DESC_TOOLBOX};
         match self {
             Lang::Japanese => HelpDoc {
-                title: "ON/OFFトグル",
+                title: "便利機能ON/OFF設定",
                 sections: &[
-                    (
-                        "[フォルダ本アクセス]",
-                        "単体画像で構成されるフォルダにアクセスしたとき、フォルダへの移動と同時にビューアーを立ち上げ、\n\
-                         1アーカイブとして閲覧できるモード。なお、実アーカイブのような各種設定は保存できない。",
-                    ),
-                    (
-                        "[ツールボックス]",
-                        "ビューアー内のツールパレット（マス配置のツールボックス）の表示ON/OFF。\n\
-                         ファイルを移っても状態は保たれる。",
-                    ),
-                    (
-                        "[スコアリング]",
-                        "アーカイブの末尾ページに出る評価オーバーレイ（スコア入力）のON/OFF。\n\
-                         邪魔に感じるときはOFFにする。",
-                    ),
+                    ("[フォルダ本アクセス]", DESC_FOLDER_BOOK[0]),
+                    ("[スコアリング]", DESC_SCORING[0]),
+                    ("[ツールボックス]", DESC_TOOLBOX[0]),
                 ],
             },
             Lang::English => HelpDoc {
-                title: "ON/OFF toggles",
+                title: "Convenience features ON/OFF",
                 sections: &[
-                    (
-                        "[Folder-as-Book]",
-                        "When you navigate into a folder made up of standalone images, the viewer launches at the\n\
-                         same time and opens it as if it were a single archive. Note that, unlike a real archive,\n\
-                         its settings cannot be saved.",
-                    ),
-                    (
-                        "[Toolbox]",
-                        "Shows or hides the tool palette (grid-layout toolbox) in the viewer.\n\
-                         The state is kept when you move between files.",
-                    ),
-                    (
-                        "[Scoring]",
-                        "Turns the rating overlay (score input) at the end of an archive ON/OFF.\n\
-                         Turn it OFF if it gets in the way.",
-                    ),
+                    ("[Folder-as-Book]", DESC_FOLDER_BOOK[1]),
+                    ("[Scoring]", DESC_SCORING[1]),
+                    ("[Toolbox]", DESC_TOOLBOX[1]),
                 ],
             },
             Lang::Chinese => HelpDoc {
-                title: "开/关切换",
+                title: "便利功能 开/关 设置",
                 sections: &[
-                    (
-                        "[文件夹当书]",
-                        "进入仅由独立图片组成的文件夹时，会同时启动查看器，将其作为单个档案打开浏览。\n\
-                         请注意，与真实档案不同，此模式下的各项设置无法保存。",
-                    ),
-                    (
-                        "[工具箱]",
-                        "显示/隐藏查看器内的工具面板（格子布局的工具箱）。\n\
-                         切换文件时状态保持不变。",
-                    ),
-                    (
-                        "[评分]",
-                        "开/关压缩包末尾页出现的评分浮层（评分输入）。\n\
-                         觉得碍事时可关闭。",
-                    ),
+                    ("[文件夹当书]", DESC_FOLDER_BOOK[2]),
+                    ("[评分]", DESC_SCORING[2]),
+                    ("[工具箱]", DESC_TOOLBOX[2]),
                 ],
             },
         }
@@ -6963,22 +10132,92 @@ impl Lang {
             Lang::Japanese => HelpDoc {
                 title: "検索の実行",
                 sections: &[
-                    ("[検索開始]", "入力した条件で検索を実行する。検索中は押せない。"),
+                    ("[検索開始]", "入力した条件で検索を実行する。新モードの検索中は[中断]になり、押すと打ち切る（それまでの結果は残る）。検索は同時に1つだけで、別のタブに移っても裏で続く。"),
                     ("[条件クリア]", "入力した条件を空に戻す。基底フォルダは消えない。"),
                 ],
             },
             Lang::English => HelpDoc {
                 title: "Running a search",
                 sections: &[
-                    ("[Start search]", "Runs a search with the entered conditions. Disabled while searching."),
+                    ("[Start search]", "Runs a search with the entered conditions. While a New-mode search runs it becomes [Stop] and cancels it (results so far are kept). Only one search runs at a time, and it keeps going in the background when you switch tabs."),
                     ("[Clear conditions]", "Empties the entered conditions. The base folder is kept."),
                 ],
             },
             Lang::Chinese => HelpDoc {
                 title: "执行搜索",
                 sections: &[
-                    ("[开始搜索]", "按输入的条件执行搜索。搜索期间不可点击。"),
+                    ("[开始搜索]", "按输入的条件执行搜索。新模式搜索期间按钮变为[中断]，点击后终止（已得到的结果保留）。同时只能进行一个搜索，切换到其他标签页后仍在后台继续。"),
                     ("[清除条件]", "清空输入的条件。基准文件夹不会被清除。"),
+                ],
+            },
+        }
+    }
+
+    pub fn help_search_mode(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "検索モード",
+                sections: &[
+                    ("[新]", "登録済みの全ファイルを対象に探す。フォルダの指定は要らない。一度も開いていないフォルダのファイルは対象外。"),
+                    ("[旧（フォルダ指定）]", "基底フォルダ（とその下）のサムネイルDBを探す従来の検索。フォルダを絞りたいときに使う。"),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Search mode",
+                sections: &[
+                    ("[New]", "Searches every registered file. No folder needed. Files in folders that have never been opened are not included."),
+                    ("[Legacy (by folder)]", "The previous search over the thumbnail DBs of a base folder (and below). Use it to narrow to a folder."),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "搜索模式",
+                sections: &[
+                    ("[新]", "搜索所有已登记的文件，无需指定文件夹。从未打开过的文件夹中的文件不在范围内。"),
+                    ("[旧（按文件夹）]", "按基准文件夹（及其子目录）的缩略图数据库搜索的旧方式。需要限定文件夹时使用。"),
+                ],
+            },
+        }
+    }
+
+    pub fn help_search_new_conditions(self) -> HelpDoc {
+        match self {
+            Lang::Japanese => HelpDoc {
+                title: "検索条件（新）",
+                sections: &[
+                    (
+                        "[検索文字列]",
+                        "半角・全角スペースで区切った語のどれかに当たれば、ヒットする。\"サー クル\" のように引用符で囲むと、スペースを含む1語になる。ファイル名と、付いているタグの名前（別名も）の両方を、大文字小文字を区別せず部分一致で探す。空欄なら文字列の条件は無し。",
+                    ),
+                    (
+                        "[サイズ]",
+                        "MB単位で下限・上限を指定する。空欄なら制限なし。文字列との両方を満たすものが対象。",
+                    ),
+                ],
+            },
+            Lang::English => HelpDoc {
+                title: "Search conditions (New)",
+                sections: &[
+                    (
+                        "[Search text]",
+                        "A file matches if any word (separated by half/full-width spaces) hits. Quote words such as \"cir cle\" to keep the space. Both the file name and the names of its tags (aliases too) are searched, case-insensitively by substring. Empty means no text condition.",
+                    ),
+                    (
+                        "[Size]",
+                        "Set lower / upper limits in MB. Leave empty for no limit. Files must satisfy both the text and the size.",
+                    ),
+                ],
+            },
+            Lang::Chinese => HelpDoc {
+                title: "搜索条件（新）",
+                sections: &[
+                    (
+                        "[搜索文字]",
+                        "以半角/全角空格分隔的词，任意一个命中即匹配。用引号括起来（如 \"社 团\"）可保留空格。同时在文件名与所带标签名（含别名）中，不区分大小写地按子串搜索。留空表示无文字条件。",
+                    ),
+                    (
+                        "[大小]",
+                        "以 MB 为单位指定下限和上限。留空表示不限。需同时满足文字和大小条件。",
+                    ),
                 ],
             },
         }
@@ -7321,7 +10560,7 @@ impl Lang {
     pub fn help_vmenu_register_subs(self) -> HelpDoc {
         match self {
             Lang::Japanese => HelpDoc {
-                title: "フォルダの実サブフォルダを一括登録",
+                title: "実パスのサブフォルダを一括登録",
                 sections: &[(
                     "",
                     "このフォルダの実フォルダにあるサブフォルダを調べて、まだ登録されていないものを\n\
@@ -7339,7 +10578,7 @@ impl Lang {
                 )],
             },
             Lang::Chinese => HelpDoc {
-                title: "批量登记实际子文件夹",
+                title: "批量登记实际路径的子文件夹",
                 sections: &[(
                     "",
                     "检查此文件夹的实际文件夹中的子文件夹，把尚未登记的\n\
@@ -7353,7 +10592,7 @@ impl Lang {
     pub fn help_vmenu_delete(self) -> HelpDoc {
         match self {
             Lang::Japanese => HelpDoc {
-                title: "仮想フォルダ削除",
+                title: "フォルダ削除",
                 sections: &[
                     (
                         "",
@@ -7389,7 +10628,7 @@ impl Lang {
                 ],
             },
             Lang::Chinese => HelpDoc {
-                title: "删除虚拟文件夹",
+                title: "删除文件夹",
                 sections: &[
                     (
                         "",
@@ -7479,15 +10718,15 @@ impl Lang {
     pub fn help_fav_rename(self) -> HelpDoc {
         match self {
             Lang::Japanese => HelpDoc {
-                title: "リネーム (F2)",
+                title: "プロパティの変更 (F2)",
                 sections: &[("", "お気に入りフォルダの名前を変更する。ダイアログでマーカーと色も変えられる。")],
             },
             Lang::English => HelpDoc {
-                title: "Rename (F2)",
+                title: "Edit Properties (F2)",
                 sections: &[("", "Renames the favorites folder. The dialog also lets you change its marker and color.")],
             },
             Lang::Chinese => HelpDoc {
-                title: "重命名 (F2)",
+                title: "修改属性 (F2)",
                 sections: &[("", "更改收藏文件夹的名称。在对话框中还可以更改标记和颜色。")],
             },
         }
@@ -7496,75 +10735,16 @@ impl Lang {
     pub fn help_fav_delete(self) -> HelpDoc {
         match self {
             Lang::Japanese => HelpDoc {
-                title: "削除",
+                title: "お気に入りフォルダの削除",
                 sections: &[("", "お気に入りフォルダを削除する（確認あり）。所属するファイルの登録も解除される。")],
             },
             Lang::English => HelpDoc {
-                title: "Delete",
+                title: "Delete Favorite Folder",
                 sections: &[("", "Deletes the favorites folder (with confirmation). Files assigned to it are unassigned too.")],
             },
             Lang::Chinese => HelpDoc {
-                title: "删除",
+                title: "删除收藏夹",
                 sections: &[("", "删除收藏文件夹（有确认）。所属文件的收藏关系也会被解除。")],
-            },
-        }
-    }
-
-    pub fn help_open_in_search(self) -> HelpDoc {
-        match self {
-            Lang::Japanese => HelpDoc {
-                title: "このフォルダを検索タブで開く",
-                sections: &[
-                    (
-                        "",
-                        "このフォルダを検索の基点フォルダに設定して、検索タブへ移る。\n\
-                         検索タブのツリーも、このフォルダまで展開して選択表示になる。",
-                    ),
-                    (
-                        "■ 保持されるもの",
-                        "名前・サイズ・日付などの検索条件と、検索結果の履歴はそのまま。基点フォルダだけが置き換わる。",
-                    ),
-                    (
-                        "■ グレーアウトする場合",
-                        "ネットワークパス上のフォルダ、実フォルダに辿れない仮想ノード（ルート・リンク切れ）。",
-                    ),
-                ],
-            },
-            Lang::English => HelpDoc {
-                title: "Open This Folder in Search Tab",
-                sections: &[
-                    (
-                        "",
-                        "Sets this folder as the search base folder and switches to the Search tab.\n\
-                         The Search tab's tree is also expanded to this folder and selected.",
-                    ),
-                    (
-                        "■ What is kept",
-                        "Search conditions (name, size, date, ...) and the search history stay as they are. Only the base folder is replaced.",
-                    ),
-                    (
-                        "■ When it is grayed out",
-                        "Folders on a network path, and virtual nodes without a real folder (root, broken links).",
-                    ),
-                ],
-            },
-            Lang::Chinese => HelpDoc {
-                title: "在搜索标签中打开此文件夹",
-                sections: &[
-                    (
-                        "",
-                        "将此文件夹设为搜索基点文件夹并切换到搜索标签。\n\
-                         搜索标签中的目录树也会展开到此文件夹并显示为选中状态。",
-                    ),
-                    (
-                        "■ 保留的内容",
-                        "名称、大小、日期等搜索条件和搜索历史保持不变，只替换基点文件夹。",
-                    ),
-                    (
-                        "■ 变灰的情况",
-                        "网络路径上的文件夹，以及没有实际文件夹的虚拟节点（根、链接失效）。",
-                    ),
-                ],
             },
         }
     }
@@ -7572,7 +10752,7 @@ impl Lang {
     pub fn help_card_open_folder(self) -> HelpDoc {
         match self {
             Lang::Japanese => HelpDoc {
-                title: "現在のフォルダを開く",
+                title: "現在のフォルダをファイラーで開く",
                 sections: &[(
                     "",
                     "OS標準のファイラーで、いま表示しているフォルダ（現在のフォルダ）を開く。\n\
@@ -7740,7 +10920,7 @@ impl Lang {
     pub fn help_open_this_folder(self) -> HelpDoc {
         match self {
             Lang::Japanese => HelpDoc {
-                title: "このフォルダを開く",
+                title: "このフォルダをファイラーで開く",
                 sections: &[
                     (
                         "",
@@ -7836,7 +11016,9 @@ impl Lang {
                     (
                         "",
                         "このアーカイブをビューアーで開いたときの、ページの並び順を保存する。\n\
-                         キーは名前／自然数／日付、向きは昇順／降順から選ぶ。",
+                         キーは名前／自然数／日付、向きは昇順／降順から選ぶ。\n\
+                         「未定義に戻す」で保存済みの条件を消せる（確認あり。ビューアーで開いているファイルも解除される）。\n\
+                         反映は、ビューアーで開いているファイルだと閉じるときに開いている側の条件で上書きされることがある。",
                     ),
                     (
                         "■ 複数選択しているとき",
@@ -7851,7 +11033,9 @@ impl Lang {
                     (
                         "",
                         "Saves the page order used when this archive is opened in the viewer.\n\
-                         Pick a key (name / natural / date) and a direction (asc / desc).",
+                         Pick a key (name / natural / date) and a direction (asc / desc).\n\
+                         \"Reset to undefined\" removes the saved condition (with confirmation; also for files open in the viewer).\n\
+                         Apply may be overwritten by the viewer's own condition when a file open in the viewer is closed.",
                     ),
                     (
                         "■ With multiple selection",
@@ -7866,7 +11050,9 @@ impl Lang {
                     (
                         "",
                         "保存在查看器中打开此压缩包时的页面排列顺序。\n\
-                         排序键可选名称/自然数/日期，方向可选升序/降序。",
+                         排序键可选名称/自然数/日期，方向可选升序/降序。\n\
+                         “恢复为未定义”可删除已保存的条件（需确认；在查看器中打开的文件也会解除）。\n\
+                         应用时，在查看器中打开的文件关闭时可能被查看器一侧的条件覆盖。",
                     ),
                     (
                         "■ 多选时",
@@ -8109,29 +11295,212 @@ impl Lang {
 }
 
 static LANG: AtomicU8 = AtomicU8::new(0);
+/// 「日中（テスト）」表示か。オンのとき、基準の言語は日本語（`t()` は日本語を返す）。
+static BILINGUAL: AtomicBool = AtomicBool::new(false);
 
+/// 表示の言語。3言語に、「日中（テスト）」（中国語で表示し、ホバーだけ日本語で出して、訳を確認するための表示）を足した4つ。
+/// 日中（テスト）に対応するのは、`tr`・`render` を通す文言だけ。それ以外の文言は、日本語のまま出る。
+/// ホバーの文言は、`as_ja` で包むと、日中（テスト）でも日本語で出る。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Display {
+    Ja,
+    En,
+    Zh,
+    JaZh,
+}
+
+impl Display {
+    #[cfg(test)]
+    pub const ALL: [Display; 4] = [Display::Ja, Display::En, Display::Zh, Display::JaZh];
+
+    pub fn native_name(self) -> &'static str {
+        match self {
+            Display::Ja => "日本語",
+            Display::En => "English",
+            Display::Zh => "中文",
+            Display::JaZh => "日中（テスト）",
+        }
+    }
+
+    /// 切り替えボタンを押したときの、次の表示（日本語 → English → 中文 → 日本語）。
+    /// 「日中（テスト）」はボタンの順には入れない。使うときは、state の `lang=jazh` を手で書く（訳の確認用の隠しモード）。
+    pub fn next(self) -> Display {
+        match self {
+            Display::Ja => Display::En,
+            Display::En => Display::Zh,
+            Display::Zh | Display::JaZh => Display::Ja,
+        }
+    }
+
+    /// state に保存する文字列。
+    pub fn code(self) -> &'static str {
+        match self {
+            Display::Ja => "ja",
+            Display::En => "en",
+            Display::Zh => "cn",
+            Display::JaZh => "jazh",
+        }
+    }
+
+    pub fn from_code(code: &str) -> Display {
+        match code {
+            "en" => Display::En,
+            "cn" => Display::Zh,
+            "jazh" => Display::JaZh,
+            _ => Display::Ja,
+        }
+    }
+}
+
+/// いまの言語（日中（テスト）のときは、基準の日本語）。
 pub fn t() -> Lang {
     Lang::from_u8(LANG.load(Ordering::Relaxed))
 }
 
-pub fn set(lang: Lang) {
+thread_local! {
+    /// `with_display` の中だけ Some。このスレッドにしか効かない。
+    static FORCE: std::cell::Cell<Option<Display>> = const { std::cell::Cell::new(None) };
+}
+
+/// `f` の中で作る文言を、いまの表示にかかわらず `d` にする（テストや、日中（テスト）のホバー用）。
+pub fn with_display<R>(d: Display, f: impl FnOnce() -> R) -> R {
+    let before = FORCE.with(|c| c.replace(Some(d)));
+    let r = f();
+    FORCE.with(|c| c.set(before));
+    r
+}
+
+/// ホバー用。日中（テスト）のときだけ、`f` の中で作る文言を日本語にする。ほかの表示（日本語・English・中文）では、そのままの言語。
+pub fn as_ja<R>(f: impl FnOnce() -> R) -> R {
+    if display() == Display::JaZh {
+        with_display(Display::Ja, f)
+    } else {
+        f()
+    }
+}
+
+pub fn display() -> Display {
+    if let Some(d) = FORCE.with(|c| c.get()) {
+        return d;
+    }
+    if BILINGUAL.load(Ordering::Relaxed) {
+        return Display::JaZh;
+    }
+    match t() {
+        Lang::Japanese => Display::Ja,
+        Lang::English => Display::En,
+        Lang::Chinese => Display::Zh,
+    }
+}
+
+pub fn set_display(d: Display) {
+    BILINGUAL.store(d == Display::JaZh, Ordering::Relaxed);
+    let lang = match d {
+        Display::Ja | Display::JaZh => Lang::Japanese,
+        Display::En => Lang::English,
+        Display::Zh => Lang::Chinese,
+    };
     LANG.store(lang.as_u8(), Ordering::Relaxed);
 }
 
 pub fn set_from_code(code: &str) {
-    let lang = match code {
-        "en" => Lang::English,
-        "cn" => Lang::Chinese,
-        _    => Lang::Japanese,
-    };
-    set(lang);
+    set_display(Display::from_code(code));
 }
 
 pub fn lang_code() -> &'static str {
-    match t() {
-        Lang::Japanese => "ja",
-        Lang::English  => "en",
-        Lang::Chinese  => "cn",
+    display().code()
+}
+
+/// 言語 `l` の文言を返す（日中（テスト）の併記はしない。`render` の中で使う）。
+pub fn pick(l: Lang, ja: &'static str, en: &'static str, zh: &'static str) -> &'static str {
+    match l {
+        Lang::Japanese => ja,
+        Lang::English => en,
+        Lang::Chinese => zh,
+    }
+}
+
+/// 3言語の文言から、`d` に合うものを返す（固定文言用）。日中（テスト）は、中国語。
+pub fn tr_for(d: Display, ja: &'static str, en: &'static str, zh: &'static str) -> &'static str {
+    match d {
+        Display::Ja => ja,
+        Display::En => en,
+        Display::Zh | Display::JaZh => zh,
+    }
+}
+
+/// いまの表示に合う文言を返す。固定文言は、日本語・英語・中国語の順に渡す。
+pub fn tr(ja: &'static str, en: &'static str, zh: &'static str) -> &'static str {
+    tr_for(display(), ja, en, zh)
+}
+
+/// 数や名前を埋め込む文言用。`f` は言語を受け取って文字列を作る。日中（テスト）では、日本語と中国語で作って併記する。
+pub fn render(f: impl Fn(Lang) -> String) -> String {
+    render_for(display(), f)
+}
+
+pub fn render_for(d: Display, f: impl Fn(Lang) -> String) -> String {
+    match d {
+        Display::Ja => f(Lang::Japanese),
+        Display::En => f(Lang::English),
+        Display::Zh | Display::JaZh => f(Lang::Chinese),
+    }
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+
+    #[test]
+    fn codes_round_trip_and_unknown_falls_back_to_japanese() {
+        for d in Display::ALL {
+            assert_eq!(Display::from_code(d.code()), d);
+        }
+        assert_eq!(Display::from_code("zzz"), Display::Ja);
+        assert_eq!(Display::from_code(""), Display::Ja);
+    }
+
+    #[test]
+    fn as_ja_applies_only_to_the_test_display() {
+        // 日中（テスト）だけ、日本語になる。English・中文では、そのままの言語（ホバーが日本語に固定される不具合の再発防止）。
+        assert_eq!(with_display(Display::JaZh, || as_ja(|| display())), Display::Ja);
+        assert_eq!(with_display(Display::En, || as_ja(|| display())), Display::En);
+        assert_eq!(with_display(Display::Zh, || as_ja(|| display())), Display::Zh);
+        assert_eq!(with_display(Display::Ja, || as_ja(|| display())), Display::Ja);
+        // 終わったら、元に戻る。
+        FORCE.with(|c| assert!(c.get().is_none()));
+    }
+
+    #[test]
+    fn next_cycles_through_the_three_languages_and_skips_the_test_display() {
+        let mut d = Display::Ja;
+        let mut seen = vec![d];
+        for _ in 0..3 {
+            d = d.next();
+            seen.push(d);
+        }
+        assert_eq!(seen, vec![Display::Ja, Display::En, Display::Zh, Display::Ja]);
+        // 隠しモードから、ボタンを押すと日本語に戻る。
+        assert_eq!(Display::JaZh.next(), Display::Ja);
+    }
+
+    #[test]
+    fn tr_for_picks_by_display_and_the_test_display_shows_chinese() {
+        assert_eq!(tr_for(Display::Ja, "日", "en", "中"), "日");
+        assert_eq!(tr_for(Display::En, "日", "en", "中"), "en");
+        assert_eq!(tr_for(Display::Zh, "日", "en", "中"), "中");
+        assert_eq!(tr_for(Display::JaZh, "日", "en", "中"), "中");
+    }
+
+    #[test]
+    fn render_for_builds_each_language_and_the_test_display_uses_chinese() {
+        let f = |l: Lang| match l {
+            Lang::Japanese => "3件".to_string(),
+            Lang::English => "3 items".to_string(),
+            Lang::Chinese => "3项".to_string(),
+        };
+        assert_eq!(render_for(Display::En, f), "3 items");
+        assert_eq!(render_for(Display::JaZh, f), "3项");
     }
 }
 
@@ -8166,6 +11535,15 @@ mod calendar_tests {
     }
 }
 
+/// エクスプローラー上部のサムネイル状況ラベルに書き添える、ファイルID取得状況。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IdGaugeText {
+    /// 取得済み。
+    Done,
+    /// 取得中。`remaining` は50件刻みに切り上げた残り件数。
+    Running { remaining: usize },
+}
+
 #[cfg(test)]
 mod thumbnail_status_tests {
     use super::Lang;
@@ -8173,7 +11551,7 @@ mod thumbnail_status_tests {
     #[test]
     fn japanese_status_keeps_error_before_update_suffix() {
         assert_eq!(
-            Lang::Japanese.thumbnail_status(77, 80, 3, true),
+            Lang::Japanese.thumbnail_status(77, 80, 3, true, None),
             "サムネイル 77/80 エラー 3 新形式に更新中",
         );
     }
@@ -8181,8 +11559,29 @@ mod thumbnail_status_tests {
     #[test]
     fn normal_status_has_no_extra_suffix() {
         assert_eq!(
-            Lang::Japanese.thumbnail_status(80, 80, 0, false),
+            Lang::Japanese.thumbnail_status(80, 80, 0, false, None),
             "サムネイル 80/80",
+        );
+    }
+
+    #[test]
+    fn id_gauge_is_appended_at_the_far_right() {
+        use super::IdGaugeText::{Done, Running};
+        assert_eq!(
+            Lang::Japanese.thumbnail_status(80, 80, 0, false, Some(Done)),
+            "サムネイル 80/80（ID取得済）",
+        );
+        assert_eq!(
+            Lang::Japanese.thumbnail_status(77, 80, 3, true, Some(Running { remaining: 50 })),
+            "サムネイル 77/80 エラー 3 新形式に更新中（ID取得中/残り50件）",
+        );
+        assert_eq!(
+            Lang::English.thumbnail_status(80, 80, 0, false, Some(Running { remaining: 100 })),
+            "Thumbnails 80/80 (Fetching IDs / 100 left)",
+        );
+        assert_eq!(
+            Lang::Chinese.thumbnail_status(80, 80, 0, false, Some(Done)),
+            "缩略图 80/80（ID已获取）",
         );
     }
 }

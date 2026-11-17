@@ -18,6 +18,8 @@ pub enum ViewerBarItem {
     SortNatural,
     /// アーカイブ内ソート: 日付
     SortDate,
+    /// アーカイブ内ソート: 格納順（アーカイブ内の並び）
+    SortStored,
     /// アーカイブ内ソート: 昇順/降順トグル
     SortOrder,
     /// ページ表示モード: 単ページ
@@ -40,17 +42,24 @@ pub enum ViewerBarItem {
     RotationCarry,
     /// Exif Orientation自動回転の適用トグル
     ExifRotation,
+    /// 虫眼鏡のフィット基準軸（全体／幅／高さ）のサイクルボタン
+    FitMode,
+    /// 幅/高さフィット中のホイール動作（拡大⇔スクロール）トグル
+    WheelMode,
     /// OCR/翻訳子ウィンドウの開閉トグル（旧: 画面隅フローティングボタン、ツールバーへ昇格）
     TranslateToggle,
+    /// アーカイブ評価の点数表示と±0.5ボタン（巻末の評価オーバーレイと同じ値を共有）
+    Rating,
 }
 
-pub const BAR_ITEM_COUNT: usize = 15;
+pub const BAR_ITEM_COUNT: usize = 19;
 
-/// 既定の並び順。ソート群 → ページ群 → 回転群 → 翻訳群。
+/// 既定の並び順。ソート群 → ページ群 → 回転群 → 翻訳群 → 評価群。
 pub const DEFAULT_BAR_ORDER: [ViewerBarItem; BAR_ITEM_COUNT] = [
     ViewerBarItem::SortName,
     ViewerBarItem::SortNatural,
     ViewerBarItem::SortDate,
+    ViewerBarItem::SortStored,
     ViewerBarItem::SortOrder,
     ViewerBarItem::PageSingle,
     ViewerBarItem::SpreadLeft,
@@ -62,7 +71,10 @@ pub const DEFAULT_BAR_ORDER: [ViewerBarItem; BAR_ITEM_COUNT] = [
     ViewerBarItem::RotateCw,
     ViewerBarItem::RotationCarry,
     ViewerBarItem::ExifRotation,
+    ViewerBarItem::FitMode,
+    ViewerBarItem::WheelMode,
     ViewerBarItem::TranslateToggle,
+    ViewerBarItem::Rating,
 ];
 
 /// 描画グループ。隣接項目のグループが変わる位置に描画側がセパレータを挟む
@@ -72,7 +84,9 @@ pub enum BarGroup {
     Sort,
     Page,
     Rotation,
+    View,
     Translate,
+    Rating,
 }
 
 impl ViewerBarItem {
@@ -82,6 +96,7 @@ impl ViewerBarItem {
             ViewerBarItem::SortName        => "sort_name",
             ViewerBarItem::SortNatural     => "sort_natural",
             ViewerBarItem::SortDate        => "sort_date",
+            ViewerBarItem::SortStored      => "sort_stored",
             ViewerBarItem::SortOrder       => "sort_order",
             ViewerBarItem::PageSingle      => "page_single",
             ViewerBarItem::SpreadLeft      => "spread_left",
@@ -93,7 +108,10 @@ impl ViewerBarItem {
             ViewerBarItem::RotateCw        => "rotate_cw",
             ViewerBarItem::RotationCarry   => "rotation_carry",
             ViewerBarItem::ExifRotation    => "exif_rotation",
+            ViewerBarItem::FitMode         => "fit_mode",
+            ViewerBarItem::WheelMode       => "wheel_mode",
             ViewerBarItem::TranslateToggle => "translate_toggle",
+            ViewerBarItem::Rating          => "rating",
         }
     }
 
@@ -102,6 +120,7 @@ impl ViewerBarItem {
             "sort_name"        => ViewerBarItem::SortName,
             "sort_natural"     => ViewerBarItem::SortNatural,
             "sort_date"        => ViewerBarItem::SortDate,
+            "sort_stored"      => ViewerBarItem::SortStored,
             "sort_order"       => ViewerBarItem::SortOrder,
             "page_single"      => ViewerBarItem::PageSingle,
             "spread_left"      => ViewerBarItem::SpreadLeft,
@@ -113,7 +132,10 @@ impl ViewerBarItem {
             "rotate_cw"        => ViewerBarItem::RotateCw,
             "rotation_carry"   => ViewerBarItem::RotationCarry,
             "exif_rotation"    => ViewerBarItem::ExifRotation,
+            "fit_mode"         => ViewerBarItem::FitMode,
+            "wheel_mode"       => ViewerBarItem::WheelMode,
             "translate_toggle" => ViewerBarItem::TranslateToggle,
+            "rating"           => ViewerBarItem::Rating,
             _ => return None,
         })
     }
@@ -142,6 +164,7 @@ impl ViewerBarItem {
             ViewerBarItem::SortName
             | ViewerBarItem::SortNatural
             | ViewerBarItem::SortDate
+            | ViewerBarItem::SortStored
             | ViewerBarItem::SortOrder => BarGroup::Sort,
             ViewerBarItem::PageSingle
             | ViewerBarItem::SpreadLeft
@@ -153,7 +176,9 @@ impl ViewerBarItem {
             | ViewerBarItem::RotateCw
             | ViewerBarItem::RotationCarry
             | ViewerBarItem::ExifRotation => BarGroup::Rotation,
+            ViewerBarItem::FitMode | ViewerBarItem::WheelMode => BarGroup::View,
             ViewerBarItem::TranslateToggle => BarGroup::Translate,
+            ViewerBarItem::Rating => BarGroup::Rating,
         }
     }
 }
@@ -219,6 +244,20 @@ mod tests {
             // id() ↔ from_id() の往復が成立すること
             assert_eq!(ViewerBarItem::from_id(a.id()), Some(a));
         }
+    }
+
+    /// 旧 state（FitMode を知らない）を読んでも、既定順の直前（回転群の末尾）の直後へ補完される。
+    #[test]
+    fn fit_mode_item_is_completed_after_exif_rotation_for_old_state() {
+        let saved: Vec<ViewerBarItem> = DEFAULT_BAR_ORDER
+            .iter()
+            .copied()
+            .filter(|&it| it != ViewerBarItem::FitMode)
+            .collect();
+        let order = resolve_bar_order(&saved);
+        assert_eq!(order, DEFAULT_BAR_ORDER);
+        let pos = |it| order.iter().position(|&x| x == it).unwrap();
+        assert_eq!(pos(ViewerBarItem::FitMode), pos(ViewerBarItem::ExifRotation) + 1);
     }
 
     #[test]
@@ -300,5 +339,20 @@ mod tests {
             .filter(|&it| it != ViewerBarItem::SortName)
             .collect();
         assert_eq!(resolve_bar_order(&saved), DEFAULT_BAR_ORDER);
+    }
+
+    /// 旧 state（Rating を知らない）を読んでも、既定順の直前（翻訳）の直後へ補完される。
+    #[test]
+    fn rating_item_is_completed_after_translate_for_old_state() {
+        let saved: Vec<ViewerBarItem> = DEFAULT_BAR_ORDER
+            .iter()
+            .copied()
+            .filter(|&it| it != ViewerBarItem::Rating)
+            .collect();
+        let order = resolve_bar_order(&saved);
+        assert_eq!(order, DEFAULT_BAR_ORDER);
+        let pos = |it| order.iter().position(|&x| x == it).unwrap();
+        assert_eq!(pos(ViewerBarItem::Rating), pos(ViewerBarItem::TranslateToggle) + 1);
+        assert_eq!(ViewerBarItem::Rating.group(), BarGroup::Rating);
     }
 }

@@ -24,8 +24,11 @@ use crate::identity_pending::PendingKind;
 const CHUNK_SIZE: usize = 10;
 /// 進捗（処理済み件数）を、これだけ進むごとに通知する（検証済みが無くても送る）。
 const PROGRESS_STEP: usize = 100;
-/// 処理中トーストを出し始めるまでの待ち。これより早く終われば、トーストは出さない。
-const TOAST_DELAY: Duration = Duration::from_secs(2);
+/// サムネイル状況ラベルへ、ID取得状況を書き添え始めるまでの待ち。フォルダ表示からこれだけ経つまでは何も出さない
+/// （速く終わる処理で「取得済」が一瞬だけ見えるちらつきを避ける）。
+const GAUGE_DELAY: Duration = Duration::from_secs(3);
+/// 「残りX件」の表示を丸める単位（LAZY。切り上げて表示する）。
+const REMAINING_STEP: usize = 50;
 /// 書き込み中で後回しにしたファイルの再試行間隔と回数。
 const RETRY_DELAY: Duration = Duration::from_secs(4);
 const MAX_RETRY_ROUNDS: usize = 3;
@@ -67,6 +70,8 @@ pub(super) struct IdentityWorker {
     job_tx: Option<mpsc::Sender<Job>>,
     pub(super) event_rx: mpsc::Receiver<IdentityEvent>,
     current: Arc<AtomicU64>,
+    /// 先に解決してほしいパス（画面に見えているファイル）。ワーカーが次のファイルを選ぶたびに取り出す。
+    priority: Arc<Mutex<Vec<PathBuf>>>,
 }
 
 impl IdentityWorker {
@@ -75,11 +80,13 @@ impl IdentityWorker {
         let (event_tx, event_rx) = mpsc::channel::<IdentityEvent>();
         let current = Arc::new(AtomicU64::new(0));
         let worker_current = Arc::clone(&current);
+        let priority = Arc::new(Mutex::new(Vec::new()));
+        let worker_priority = Arc::clone(&priority);
         std::thread::Builder::new()
             .name("identity-resolver".into())
-            .spawn(move || run_worker(job_rx, event_tx, worker_current, ctx))
+            .spawn(move || run_worker(job_rx, event_tx, worker_current, worker_priority, ctx))
             .expect("spawn identity-resolver");
-        Self { job_tx: Some(job_tx), event_rx, current }
+        Self { job_tx: Some(job_tx), event_rx, current, priority }
     }
 
     /// バッチを投入する。世代を進めるので、処理中の古いバッチは次のファイルで打ち切られる。
@@ -91,10 +98,21 @@ impl IdentityWorker {
         cache_root: Option<PathBuf>,
     ) -> u64 {
         let generation = self.current.fetch_add(1, Ordering::AcqRel) + 1;
+        // 古いバッチ向けの優先指定は持ち越さない。
+        if let Ok(mut p) = self.priority.lock() {
+            p.clear();
+        }
         if let Some(tx) = &self.job_tx {
             let _ = tx.send(Job::Resolve { generation, db, paths, cache_root });
         }
         generation
+    }
+
+    /// 先に解決してほしいパスを渡す（処理中のバッチが、次のファイルを選ぶときに優先して取り上げる）。
+    pub(super) fn prioritize(&self, paths: Vec<PathBuf>) {
+        if let Ok(mut p) = self.priority.lock() {
+            p.extend(paths);
+        }
     }
 
     /// 旧レコードのバックフィルを依頼する（起動後に1回）。フォルダ表示のバッチが来れば、そちらが先。
@@ -127,6 +145,7 @@ fn run_worker(
     job_rx: mpsc::Receiver<Job>,
     event_tx: mpsc::Sender<IdentityEvent>,
     current: Arc<AtomicU64>,
+    priority: Arc<Mutex<Vec<PathBuf>>>,
     ctx: egui::Context,
 ) {
     let mut backfill: Option<Backfill> = None;
@@ -146,7 +165,7 @@ fn run_worker(
         };
         match job {
             Some(Job::Resolve { generation, db, paths, cache_root }) => {
-                run_resolve_job(generation, &db, paths, cache_root.as_deref(), &current, &event_tx, &ctx);
+                run_resolve_job(generation, &db, paths, cache_root.as_deref(), &current, &priority, &event_tx, &ctx);
             }
             Some(Job::Backfill { db }) => backfill = Some(Backfill::new(db, BACKFILL_DELAY)),
             Some(Job::Sweep { db, config_root, retention_days, keep }) => {
@@ -194,12 +213,14 @@ fn run_sweep_job(
     ctx.request_repaint();
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_resolve_job(
     generation: u64,
     db: &Arc<Mutex<Database>>,
     paths: Vec<PathBuf>,
     cache_root: Option<&Path>,
     current: &AtomicU64,
+    priority: &Mutex<Vec<PathBuf>>,
     event_tx: &mpsc::Sender<IdentityEvent>,
     ctx: &egui::Context,
 ) {
@@ -209,7 +230,7 @@ fn run_resolve_job(
     let mut pending_created = 0;
     let mut markers_created = 0;
     for round in 0..=MAX_RETRY_ROUNDS {
-        let outcome = process_batch_with(
+        let outcome = process_batch_prioritized(
             db,
             &pending,
             &keep_going,
@@ -220,6 +241,7 @@ fn run_resolve_job(
                     transplant_thumbnail_for_move(root, new_path, from_key);
                 }
             },
+            &|| priority.lock().map(|mut p| std::mem::take(&mut *p)).unwrap_or_default(),
             &mut |chunk| {
                 let _ = event_tx.send(IdentityEvent::Chunk {
                     generation,
@@ -352,21 +374,68 @@ pub(super) fn process_batch_with(
     on_relocated: &dyn Fn(&Path, &str),
     emit: &mut dyn FnMut(BatchChunk),
 ) -> BatchOutcome {
+    process_batch_prioritized(db, paths, keep_going, now, chunk_size, on_relocated, &Vec::new, emit)
+}
+
+/// `process_batch_with` の、優先指定つきの版。`take_priority` は、次のファイルを選ぶたびに呼ばれ、
+/// 先に解決してほしいパス（画面に見えているファイル）を返す。`paths` に無いもの・処理済みのものは無視する。
+/// 優先したファイルは、溜まりを待たずに直ちに結果を渡す（「検証中」表示とサムネ生成を早く解放するため）。
+/// 優先で順序が変わるので、同内容の新規ファイル2つでは、先に処理した方が「元」になりうる（許容済み）。
+#[allow(clippy::too_many_arguments)]
+pub(super) fn process_batch_prioritized(
+    db: &Arc<Mutex<Database>>,
+    paths: &[PathBuf],
+    keep_going: &dyn Fn() -> bool,
+    now: i64,
+    chunk_size: usize,
+    on_relocated: &dyn Fn(&Path, &str),
+    take_priority: &dyn Fn() -> Vec<PathBuf>,
+    emit: &mut dyn FnMut(BatchChunk),
+) -> BatchOutcome {
     let mut keys = KeyMaker::default();
     let mut outcome = BatchOutcome::default();
     let mut chunk = BatchChunk::default();
     let mut last_flushed = 0;
-    for (index, path) in paths.iter().enumerate() {
+    let index_of: HashMap<&PathBuf, usize> = paths.iter().enumerate().map(|(i, p)| (p, i)).collect();
+    let mut done = vec![false; paths.len()];
+    let mut priority: VecDeque<usize> = VecDeque::new();
+    let (mut next, mut processed) = (0, 0);
+    loop {
+        for p in take_priority() {
+            if let Some(&i) = index_of.get(&p) {
+                if !done[i] && !priority.contains(&i) {
+                    priority.push_back(i);
+                }
+            }
+        }
+        let (index, urgent) = match priority.pop_front() {
+            Some(i) => (i, true),
+            None => {
+                while next < paths.len() && done[next] {
+                    next += 1;
+                }
+                if next >= paths.len() {
+                    break;
+                }
+                (next, false)
+            }
+        };
         if !keep_going() {
             outcome.aborted = true;
             break;
         }
-        chunk.processed = index + 1;
+        done[index] = true;
+        processed += 1;
+        let path = &paths[index];
+        chunk.processed = processed;
         let (Some(dir), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else {
             continue;
         };
         let key = keys.key(dir, name);
-        match file_identity::resolve_file(db, &key, path, now, false) {
+        let resolve_started = Instant::now();
+        let resolved = file_identity::resolve_file(db, &key, path, now, false);
+        crate::perf_fixture::item(crate::perf_fixture::Stage::IdResolve, resolve_started.elapsed());
+        match resolved {
             ResolveOutcome::Resolved(Resolution::Moved { id, from }) => {
                 if crate::duplicate_marker::record_moved(db, id, now) {
                     outcome.markers_created += 1;
@@ -411,7 +480,10 @@ pub(super) fn process_batch_with(
             ResolveOutcome::Unstable => outcome.unstable.push(path.clone()),
             ResolveOutcome::Unchanged => {}
         }
-        if chunk.settled.len() >= chunk_size || chunk.processed - last_flushed >= PROGRESS_STEP {
+        if chunk.settled.len() >= chunk_size
+            || chunk.processed - last_flushed >= PROGRESS_STEP
+            || (urgent && !chunk.settled.is_empty())
+        {
             last_flushed = chunk.processed;
             let processed = chunk.processed;
             emit(std::mem::take(&mut chunk));
@@ -447,25 +519,41 @@ fn note_pending(
     }
 }
 
-/// フォルダ表示時のID解決の進捗。処理が `TOAST_DELAY` を過ぎても終わらない時だけ、処理中トーストを出す。
+/// フォルダ表示時のID解決の進捗。ラベルの「ID取得状況」の元になる。
+/// 処理が終わっても `done` を立てて残す（「取得済」の表示に使う。次のフォルダ表示で作り直される）。
 pub(super) struct IdentityProgress {
     total: usize,
     processed: usize,
+    done: bool,
     started: Instant,
+}
+
+/// 残り件数を `REMAINING_STEP` 件刻みに切り上げる。処理中は最低でも1刻み分（0件とは出さない）。
+fn round_up_remaining(remaining: usize) -> usize {
+    remaining.max(1).div_ceil(REMAINING_STEP) * REMAINING_STEP
 }
 
 impl IdentityProgress {
     fn new(total: usize) -> Self {
-        Self { total, processed: 0, started: Instant::now() }
+        Self { total, processed: 0, done: false, started: Instant::now() }
     }
 
-    /// 開始から待ち時間が過ぎたか（過ぎていれば、まだ終わっていない処理のトーストを出す）。
-    fn toast_due(&self, now: Instant) -> bool {
-        now.duration_since(self.started) >= TOAST_DELAY
+    /// 開始から待ち時間が過ぎたか。過ぎるまではID取得状況を出さない。
+    fn gauge_due(&self, now: Instant) -> bool {
+        now.duration_since(self.started) >= GAUGE_DELAY
     }
 
-    fn message(&self) -> String {
-        crate::i18n::t().identity_toast(self.processed.min(self.total), self.total)
+    /// ラベルに書き添えるID取得状況。待ち時間内は `None`。
+    fn gauge(&self, now: Instant) -> Option<crate::i18n::IdGaugeText> {
+        use crate::i18n::IdGaugeText;
+        if !self.gauge_due(now) {
+            return None;
+        }
+        Some(if self.done {
+            IdGaugeText::Done
+        } else {
+            IdGaugeText::Running { remaining: round_up_remaining(self.total.saturating_sub(self.processed)) }
+        })
     }
 }
 
@@ -523,29 +611,56 @@ impl NekoviewApp {
         if !crate::file_identity::is_enabled() {
             return;
         }
+        // 計測（サムネのみ）: ID解決を走らせない。「検証中」も付けないので、サムネ生成は待たされない。
+        if crate::perf_fixture::is_thumb_only() {
+            self.identity_verifying.clear();
+            self.identity_progress = None;
+            return;
+        }
         let Some(db) = self.spread_db.clone() else { return };
         let paths: Vec<PathBuf> = self.archives.clone();
         self.identity_verifying = crate::spread_state::paths_without_identity_or_legacy(&db, &paths);
+        self.identity_priority_sent.clear();
         self.identity_dirty = false;
         self.identity_progress = (!paths.is_empty()).then(|| IdentityProgress::new(paths.len()));
         self.identity_worker.submit(db, paths, self.config.cache_root());
     }
 
-    /// 処理中トーストを、進捗に合わせて出し入れする。待ち時間内、または完了後は出さない。
-    fn update_identity_toast(&mut self) {
-        let desired = match &self.identity_progress {
-            Some(p) if p.toast_due(Instant::now()) => Some(p.message()),
-            Some(p) => {
-                // 待ち時間が明けるフレームを確実に作る（入力が無くても再描画する）。
-                let remaining = TOAST_DELAY.saturating_sub(Instant::now().duration_since(p.started));
+    /// 画面に見えている「検証中」のファイル（と、その次の1画面ぶん）の解決を、一覧の先頭からの順に先立って依頼する。
+    /// 初回登録の直後にフォルダの中ほどまでスクロールしても、そこのサムネが解決待ちで出ないのを避ける。
+    /// `lo..=hi` は `filtered_indices` 上の可視範囲。同じパスは1回しか依頼しない。毎フレーム呼んでよい。
+    pub(super) fn prioritize_identity_for_visible(&mut self, lo: usize, hi: usize) {
+        let total = self.filtered_indices.len();
+        if self.identity_verifying.is_empty() || total == 0 || lo >= total || hi < lo {
+            return;
+        }
+        let end = (hi + (hi - lo + 1)).min(total - 1);
+        let paths: Vec<PathBuf> = self.filtered_indices[lo..=end]
+            .iter()
+            .filter_map(|&i| self.archives.get(i))
+            .filter(|p| self.identity_verifying.contains(*p) && self.identity_priority_sent.insert((*p).clone()))
+            .cloned()
+            .collect();
+        if !paths.is_empty() {
+            self.identity_worker.prioritize(paths);
+        }
+    }
+
+    /// ラベルに書き添えるID取得状況（ID層が止まっている時・待ち時間内・対象なしの時は `None`）。
+    pub(super) fn identity_gauge(&self) -> Option<crate::i18n::IdGaugeText> {
+        if !crate::file_identity::is_enabled() {
+            return None;
+        }
+        self.identity_progress.as_ref()?.gauge(Instant::now())
+    }
+
+    /// 待ち時間が明けるフレームを確実に作る（入力が無くても再描画する）。毎フレーム呼ぶ。
+    fn schedule_identity_gauge_repaint(&self) {
+        if let Some(p) = &self.identity_progress {
+            if !p.gauge_due(Instant::now()) {
+                let remaining = GAUGE_DELAY.saturating_sub(Instant::now().duration_since(p.started));
                 self.egui_ctx.request_repaint_after(remaining);
-                None
             }
-            None => None,
-        };
-        if desired != self.identity_toast_msg {
-            self.set_sticky_toast(desired.clone());
-            self.identity_toast_msg = desired;
         }
     }
 
@@ -629,12 +744,15 @@ impl NekoviewApp {
                         (false, true) => self.set_toast(t.dup_marker_toast(markers_created)),
                         (false, false) => {}
                     }
+                    crate::perf_fixture::stage_done(crate::perf_fixture::Stage::IdResolve);
                     // 解決が済んだので、このフォルダの同内容ファイル（導入前から重複していたものなど）を探す。
                     self.request_marker_detect();
                     self.request_thumb_hash();
-                    // 後回しのまま残った・失敗したものも含め、検証中表示と処理中トーストを残さない。
+                    // 後回しのまま残った・失敗したものも含め、検証中表示を残さない。ID取得状況は「取得済」にする。
                     self.identity_verifying.clear();
-                    self.identity_progress = None;
+                    if let Some(p) = &mut self.identity_progress {
+                        p.done = true;
+                    }
                     if std::mem::take(&mut self.identity_dirty) {
                         // 評価以外（お気に入りの先頭固定など）の保存状態も付き替わるので、並び順の軸に
                         // 関わらず、並びとフィルタを一度だけ作り直す。
@@ -644,7 +762,7 @@ impl NekoviewApp {
                 }
             }
         }
-        self.update_identity_toast();
+        self.schedule_identity_gauge_repaint();
     }
 }
 
@@ -709,6 +827,76 @@ mod tests {
 
     fn rec_of(db: &Arc<Mutex<Database>>, path: &Path) -> Option<file_identity::FileRecord> {
         file_identity::lookup(db, &crate::spread_state::make_key(path.parent()?, path.file_name()?.to_str()?))
+    }
+
+    fn run_prioritized(
+        db: &Arc<Mutex<Database>>,
+        paths: &[PathBuf],
+        take_priority: &dyn Fn() -> Vec<PathBuf>,
+    ) -> (BatchOutcome, Vec<BatchChunk>) {
+        let mut emitted = Vec::new();
+        let outcome = process_batch_prioritized(
+            db,
+            paths,
+            &|| true,
+            file_identity::now_unix(),
+            CHUNK_SIZE,
+            &|_, _| {},
+            take_priority,
+            &mut |c| emitted.push(c),
+        );
+        (outcome, emitted)
+    }
+
+    #[test]
+    fn priority_files_are_resolved_first_and_reported_immediately() {
+        let t = TempRoot::new("priority");
+        let db = open_spread_db(&t.0).unwrap();
+        let dir = t.dir("d");
+        let paths: Vec<PathBuf> = (0..25).map(|i| file(&dir, &format!("f{i:02}.zip"), 3000 + i, 1000)).collect();
+        // 3番目の呼び出しで、後ろの2件（と、一覧に無いパス・重複）を優先に指定する。
+        let calls = Cell::new(0);
+        let wanted = vec![paths[20].clone(), paths[22].clone(), paths[20].clone(), dir.join("unknown.zip")];
+        let (outcome, emitted) = run_prioritized(&db, &paths, &|| {
+            calls.set(calls.get() + 1);
+            if calls.get() == 3 { wanted.clone() } else { Vec::new() }
+        });
+        assert!(!outcome.aborted);
+        let settled: Vec<PathBuf> = emitted.iter().flat_map(|c| c.settled.clone()).collect();
+        // 2件処理した後に、優先の2件が割り込み、残りは一覧の順に続く。全件が1回ずつ報告される。
+        assert_eq!(settled.len(), paths.len());
+        let mut sorted = settled.clone();
+        sorted.sort();
+        let mut expected = paths.clone();
+        expected.sort();
+        assert_eq!(sorted, expected, "重複なく全件");
+        assert_eq!(&settled[2..4], &[paths[20].clone(), paths[22].clone()]);
+        let rest: Vec<&PathBuf> = settled.iter().filter(|p| **p != paths[20] && **p != paths[22]).collect();
+        let in_order: Vec<&PathBuf> = paths.iter().filter(|p| **p != paths[20] && **p != paths[22]).collect();
+        assert_eq!(rest, in_order, "優先以外は一覧の順");
+        // 優先のファイルは、溜まりを待たずに直ちに報告される（その時点の溜まりごと）。
+        assert!(emitted.iter().any(|c| c.settled.last() == Some(&paths[20])));
+        // 進捗は後戻りしない。
+        let progress: Vec<usize> = emitted.iter().map(|c| c.processed).collect();
+        assert!(progress.windows(2).all(|w| w[0] <= w[1]), "{progress:?}");
+        assert!(paths.iter().all(|p| rec_of(&db, p).is_some_and(|r| r.fp.is_some())));
+    }
+
+    #[test]
+    fn priority_for_already_resolved_files_is_ignored() {
+        let t = TempRoot::new("priority_done");
+        let db = open_spread_db(&t.0).unwrap();
+        let dir = t.dir("d");
+        let paths: Vec<PathBuf> = (0..5).map(|i| file(&dir, &format!("f{i}.zip"), 3000 + i, 1000)).collect();
+        let first = paths[0].clone();
+        // 先頭は最初に処理済みになるので、後から優先を指定されても二重には処理されない。
+        let calls = Cell::new(0);
+        let (_, emitted) = run_prioritized(&db, &paths, &|| {
+            calls.set(calls.get() + 1);
+            if calls.get() >= 3 { vec![first.clone()] } else { Vec::new() }
+        });
+        let settled: Vec<PathBuf> = emitted.iter().flat_map(|c| c.settled.clone()).collect();
+        assert_eq!(settled, paths);
     }
 
     #[test]
@@ -993,21 +1181,24 @@ mod tests {
     }
 
     #[test]
-    fn toast_is_due_only_after_the_initial_wait() {
-        let p = IdentityProgress::new(10);
-        assert!(!p.toast_due(Instant::now()), "待ち時間内は出さない（速く終わる処理では出ない）");
-        let later = p.started + TOAST_DELAY;
-        assert!(p.toast_due(later), "待ち時間を過ぎても終わらなければ出す");
-        assert!(!p.toast_due(p.started + TOAST_DELAY - Duration::from_millis(1)));
+    fn gauge_is_hidden_until_the_delay_passes() {
+        use crate::i18n::IdGaugeText::{Done, Running};
+        let mut p = IdentityProgress::new(120);
+        assert_eq!(p.gauge(Instant::now()), None, "待ち時間内は出さない（速く終わる処理では出ない）");
+        assert_eq!(p.gauge(p.started + GAUGE_DELAY - Duration::from_millis(1)), None);
+        assert_eq!(p.gauge(p.started + GAUGE_DELAY), Some(Running { remaining: 150 }));
+        p.done = true;
+        assert_eq!(p.gauge(p.started + GAUGE_DELAY), Some(Done));
+        assert_eq!(p.gauge(p.started), None, "完了していても待ち時間内は出さない");
     }
 
     #[test]
-    fn toast_message_never_exceeds_total() {
-        let mut p = IdentityProgress::new(5);
-        p.processed = 9;
-        assert!(p.message().contains("5 / 5"), "{}", p.message());
-        p.processed = 2;
-        assert!(p.message().contains("2 / 5"));
+    fn remaining_is_rounded_up_in_steps() {
+        assert_eq!(round_up_remaining(237), 250);
+        assert_eq!(round_up_remaining(250), 250);
+        assert_eq!(round_up_remaining(251), 300);
+        assert_eq!(round_up_remaining(1), 50);
+        assert_eq!(round_up_remaining(0), 50, "処理中に0件とは出さない");
     }
 
     #[test]

@@ -549,6 +549,63 @@ pub fn fit_scale(viewport: Vec2, img: Vec2) -> f32 {
     (viewport.x / img.x).min(viewport.y / img.y)
 }
 
+/// 虫眼鏡の上で使う「フィット」の基準軸。`Contain` は従来のフィット（全体が収まる）で、
+/// `Width`/`Height` は窓の幅/高さにぴったり合わせる（反対の軸はスクロールで見る）。
+/// 非永続・ビューアー窓のセッション限り。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum FitMode {
+    #[default]
+    Contain,
+    Width,
+    Height,
+}
+
+impl FitMode {
+    /// ツールバーのサイクルボタン用: Contain → Width → Height → Contain。
+    pub fn next(self) -> Self {
+        match self {
+            FitMode::Contain => FitMode::Width,
+            FitMode::Width => FitMode::Height,
+            FitMode::Height => FitMode::Contain,
+        }
+    }
+}
+
+/// `mode` のフィット倍率。`Contain` は `fit_scale` と同じ。`Width` は窓幅、`Height` は窓高さに合わせる。
+/// 見開きは `img` が2枚合成後の外接サイズなので、左右合計の幅/高さが基準になる。
+/// 寸法が不正なときは原寸（1.0）を返す。
+pub fn fit_scale_for(mode: FitMode, viewport: Vec2, img: Vec2) -> f32 {
+    if !(img.x > 0.0 && img.y > 0.0 && viewport.x > 0.0 && viewport.y > 0.0) {
+        return ACTUAL_SCALE;
+    }
+    match mode {
+        FitMode::Contain => fit_scale(viewport, img),
+        FitMode::Width => viewport.x / img.x,
+        FitMode::Height => viewport.y / img.y,
+    }
+}
+
+/// 幅/高さフィットで新ページを開いたときの表示状態。倍率は `fit_scale_for` を範囲内へ丸めたもの。
+/// 溢れる軸の開始位置は、横は `at_right` なら右端・そうでなければ左端、縦は `at_bottom` なら下端・
+/// そうでなければ上端（収まる軸は 0）。読み方向と、戻りで入ったか（逆端から）は呼び出し側が決める。
+pub fn fit_mode_view(
+    mode: FitMode,
+    viewport: Vec2,
+    img: Vec2,
+    range: (f32, f32),
+    at_right: bool,
+    at_bottom: bool,
+) -> MagnifierView {
+    let scale = fit_scale_for(mode, viewport, img).clamp(range.0, range.1);
+    let content = img * scale;
+    let max_x = (content.x - viewport.x).max(0.0);
+    let max_y = (content.y - viewport.y).max(0.0);
+    MagnifierView {
+        scale,
+        offset: Vec2::new(if at_right { max_x } else { 0.0 }, if at_bottom { max_y } else { 0.0 }),
+    }
+}
+
 /// 倍率の許容範囲 (下限, 上限)。下限は `フィット倍率 × min_ratio`（縮小側の余地）。
 /// フィットが上限を超える小さな画像でも、フィット自体は表現できるよう、上限は少なくとも
 /// フィット倍率にする。
@@ -559,6 +616,15 @@ pub fn scale_range(fit: f32, min_ratio: f32, max_scale: f32) -> (f32, f32) {
 /// 拡縮の停止点（原寸とフィット）。ノッチもスライダーも、ここで一度ぴったり止まる。
 pub fn snap_stops(fit: f32) -> [f32; 2] {
     [ACTUAL_SCALE, fit]
+}
+
+/// 拡縮の停止点（原寸・contain フィット・幅/高さフィット）。`mode_fit` が contain と同じなら重複させない。
+pub fn fit_stops(fit: f32, mode_fit: f32) -> Vec<f32> {
+    let mut stops = vec![ACTUAL_SCALE, fit];
+    if (mode_fit - fit).abs() > FIT_EPS {
+        stops.push(mode_fit);
+    }
+    stops
 }
 
 /// 現在倍率から `notches` ノッチ（正=拡大）進めた倍率を返す。1ノッチは `ratio` 倍。
@@ -736,6 +802,84 @@ mod tests {
 
     fn close(a: Vec2, b: Vec2) -> bool {
         (a.x - b.x).abs() < EPS && (a.y - b.y).abs() < EPS
+    }
+
+    #[test]
+    fn fit_mode_cycles_through_all_three() {
+        assert_eq!(FitMode::default(), FitMode::Contain);
+        assert_eq!(FitMode::Contain.next(), FitMode::Width);
+        assert_eq!(FitMode::Width.next(), FitMode::Height);
+        assert_eq!(FitMode::Height.next(), FitMode::Contain);
+    }
+
+    #[test]
+    fn fit_scale_for_matches_each_axis() {
+        let vp = v(800.0, 600.0);
+        // 縦長 400x2000: contain は高さ基準、幅フィットは窓幅ぴったり。
+        let tall = v(400.0, 2000.0);
+        assert!((fit_scale_for(FitMode::Contain, vp, tall) - fit_scale(vp, tall)).abs() < 1e-6);
+        assert!((fit_scale_for(FitMode::Width, vp, tall) - 2.0).abs() < 1e-6);
+        assert!((fit_scale_for(FitMode::Height, vp, tall) - 0.3).abs() < 1e-6);
+        // 幅/高さフィットは contain 以上（収まる側を超えて溢れる側へ伸びる）。
+        for mode in [FitMode::Width, FitMode::Height] {
+            assert!(fit_scale_for(mode, vp, tall) >= fit_scale(vp, tall) - 1e-6);
+        }
+    }
+
+    #[test]
+    fn fit_scale_for_spread_uses_combined_width() {
+        // 見開き(2枚合成 1600x1200)の幅フィットは、左右合計幅を窓幅(800)に合わせる。
+        assert!((fit_scale_for(FitMode::Width, v(800.0, 600.0), v(1600.0, 1200.0)) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn fit_scale_for_bad_input_is_actual() {
+        for mode in [FitMode::Contain, FitMode::Width, FitMode::Height] {
+            assert_eq!(fit_scale_for(mode, v(0.0, 600.0), v(10.0, 10.0)), ACTUAL_SCALE);
+            assert_eq!(fit_scale_for(mode, v(800.0, 600.0), v(0.0, 10.0)), ACTUAL_SCALE);
+        }
+    }
+
+    #[test]
+    fn fit_mode_view_width_starts_at_top_or_bottom() {
+        let vp = v(800.0, 600.0);
+        let img = v(400.0, 2000.0); // 幅フィット: 倍率2、高さ4000
+        let range = (0.1, 8.0);
+        let top = fit_mode_view(FitMode::Width, vp, img, range, false, false);
+        assert!((top.scale - 2.0).abs() < 1e-6);
+        assert!(close(top.offset, v(0.0, 0.0)));
+        let bottom = fit_mode_view(FitMode::Width, vp, img, range, false, true);
+        assert!(close(bottom.offset, v(0.0, 4000.0 - 600.0)), "{:?}", bottom.offset);
+        // 横は収まるので右端指定でも 0。
+        let right = fit_mode_view(FitMode::Width, vp, img, range, true, false);
+        assert!(close(right.offset, v(0.0, 0.0)));
+    }
+
+    #[test]
+    fn fit_mode_view_height_starts_at_left_or_right() {
+        let vp = v(800.0, 600.0);
+        let img = v(3000.0, 600.0); // 高さフィット: 倍率1、幅3000
+        let range = (0.1, 8.0);
+        let left = fit_mode_view(FitMode::Height, vp, img, range, false, false);
+        assert!(close(left.offset, v(0.0, 0.0)));
+        let right = fit_mode_view(FitMode::Height, vp, img, range, true, false);
+        assert!(close(right.offset, v(3000.0 - 800.0, 0.0)), "{:?}", right.offset);
+        // 縦は収まるので下端指定でも 0。
+        let bottom = fit_mode_view(FitMode::Height, vp, img, range, false, true);
+        assert!(close(bottom.offset, v(0.0, 0.0)));
+    }
+
+    #[test]
+    fn fit_stops_adds_mode_fit_only_when_different() {
+        assert_eq!(fit_stops(0.5, 0.5), vec![ACTUAL_SCALE, 0.5]);
+        assert_eq!(fit_stops(0.5, 2.0), vec![ACTUAL_SCALE, 0.5, 2.0]);
+    }
+
+    #[test]
+    fn fit_mode_view_clamps_scale_into_range() {
+        let vp = v(800.0, 600.0);
+        let view = fit_mode_view(FitMode::Width, vp, v(100.0, 100.0), (0.1, 4.0), false, false);
+        assert!((view.scale - 4.0).abs() < 1e-6, "上限で丸められない: {}", view.scale);
     }
 
     #[test]

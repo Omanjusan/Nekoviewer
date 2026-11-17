@@ -88,6 +88,8 @@ pub fn request_restore(root: &Path, name: &str) -> Result<(), DevBackupError> {
         return Err(DevBackupError::NoBaseline);
     }
     copy_file_atomic(&src, &restore_pending_path(root))?;
+    // 世代の復元とリカバリポイントの復元は同時に予約しない（後から予約した方が有効）。
+    let _ = crate::tag_recovery::cancel_restore(root);
     Ok(())
 }
 
@@ -99,6 +101,13 @@ pub fn apply_pending_restore(root: &Path) -> Result<bool, DevBackupError> {
     if !pending.is_file() {
         return Ok(false);
     }
+    replace_db_with(root, &pending, false)?;
+    Ok(true)
+}
+
+/// 本DBを `src` の内容に差し替える。`DB を開く前` に呼ぶ。現DBは `backup_auto/before-restore-*.redb` へ退避し、
+/// 退避に失敗したら中止する。`keep_src` が false なら `src` を移し（rename）、true なら `src` を残してコピーする。
+pub(crate) fn replace_db_with(root: &Path, src: &Path, keep_src: bool) -> Result<(), DevBackupError> {
     let db = db_path(root);
     let mut evacuated: Option<PathBuf> = None;
     if db.is_file() {
@@ -108,7 +117,8 @@ pub fn apply_pending_restore(root: &Path) -> Result<bool, DevBackupError> {
         move_file(&db, &dest)?;
         evacuated = Some(dest);
     }
-    if let Err(e) = std::fs::rename(&pending, &db) {
+    let placed = if keep_src { copy_file_atomic(src, &db) } else { std::fs::rename(src, &db) };
+    if let Err(e) = placed {
         // 退避済みで本DBが無い状態を残さない（ベストエフォートで元へ戻す）。
         if let Some(dest) = evacuated {
             let _ = move_file(&dest, &db);
@@ -116,7 +126,7 @@ pub fn apply_pending_restore(root: &Path) -> Result<bool, DevBackupError> {
         return Err(e.into());
     }
     let _ = rotate_stem(&auto_backup_dir(root), BEFORE_RESTORE_STEM, BEFORE_RESTORE_KEEP, u64::MAX);
-    Ok(true)
+    Ok(())
 }
 
 /// `dir` の世代を、`keep` 世代か合計サイズの上限を超える間、古い順に削除する。最新の1件は消さない。

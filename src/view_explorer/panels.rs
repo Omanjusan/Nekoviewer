@@ -5,7 +5,22 @@ use crate::cache::ThumbRequest;
 use crate::i18n;
 use crate::types::ExplorerSortKey;
 use crate::fs::dir;
-use crate::view_reader::{fit_rect_contain, ViewerState};
+use crate::view_reader::{fit_rect_contain, sort_choice_button, sort_order_button, ViewerState, SORT_CHOICE_SELECTED};
+
+/// ビューアーのデフォルト（任意）のキー候補（表示順）。
+const VIEWER_DEFAULT_KEYS: [crate::types::ReaderSortKey; 5] = [
+    crate::types::ReaderSortKey::Name,
+    crate::types::ReaderSortKey::Natural,
+    crate::types::ReaderSortKey::NaturalLayer,
+    crate::types::ReaderSortKey::Date,
+    crate::types::ReaderSortKey::Stored,
+];
+
+/// ビューアーのデフォルト（任意）の選択中の塗り色。基本キー（青）・評価キー（赤）と区別する緑。
+const SORT_CHOICE_VIEWER_DEFAULT_SELECTED: egui::Color32 = egui::Color32::from_rgb(40, 130, 70);
+
+/// 評価キー（スコア・訪問回数）の選択中の塗り色。基本キー（青）と区別する赤。
+const SORT_CHOICE_RATING_SELECTED: egui::Color32 = egui::Color32::from_rgb(170, 40, 40);
 use super::*;
 use super::help::{help_tip, help_tip_auto};
 
@@ -37,6 +52,13 @@ const TAG_PANEL_PREVIEW_MAX_HEIGHT: f32 = 500.0;
 /// タグパネル高画質プレビュー: 専用の生成長辺上限(px)。グリッドのサムネ設定
 /// （`config.thumb_size`）とは独立した固定値。
 const TAG_PREVIEW_DECODE_EDGE: u32 = 1200;
+/// 選択してから高画質プレビューの生成を始めるまでの待ち（デバウンス）。ダブルクリックで本を開くとき、
+/// 1回目のクリックの選択でプレビューの先頭画像読みが始まり、開く処理と同じアーカイブを冷たいディスクから
+/// 取り合っていた（計測: 一覧の読みが 760〜860ms、ページ送りが 470〜1770ms に延びた）。
+/// 待つ間はグリッド用サムネで表示する。矢印キーで選択を動かしている間も、通り過ぎる行の生成を省ける。
+const TAG_PREVIEW_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(400);
+/// アーカイブを開く処理・ページ読みが終わってから、高画質プレビューの生成を始めるまでに空ける静けさ。
+const TAG_PREVIEW_FG_QUIET: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// メインタグ選択UI: 行の高さ。
 const TAG_MAIN_ROW_HEIGHT: f32 = 40.0;
@@ -126,8 +148,18 @@ impl NekoviewApp {
     /// 呼び出し元が CentralPanel の Ui を渡す。
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        if ctx.input(|i| !i.events.is_empty()) {
+        let events = ctx.input(|i| i.events.clone());
+        if !events.is_empty() {
             self.thumb_last_user_activity = std::time::Instant::now();
+        }
+        // 手すき生成のタイマーは、マウス移動・ホイール・ドラッグ（スワイプ等）では戻さない（`idle_last_activity` 参照）。
+        // 押下位置を覚えるため、全イベントを順に渡す（途中で止めない）。
+        let mut deliberate = false;
+        for event in &events {
+            deliberate |= self.idle_op_tracker.feed(event);
+        }
+        if deliberate {
+            self.idle_last_activity = std::time::Instant::now();
         }
         // ウィンドウサイズを毎フレーム記録
         let rect = ctx.input(|i| i.viewport_rect());
@@ -202,8 +234,17 @@ impl NekoviewApp {
             && !self.search_date_start_calendar.is_open()
             && !self.search_date_end_calendar.is_open()
             && self.pending_open.is_none()
+            && self.tag_scan_job.is_none()
+            && self.tag_confirm.is_none()
+            && self.tag_learn.is_none()
+            && !self.tag_rules_open
+            && !self.tag_entry_menu_open
+            && self.tag_apply_job.is_none()
+            && self.tag_discard_job.is_none()
+            && self.tag_trial_dialog.is_none()
             && self.tree_sort_dialog.is_none()
             && !self.tag_manager_open
+            && !self.tag_search_filter_focused(&ctx)
         {
             self.handle_explorer_keys(&ctx);
         }
@@ -229,6 +270,8 @@ impl NekoviewApp {
             && self.favorite_detail_dialog.is_none()
             && !self.virtual_text_input_open()
             && !self.tag_manager_open
+            // タグ検索の要素フィルタ欄。許可しないと毎フレームここでフォーカスを外され、入力できない。
+            && !self.tag_search_filter_focused(&ctx)
         {
             ctx.memory_mut(|mem| mem.stop_text_input());
         }
@@ -253,22 +296,40 @@ impl NekoviewApp {
         self.draw_memory_warning_dialog(&ctx);
         self.draw_magnifier_zoom_notice(&ctx);
         self.draw_decode_edge_prompt(&ctx);
-        self.draw_folder_book_access_notice(&ctx);
         self.draw_favorite_dialog(&ctx);
         self.draw_virtual_dialogs(&ctx);
         self.draw_tree_sort_dialog(&ctx);
         self.draw_favorite_delete_confirm_dialog(&ctx);
         self.draw_favorite_detail_dialog(&ctx);
         self.draw_relink_dialogs(&ctx);
+        self.draw_key_pick_dialog(&ctx);
+        self.draw_key_notice_dialog(&ctx);
+        self.run_pending_key_search();
+        self.run_pending_tag_search();
         self.draw_unreachable_clean_dialogs(&ctx);
         self.draw_reveal_dialog(&ctx);
         self.draw_marker_popup(&ctx);
+        self.draw_goto_virtual_menu(&ctx);
+        // 描かれた行のうち、まだ判定していないものの「？」の照合を依頼する（検索タブの新モードの結果のみ）。
+        self.submit_sim_cross_requests();
         self.draw_dismissed_window(&ctx);
+        self.draw_search_notice_dialog(&ctx);
+        self.draw_detail_window(&ctx);
+        self.draw_tag_scan_overlay(&ctx);
+        self.draw_tag_confirm(&ctx);
+        self.draw_tag_learn(&ctx);
+        self.draw_tag_rules_window(&ctx);
+        self.draw_tag_entry_modal(&ctx);
+        self.draw_tag_apply_overlay(&ctx);
+        self.draw_tag_trial_dialog(&ctx);
+        self.draw_tag_discard_overlay(&ctx);
         self.draw_sort_condition_dialog(&ctx);
         self.draw_bookmark_setting_dialog(&ctx);
         self.draw_spread_setting_dialog(&ctx);
         self.draw_rating_setting_dialog(&ctx);
+        self.draw_card_band_dialog(&ctx);
         self.draw_backup_failure_dialog(&ctx);
+        self.draw_perf_fixture_dialogs(&ctx);
         self.draw_release_notice_dialog(&ctx);
         self.draw_settings_dialog(&ctx);
         // 旧来の無条件 ctx.request_repaint() は撤去（イベント駆動化）。
@@ -351,8 +412,11 @@ impl NekoviewApp {
     /// 見開き群のビューアー移設後、残る項目はすべて常時有効。
     pub(super) fn menu_bar_items(&self) -> Vec<(MenuBarButton, bool)> {
         MENU_BAR_ORDER.iter().map(|&b| {
-            // 第2セットの昇降は、スコア／訪問回数が押し下げられている間だけ有効
-            (b, b != MenuBarButton::SortRatingOrder || self.rating_sort.key.is_some())
+            let enabled = match b {
+                MenuBarButton::ViewerRecover => self.viewer_is_open(),
+                _ => true,
+            };
+            (b, enabled)
         }).collect()
     }
 
@@ -365,13 +429,6 @@ impl NekoviewApp {
         self.select_anchor = None;
     }
 
-    /// 第2ソートセットの軸ボタン。押し下げ中の軸を押すとOFF、別の軸を押すと切替。
-    fn toggle_rating_sort(&mut self, key: crate::explorer_sort::RatingSortKey) {
-        self.rating_sort.toggle(key);
-        self.finish_sort_change();
-        self.persist_state();
-    }
-
     /// MenuBarキーボード操作（Enter確定）から、指定ボタンのクリック相当処理を発火する。
     /// 呼び出し側で有効/無効チェック済みであることを前提とする。
     pub(super) fn activate_menu_button(&mut self, button: MenuBarButton) {
@@ -379,40 +436,19 @@ impl NekoviewApp {
             MenuBarButton::Reload => {
                 self.reload_current();
             }
-            MenuBarButton::SortName => {
-                self.sort_key = ExplorerSortKey::Name;
-                self.finish_sort_change();
+            MenuBarButton::Sort => {
+                // カーソルが乗った時点で自動展開されるが、マウスで閉じた後などはEnterで開き直す。
+                if self.sort_menu_open {
+                    self.close_sort_menu();
+                } else {
+                    self.open_sort_menu_by_keyboard();
+                }
             }
-            MenuBarButton::SortDate => {
-                self.sort_key = ExplorerSortKey::Date;
-                self.finish_sort_change();
+            MenuBarButton::CardBand => {
+                self.open_card_band_dialog();
             }
-            MenuBarButton::SortSize => {
-                self.sort_key = ExplorerSortKey::Size;
-                self.finish_sort_change();
-            }
-            MenuBarButton::SortOrder => {
-                self.sort_ascending = !self.sort_ascending;
-                self.finish_sort_change();
-            }
-            MenuBarButton::SortScore => {
-                self.toggle_rating_sort(crate::explorer_sort::RatingSortKey::Score);
-            }
-            MenuBarButton::SortVisits => {
-                self.toggle_rating_sort(crate::explorer_sort::RatingSortKey::Visits);
-            }
-            MenuBarButton::SortRatingOrder => {
-                self.rating_sort.ascending = !self.rating_sort.ascending;
-                self.finish_sort_change();
-                self.persist_state();
-            }
-            MenuBarButton::CardInfoToggle => {
-                self.card_info_mode = self.card_info_mode.next();
-                self.persist_state();
-            }
-            MenuBarButton::CardRatingToggle => {
-                self.card_rating_mode = self.card_rating_mode.next();
-                self.persist_state();
+            MenuBarButton::ThemeToggle => {
+                self.toggle_theme();
             }
             MenuBarButton::StatusToggle => {
                 self.show_status_window = !self.show_status_window;
@@ -420,23 +456,294 @@ impl NekoviewApp {
             MenuBarButton::HelpToggle => {
                 self.help_enabled = !self.help_enabled;
             }
-            MenuBarButton::ScoringToggle => {
-                let mut cfg = self.viewer_cfg.lock().unwrap();
-                cfg.rating_overlay_enabled = !cfg.rating_overlay_enabled;
-                drop(cfg);
-                self.persist_state();
+            MenuBarButton::Convenience => {
+                // カーソルが乗った時点で自動展開されるが、マウスで閉じた後などはEnterで開き直す。
+                if self.convenience_menu_open {
+                    self.close_convenience_menu();
+                } else {
+                    self.open_convenience_menu_by_keyboard();
+                }
             }
-            MenuBarButton::ToolPaletteToggle => {
-                let mut cfg = self.viewer_cfg.lock().unwrap();
-                cfg.tool_palette.visible = !cfg.tool_palette.visible;
-            }
-            MenuBarButton::FolderBookAccessToggle => {
-                self.toggle_folder_book_access();
+            MenuBarButton::ViewerRecover => {
+                if self.viewer_is_open() {
+                    self.viewer_recover_requested = true;
+                }
             }
             MenuBarButton::Settings => {
                 self.open_settings();
             }
         }
+    }
+
+    /// 現在の UI テーマ。`winit_app` が各窓の Context へ行き渡らせるために参照する。
+    pub fn theme_mode(&self) -> crate::ui_theme::ThemeMode {
+        self.theme_mode
+    }
+
+    /// UIベースカラーを入れ替え、エクスプローラー窓の Context に反映して保存する（他窓へは winit_app が次の描画で反映する）。
+    fn toggle_theme(&mut self) {
+        self.theme_mode = self.theme_mode.toggled();
+        self.theme_mode.apply(&self.egui_ctx);
+        self.persist_state();
+    }
+
+    /// ソートボタンの表示文字。評価キーがONなら「評価キー → 基本キー」の順に並べる（優先順）。
+    fn sort_button_label(&self) -> String {
+        let t = i18n::t();
+        let order = |asc: bool| if asc { t.sort_asc() } else { t.sort_desc() };
+        let trim = |s: &str| s.trim_matches(['[', ']']).to_string();
+        let main = format!("{} {}", trim(self.sort_key.label()), trim(order(self.sort_ascending)));
+        match self.rating_sort.key {
+            Some(rk) => format!(
+                "{}: {} {} > {}",
+                t.sort_button_prefix(),
+                trim(rk.label()),
+                trim(order(self.rating_sort.ascending)),
+                main,
+            ),
+            None => format!("{}: {}", t.sort_button_prefix(), main),
+        }
+    }
+
+    /// ソート展開メニューのキーボードカーソル対象を、上から下へ1列に並べたもの。
+    /// 評価キーがOFFの間は、評価キーの昇降ボタン（押せない）を含めない。
+    pub(super) fn sort_menu_items(&self) -> Vec<SortMenuItem> {
+        use crate::explorer_sort::RatingSortKey;
+        let mut items = vec![
+            SortMenuItem::PrimaryOrder,
+            SortMenuItem::PrimaryKey(ExplorerSortKey::Name),
+            SortMenuItem::PrimaryKey(ExplorerSortKey::Date),
+            SortMenuItem::PrimaryKey(ExplorerSortKey::Size),
+        ];
+        if self.rating_sort.key.is_some() {
+            items.push(SortMenuItem::RatingOrder);
+        }
+        items.push(SortMenuItem::RatingKey(RatingSortKey::Score));
+        items.push(SortMenuItem::RatingKey(RatingSortKey::Visits));
+        items.push(SortMenuItem::RatingKey(RatingSortKey::Pages));
+        items.push(SortMenuItem::RatingKey(RatingSortKey::SourceRating));
+        // ビューアーのデフォルト（任意）。キー未指定の間は昇降ボタン（押せない）を含めない
+        if self.viewer_cfg.lock().unwrap().default_sort_key.is_some() {
+            items.push(SortMenuItem::ViewerDefaultOrder);
+        }
+        for key in VIEWER_DEFAULT_KEYS {
+            items.push(SortMenuItem::ViewerDefaultKey(key));
+        }
+        items
+    }
+
+    /// メニュー項目の実行（クリック・Enter共通）。
+    fn apply_sort_menu_item(&mut self, item: SortMenuItem) {
+        match item {
+            SortMenuItem::PrimaryOrder => {
+                self.sort_ascending = !self.sort_ascending;
+                self.finish_sort_change();
+            }
+            SortMenuItem::PrimaryKey(key) => {
+                if self.sort_key != key {
+                    self.sort_key = key;
+                    self.finish_sort_change();
+                }
+            }
+            SortMenuItem::RatingOrder => {
+                if self.rating_sort.key.is_some() {
+                    self.rating_sort.ascending = !self.rating_sort.ascending;
+                    self.finish_sort_change();
+                    self.persist_state();
+                }
+            }
+            SortMenuItem::RatingKey(key) => {
+                self.rating_sort.toggle(key);
+                self.finish_sort_change();
+                self.persist_state();
+            }
+            // ビューアーのデフォルトは次にファイルを開くときから効く。いま開いているファイルや
+            // エクスプローラーの並びは変えない。
+            SortMenuItem::ViewerDefaultOrder => {
+                {
+                    let mut cfg = self.viewer_cfg.lock().unwrap();
+                    if cfg.default_sort_key.is_none() {
+                        return;
+                    }
+                    cfg.default_sort_ascending = !cfg.default_sort_ascending;
+                }
+                self.persist_state();
+            }
+            SortMenuItem::ViewerDefaultKey(key) => {
+                {
+                    // 選択中のキーをもう一度押すと指定なし（従来どおり名前・昇順）に戻る
+                    let mut cfg = self.viewer_cfg.lock().unwrap();
+                    cfg.default_sort_key = if cfg.default_sort_key == Some(key) { None } else { Some(key) };
+                }
+                self.persist_state();
+            }
+        }
+    }
+
+    /// キーボードでメニューを開き、カーソルを最上位の項目へ置く。
+    pub(super) fn open_sort_menu_by_keyboard(&mut self) {
+        self.sort_menu_open = true;
+        self.sort_menu_cursor = Some(0);
+    }
+
+    pub(super) fn close_sort_menu(&mut self) {
+        self.sort_menu_open = false;
+        self.sort_menu_cursor = None;
+    }
+
+    /// ソート展開メニュー内のキー操作（メニュー内カーソルがあるときだけ呼ぶ）。
+    /// ↑↓=全ボタンを1列として移動（先頭で↑ならメニューを閉じる。末尾で↓は何も起きない。
+    /// 隣のメニュー項目には移らない）、←→=メニューを閉じてバー側カーソルをその方向へ動かす、Enter=実行。
+    pub(super) fn handle_sort_menu_keys(&mut self, ctx: &egui::Context) {
+        let km = &self.config.keymap;
+        let (up, down, left, right, enter) = ctx.input(|i| (
+            km.explorer_binding(crate::keymap::ExplorerAction::NavUp).key_pressed(i),
+            km.explorer_binding(crate::keymap::ExplorerAction::NavDown).key_pressed(i),
+            km.explorer_binding(crate::keymap::ExplorerAction::NavLeft).key_pressed(i),
+            km.explorer_binding(crate::keymap::ExplorerAction::NavRight).key_pressed(i),
+            km.explorer_binding(crate::keymap::ExplorerAction::Confirm).key_pressed(i),
+        ));
+        if !(up || down || left || right || enter) {
+            return;
+        }
+        if left || right {
+            self.close_sort_menu();
+            self.step_menu_cursor(right);
+            return;
+        }
+        let items = self.sort_menu_items();
+        let mut idx = self.sort_menu_cursor.unwrap_or(0).min(items.len() - 1);
+        if up {
+            if idx == 0 {
+                self.close_sort_menu();
+                return;
+            }
+            idx -= 1;
+        }
+        if down && idx + 1 < items.len() {
+            idx += 1;
+        }
+        if enter {
+            let item = items[idx];
+            self.apply_sort_menu_item(item);
+            // 評価キーの昇降ボタンが増減して添字がずれるため、同じ項目を探し直す
+            let items = self.sort_menu_items();
+            idx = items.iter().position(|&x| x == item).unwrap_or(idx.min(items.len() - 1));
+        }
+        self.sort_menu_cursor = Some(idx);
+    }
+
+    /// バー側カーソルを、隣の有効なボタンへ1つ動かす。
+    pub(super) fn step_menu_cursor(&mut self, forward: bool) {
+        let items = self.menu_bar_items();
+        let new_pos = if forward {
+            (self.menu_cursor + 1..items.len()).find(|&i| items[i].1)
+        } else {
+            (0..self.menu_cursor).rev().find(|&i| items[i].1)
+        };
+        if let Some(pos) = new_pos {
+            self.menu_cursor = pos;
+        }
+    }
+
+    /// ソート展開メニューの中身。基本キー（名前・日付・サイズ＋昇降）と評価キー（スコア・訪問回数＋昇降）。
+    /// キーボードカーソルのある項目にはリングを描く。
+    fn draw_sort_menu(&mut self, ui: &mut egui::Ui) {
+        let t = i18n::t();
+        ui.set_max_width(360.0);
+
+        let help_on = self.help_enabled;
+        let cur_item = self.sort_menu_cursor.and_then(|i| self.sort_menu_items().get(i).copied());
+        let mut clicked: Option<SortMenuItem> = None;
+
+        // 基本キー：＜見出し＞ [昇降]、その下にキーを横並び
+        let r_primary = ui
+            .horizontal(|ui| {
+                let r = ui.strong(format!("＜{}＞", t.sort_menu_primary()));
+                let rb = sort_order_button(ui, self.sort_ascending);
+                if cur_item == Some(SortMenuItem::PrimaryOrder) { draw_cursor_ring(ui, rb.rect); }
+                if rb.clicked() { clicked = Some(SortMenuItem::PrimaryOrder); }
+                r
+            })
+            .inner;
+        help_tip(&r_primary, help_on, &t.help_sort_primary());
+        ui.horizontal(|ui| {
+            for key in [ExplorerSortKey::Name, ExplorerSortKey::Date, ExplorerSortKey::Size] {
+                let active = self.sort_key == key;
+                let rb = sort_choice_button(ui, active, key.label(), SORT_CHOICE_SELECTED);
+                if cur_item == Some(SortMenuItem::PrimaryKey(key)) { draw_cursor_ring(ui, rb.rect); }
+                if rb.clicked() { clicked = Some(SortMenuItem::PrimaryKey(key)); }
+            }
+        });
+
+        ui.separator();
+
+        // 評価キー（任意）：同じ形。選択中のキーをもう一度押すとOFF。赤で基本キー（青）と区別する。
+        let r_rating = ui
+            .horizontal(|ui| {
+                let r = ui.strong(format!("＜{}＞", t.sort_menu_rating()));
+                let enabled = self.rating_sort.key.is_some();
+                let rb = ui
+                    .add_enabled_ui(enabled, |ui| sort_order_button(ui, self.rating_sort.ascending))
+                    .inner;
+                if cur_item == Some(SortMenuItem::RatingOrder) { draw_cursor_ring(ui, rb.rect); }
+                if rb.clicked() { clicked = Some(SortMenuItem::RatingOrder); }
+                r
+            })
+            .inner;
+        help_tip(&r_rating, help_on, &t.help_sort_rating());
+        ui.horizontal(|ui| {
+            for key in [
+                crate::explorer_sort::RatingSortKey::Score,
+                crate::explorer_sort::RatingSortKey::Visits,
+                crate::explorer_sort::RatingSortKey::Pages,
+                crate::explorer_sort::RatingSortKey::SourceRating,
+            ] {
+                let active = self.rating_sort.key == Some(key);
+                let rb = sort_choice_button(ui, active, key.label(), SORT_CHOICE_RATING_SELECTED);
+                if cur_item == Some(SortMenuItem::RatingKey(key)) { draw_cursor_ring(ui, rb.rect); }
+                if rb.clicked() { clicked = Some(SortMenuItem::RatingKey(key)); }
+            }
+        });
+
+        ui.weak(t.sort_menu_rating_note());
+
+        ui.separator();
+
+        // ビューアーのデフォルト（任意）：保存済みソートが無いファイルをビューアーで開くときの条件。
+        // 選択中のキーをもう一度押すと指定なし。緑で他の2ブロックと区別する。
+        let (default_key, default_asc) = {
+            let cfg = self.viewer_cfg.lock().unwrap();
+            (cfg.default_sort_key, cfg.default_sort_ascending)
+        };
+        ui.horizontal(|ui| {
+            ui.strong(format!("＜{}＞", t.sort_menu_viewer_default()));
+            let rb = ui
+                .add_enabled_ui(default_key.is_some(), |ui| sort_order_button(ui, default_asc))
+                .inner;
+            if cur_item == Some(SortMenuItem::ViewerDefaultOrder) { draw_cursor_ring(ui, rb.rect); }
+            if rb.clicked() { clicked = Some(SortMenuItem::ViewerDefaultOrder); }
+        });
+        ui.horizontal(|ui| {
+            for key in VIEWER_DEFAULT_KEYS {
+                let label = match key {
+                    crate::types::ReaderSortKey::Name => t.sort_name(),
+                    crate::types::ReaderSortKey::Natural => t.sort_natural(),
+                    crate::types::ReaderSortKey::NaturalLayer => t.sort_natural_layer(),
+                    crate::types::ReaderSortKey::Date => t.sort_date(),
+                    crate::types::ReaderSortKey::Stored => t.sort_stored(),
+                };
+                let rb = sort_choice_button(ui, default_key == Some(key), label, SORT_CHOICE_VIEWER_DEFAULT_SELECTED);
+                if cur_item == Some(SortMenuItem::ViewerDefaultKey(key)) { draw_cursor_ring(ui, rb.rect); }
+                if rb.clicked() { clicked = Some(SortMenuItem::ViewerDefaultKey(key)); }
+            }
+        });
+
+        if let Some(item) = clicked {
+            self.apply_sort_menu_item(item);
+        }
+
+        ui.weak(t.sort_menu_note());
     }
 
     fn draw_menu_bar(&mut self, ui: &mut egui::Ui) {
@@ -446,9 +753,7 @@ impl NekoviewApp {
         let help_on = self.help_enabled;
         let help_reload = i18n::t().help_reload();
         let help_sort1 = i18n::t().help_sort_primary();
-        let help_sort2 = i18n::t().help_sort_rating();
         let help_info = i18n::t().help_card_info();
-        let help_toggles = i18n::t().help_view_toggles();
         let help_thumb = i18n::t().help_thumbnail_status();
         ui.horizontal(|ui| {
             // 隠しファイル表示トグルは設定ダイアログの「共通」タブへ移設した。
@@ -464,118 +769,49 @@ impl NekoviewApp {
 
             ui.separator();
 
-            // ── エクスプローラーソート ────────────────────────────────────
-            let mut sort_changed = false;
-            for (key, btn) in [
-                (ExplorerSortKey::Name, MenuBarButton::SortName),
-                (ExplorerSortKey::Date, MenuBarButton::SortDate),
-                (ExplorerSortKey::Size, MenuBarButton::SortSize),
-            ] {
-                let active = self.sort_key == key;
-                let r = ui.scope(|ui| {
-                    if active {
-                        ui.visuals_mut().selection.bg_fill =
-                            egui::Color32::from_rgb(30, 100, 200);
-                        ui.visuals_mut().selection.stroke.color = egui::Color32::WHITE;
-                    }
-                    ui.selectable_label(active, key.label())
-                }).inner;
-                if is_cursor(btn) { draw_cursor_ring(ui, r.rect); }
-                help_tip(&r, help_on, &help_sort1);
-                if r.clicked() {
-                    self.sort_key = key;
-                    sort_changed = true;
+            // ── ソート条件（展開メニュー1個） ─────────────────────────────
+            let sort_label = self.sort_button_label();
+            let r_sort = ui.button(sort_label);
+            if is_cursor(MenuBarButton::Sort) { draw_cursor_ring(ui, r_sort.rect); }
+            help_tip(&r_sort, help_on, &help_sort1);
+            if r_sort.clicked() {
+                if self.sort_menu_open {
+                    self.close_sort_menu();
+                } else {
+                    // マウスで開いた場合はメニュー内カーソルを出さない（キー操作はバー側のまま）
+                    self.sort_menu_open = true;
+                    self.sort_menu_cursor = None;
                 }
             }
-
-            ui.label(":");
-
-            let order_label = if self.sort_ascending { i18n::t().sort_asc() } else { i18n::t().sort_desc() };
-            let r_order = ui.button(order_label);
-            if is_cursor(MenuBarButton::SortOrder) { draw_cursor_ring(ui, r_order.rect); }
-            help_tip(&r_order, help_on, &help_sort1);
-            if r_order.clicked() {
-                self.sort_ascending = !self.sort_ascending;
-                sort_changed = true;
+            // バー側カーソルがソートボタンから外れたら、キーボードで開いたメニューは縮小する
+            let on_sort = menu_focused && cursor_button == Some(MenuBarButton::Sort);
+            if self.sort_menu_cursor.is_some() && !on_sort {
+                self.close_sort_menu();
             }
-
-            if sort_changed {
-                self.finish_sort_change();
+            let mut open = self.sort_menu_open;
+            egui::Popup::menu(&r_sort)
+                .open_bool(&mut open)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                .show(|ui| self.draw_sort_menu(ui));
+            self.sort_menu_open = open;
+            if !open {
+                self.sort_menu_cursor = None;
             }
 
             ui.separator();
 
-            // ── 第2ソートセット（スコア・訪問回数）。ONのときは主軸になり、上の軸がサブになる ──
-            let mut rating_changed = false;
-            for (key, btn) in [
-                (crate::explorer_sort::RatingSortKey::Score, MenuBarButton::SortScore),
-                (crate::explorer_sort::RatingSortKey::Visits, MenuBarButton::SortVisits),
-            ] {
-                let active = self.rating_sort.key == Some(key);
-                let r = ui.scope(|ui| {
-                    if active {
-                        // 第1セット（青）と区別する。赤 = 主軸が第2セット
-                        ui.visuals_mut().selection.bg_fill =
-                            egui::Color32::from_rgb(170, 40, 40);
-                        ui.visuals_mut().selection.stroke.color = egui::Color32::WHITE;
-                    }
-                    ui.selectable_label(active, key.label())
-                }).inner;
-                if is_cursor(btn) { draw_cursor_ring(ui, r.rect); }
-                help_tip(&r, help_on, &help_sort2);
-                if r.clicked() {
-                    self.rating_sort.toggle(key);
-                    rating_changed = true;
-                }
-            }
-
-            ui.label(":");
-
-            let rating_order_label = if self.rating_sort.ascending { i18n::t().sort_asc() } else { i18n::t().sort_desc() };
-            let r_rating_order = ui.add_enabled(self.rating_sort.key.is_some(), egui::Button::new(rating_order_label));
-            if is_cursor(MenuBarButton::SortRatingOrder) { draw_cursor_ring(ui, r_rating_order.rect); }
-            help_tip(&r_rating_order, help_on, &help_sort2);
-            if r_rating_order.clicked() {
-                self.rating_sort.ascending = !self.rating_sort.ascending;
-                rating_changed = true;
-            }
-
-            if rating_changed {
-                self.finish_sort_change();
-                self.persist_state();
+            // ── カード帯の設定ダイアログを開く（旧「情報」「情報2」の2ボタンを集約） ──────────
+            let r_band = ui.button(i18n::t().card_band_button());
+            if is_cursor(MenuBarButton::CardBand) { draw_cursor_ring(ui, r_band.rect); }
+            help_tip(&r_band, help_on, &help_info);
+            if r_band.clicked() {
+                self.open_card_band_dialog();
             }
 
             ui.separator();
 
-            // ── サムネカード下部情報の循環トグル（1ボタン） ──────────────
-            let info_label = match self.card_info_mode {
-                CardInfoMode::Off => i18n::t().card_info_off(),
-                CardInfoMode::Name => i18n::t().card_info_name(),
-                CardInfoMode::NameDate => i18n::t().card_info_name_date(),
-                CardInfoMode::NameDateSize => i18n::t().card_info_name_date_size(),
-            };
-            let r_info = ui.button(info_label);
-            if is_cursor(MenuBarButton::CardInfoToggle) { draw_cursor_ring(ui, r_info.rect); }
-            help_tip(&r_info, help_on, &help_info);
-            if r_info.clicked() {
-                self.card_info_mode = self.card_info_mode.next();
-                self.persist_state();
-            }
-
-            // ── 評価帯（info2）の循環トグル（1ボタン） ─────────────────────
-            let rating_label = match self.card_rating_mode {
-                CardRatingMode::Off => i18n::t().card_rating_off(),
-                CardRatingMode::Stars => i18n::t().card_rating_stars(),
-                CardRatingMode::Visits => i18n::t().card_rating_visits(),
-                CardRatingMode::StarsVisits => i18n::t().card_rating_stars_visits(),
-            };
-            let r_rating = ui.button(rating_label);
-            if is_cursor(MenuBarButton::CardRatingToggle) { draw_cursor_ring(ui, r_rating.rect); }
-            help_tip(&r_rating, help_on, &help_info);
-            if r_rating.clicked() {
-                self.card_rating_mode = self.card_rating_mode.next();
-                self.persist_state();
-            }
+            // ── 便利機能（フォルダ本アクセス・スコアリング・ツールボックスの展開メニュー1個） ──────────
+            self.draw_convenience_button(ui, is_cursor(MenuBarButton::Convenience), help_on);
 
             // ── ステータスウィンドウボタン（右端） ────────────────────────
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -593,6 +829,14 @@ impl NekoviewApp {
                     self.help_enabled = !self.help_enabled;
                 }
 
+                // ── UIベースカラー（ダーク⇄ライト）切替（1ボタン・永続） ──────
+                // RightToLeftレイアウトのため、[?]の次に置くと視覚上は[?]の左隣（[stat]の右隣）になる。
+                let r_theme = ui.button(i18n::t().theme_button(self.theme_mode));
+                if is_cursor(MenuBarButton::ThemeToggle) { draw_cursor_ring(ui, r_theme.rect); }
+                if r_theme.clicked() {
+                    self.toggle_theme();
+                }
+
                 let r_status = ui.button(i18n::t().status_button());
                 if is_cursor(MenuBarButton::StatusToggle) { draw_cursor_ring(ui, r_status.rect); }
                 if r_status.clicked() {
@@ -607,69 +851,45 @@ impl NekoviewApp {
                     self.open_settings();
                 }
 
+                // ── 言語（設定ボタンの左隣）。1つのボタンで、押すたびに 日本語 → English → 中文 → 日中（テスト）の順に切り替える。
+                // 「日中（テスト）」は、日本語と中国語を併記して、訳を確認するための表示 ──
                 ui.separator();
-
-                // ── ツールパレット（ビューアー内ツールボックス）表示ON/OFF ─────────
-                // ファイルを渡り歩いても同じ挙動を示す永続設定のため viewer_cfg 直結。
-                // RightToLeftレイアウトのため、コード順で後に置いた方が視覚上は左（Settingsの左隣）になる。
-                let tool_palette_visible = self.viewer_cfg.lock().unwrap().tool_palette.visible;
-                let r_tool_palette = ui.scope(|ui| {
-                    if tool_palette_visible {
-                        ui.visuals_mut().selection.bg_fill = egui::Color32::from_rgb(30, 100, 200);
-                        ui.visuals_mut().selection.stroke.color = egui::Color32::WHITE;
-                    }
-                    ui.selectable_label(tool_palette_visible, i18n::t().tool_palette_toggle_button(tool_palette_visible))
-                }).inner;
-                if is_cursor(MenuBarButton::ToolPaletteToggle) { draw_cursor_ring(ui, r_tool_palette.rect); }
-                help_tip(&r_tool_palette, help_on, &help_toggles);
-                if r_tool_palette.clicked() {
-                    self.viewer_cfg.lock().unwrap().tool_palette.visible = !tool_palette_visible;
-                }
-
-                // ── スコアリング（末尾の評価オーバーレイ）ON/OFF ────────────────────
-                // 邪魔に感じる人向けの永続設定。RightToLeftレイアウトのため、
-                // コード順で後に置いた方が視覚上は左（フォルダ本アクセスの右隣）になる。
-                let scoring_on = self.viewer_cfg.lock().unwrap().rating_overlay_enabled;
-                let r_scoring = ui.scope(|ui| {
-                    if scoring_on {
-                        ui.visuals_mut().selection.bg_fill = egui::Color32::from_rgb(30, 100, 200);
-                        ui.visuals_mut().selection.stroke.color = egui::Color32::WHITE;
-                    }
-                    ui.selectable_label(scoring_on, i18n::t().scoring_toggle_button(scoring_on))
-                }).inner;
-                if is_cursor(MenuBarButton::ScoringToggle) { draw_cursor_ring(ui, r_scoring.rect); }
-                help_tip(&r_scoring, help_on, &help_toggles);
-                if r_scoring.clicked() {
-                    self.viewer_cfg.lock().unwrap().rating_overlay_enabled = !scoring_on;
+                let current = i18n::display();
+                let next = current.next();
+                let r_lang = ui.button(format!("[{}]", current.native_name())).on_hover_text(format!("{} → {}", current.native_name(), next.native_name()));
+                if r_lang.clicked() {
+                    i18n::set_display(next);
                     self.persist_state();
                 }
 
-                // ── 「フォルダ本アクセス」トグル ────────────────────────────────
-                // ONの間、対象フォルダ（アーカイブ非混在・直下に生画像あり）に入ると、
-                // 通常の一覧表示の代わりに仮想アーカイブとしてビューアーを開く。
-                // 永続化しない（アプリ再起動のたびに毎回OFFへ戻る）。
-                let folder_book_access_on = self.folder_book_access_enabled;
-                let r_folder_book_access = ui.scope(|ui| {
-                    if folder_book_access_on {
-                        ui.visuals_mut().selection.bg_fill = egui::Color32::from_rgb(30, 100, 200);
-                        ui.visuals_mut().selection.stroke.color = egui::Color32::WHITE;
-                    }
-                    ui.selectable_label(folder_book_access_on, i18n::t().folder_book_access_toggle_button(folder_book_access_on))
-                }).inner;
-                if is_cursor(MenuBarButton::FolderBookAccessToggle) { draw_cursor_ring(ui, r_folder_book_access.rect); }
-                help_tip(&r_folder_book_access, help_on, &help_toggles);
-                if r_folder_book_access.clicked() {
-                    self.toggle_folder_book_access();
+                ui.separator();
+
+                // ── ビューアー復帰（画面外へ行った窓を中央へ戻す単発ボタン）─────────
+                // ビューアーが開いていないときは押せない。
+                let viewer_open = self.viewer_is_open();
+                let r_recover = ui.add_enabled(viewer_open, egui::Button::new(i18n::t().viewer_recover_button()));
+                if is_cursor(MenuBarButton::ViewerRecover) { draw_cursor_ring(ui, r_recover.rect); }
+                help_tip(&r_recover, help_on, &i18n::t().help_viewer_recover());
+                if r_recover.clicked() {
+                    self.viewer_recover_requested = true;
                 }
 
                 ui.separator();
-                let r_thumb = ui.label(self.thumbnail_status_text());
-                help_tip(&r_thumb, help_on, &help_thumb);
+
+                // 横断表示（お気に入り・検索・タグ検索・類似）では、実フォルダ向けのサムネイル数・ID取得状況は意味が無いので出さない。
+                if !self.in_cross_view() {
+                    ui.separator();
+                    let r_thumb = ui.label(self.thumbnail_status_text());
+                    help_tip(&r_thumb, help_on, &help_thumb);
+                }
 
                 // DB内の重複の解決（サムネイル n/m の左）。未解決が無いときはグレーで押せない。
                 // ID層が止まっている間（バックアップ失敗でOFFを選んだ時など）は出さない。
                 if crate::file_identity::is_enabled() {
-                    ui.separator();
+                    // 横断表示ではラベルを出さないので、区切り線が二重にならないよう省く。
+                    if !self.in_cross_view() {
+                        ui.separator();
+                    }
                     let (resolve_label, resolve_enabled) = self.identity_resolve_button();
                     let r_resolve = ui.add_enabled(resolve_enabled, egui::Button::new(resolve_label));
                     if r_resolve.clicked() {
@@ -680,6 +900,14 @@ impl NekoviewApp {
         });
     }
 
+    /// 中央のアイテム欄が実ディレクトリ由来ではなく、横断一覧（お気に入り・検索・タグ検索・類似）になっているか。
+    fn in_cross_view(&self) -> bool {
+        !self.folder_pane_tab.shows_real_dir()
+            || self.viewing_favorites.is_some()
+            || self.viewing_search.is_some()
+            || self.viewing_similar.is_some()
+    }
+
     fn thumbnail_status_text(&self) -> String {
         let (current, total, replacing_old) = self.cd_summary.as_ref()
             .filter(|(path, _, _, _)| path == &self.current_dir)
@@ -688,7 +916,7 @@ impl NekoviewApp {
         let errors = self.thumb_failed.iter()
             .filter(|path| path.parent().is_some_and(|parent| parent == self.current_dir))
             .count();
-        i18n::t().thumbnail_status(current, total, errors, replacing_old)
+        i18n::t().thumbnail_status(current, total, errors, replacing_old, self.identity_gauge())
     }
 
     /// 左ペインのタブを切り替える唯一の入口。folder_pane_tab の変更は必ずこの関数を通し、
@@ -698,6 +926,10 @@ impl NekoviewApp {
     pub(super) fn switch_folder_tab(&mut self, tab: FolderPaneTab) {
         // 実際に別のタブへ入るときだけ、そのタブの保存位置を開く（同じタブの押し直しでは開き直さない）
         let entering = self.folder_pane_tab != tab;
+        if entering {
+            // 他のタブで仮想フォルダの登録が変わったかもしれない。移動アイコンの逆引きは、次の描画で引き直す。
+            self.virtual_lookup_loaded = false;
+        }
         self.folder_pane_tab = tab;
         // 検索タブへの初回入場時のみ、その時点のPWDを検索基点の初期値にする。
         // 既にユーザーがツリー/ドライブで基点を選んでいれば（Some）上書きしない。
@@ -730,7 +962,8 @@ impl NekoviewApp {
                 FolderPaneTab::Favorites => self.restore_favorites_position(),
                 FolderPaneTab::VirtualFolders => self.restore_virtual_position(),
                 FolderPaneTab::TagSearch => self.enter_tag_search_view(),
-                FolderPaneTab::RealTree | FolderPaneTab::Search => {}
+                FolderPaneTab::Search => self.resume_search_view(),
+                FolderPaneTab::RealTree => {}
             }
         }
     }
@@ -787,21 +1020,11 @@ impl NekoviewApp {
         // `available_width()`を取ると実際のパネル幅より広い値になり、下段の
         // horizontal_wrapped が折り返さず見切れていた。
         let content_w = ui.available_width();
-        // フェーズTM0: 仮置きのタグマネージャー呼び出しボタン。既存のメインタグ／
-        // 属性タグUIとは切り離した独立機能なので、位置・見た目は後で調整前提。
-        // 狭い幅では2つ目のボタンが見切れないよう折り返す。
-        ui.horizontal_wrapped(|ui| {
-            if ui.button(i18n::t().tag_panel_manager_button()).clicked() {
-                self.tag_manager_open = true;
-            }
-            // タグパネルのプレビューを、グリッドサムネの引き伸ばし（軽量・低画質）ではなく
-            // 専用解像度で再デコードした高画質表示に切り替えるトグル。低スペックPC・
-            // 小さいモニタでは重くなりうるため既定OFF。
-            let hq = self.tag_preview_high_quality;
-            if ui.selectable_label(hq, i18n::t().tag_panel_hq_preview_toggle()).clicked() {
-                self.tag_preview_high_quality = !hq;
-            }
-        });
+        // 試用バナーの下に、入口「🏷 タグ管理」を1個だけ置く。学習・取得・タグ抽出ルール・タグ・カテゴリ編集は、
+        // その子のポップアップメニューにある（tag_menu_ui.rs）。
+        self.draw_tag_trial_banner(ui);
+        self.draw_tag_entry_menu(ui);
+        ui.add_space(4.0);
         let path = self.selected_archive_index.and_then(|idx| self.archives.get(idx).cloned());
         let Some(path) = path else {
             // 選択中のファイルが無いときは、紐付け先の無いメイン/属性タグUIを
@@ -817,7 +1040,18 @@ impl NekoviewApp {
         };
         self.sync_tag_binding(&path);
         ui.add_space(10.0);
-        self.draw_tag_panel_preview(ui);
+        // 画像が出ているときだけ、その直下に高画質プレビューのトグルを置く。
+        if self.draw_tag_panel_preview(ui).is_some() {
+            ui.vertical_centered(|ui| {
+                // タグパネルのプレビューを、グリッドサムネの引き伸ばし（軽量・低画質）ではなく
+                // 専用解像度で再デコードした高画質表示に切り替えるトグル。低スペックPC・
+                // 小さいモニタでは重くなりうるため既定OFF。
+                let hq = self.tag_preview_high_quality;
+                if ui.selectable_label(hq, i18n::t().tag_panel_hq_preview_toggle()).clicked() {
+                    self.tag_preview_high_quality = !hq;
+                }
+            });
+        }
         ui.add_space(8.0);
         self.draw_tag_panel_main_tags(ui);
         ui.separator();
@@ -831,6 +1065,16 @@ impl NekoviewApp {
         ui.scope_builder(egui::UiBuilder::new().max_rect(attr_rect), |ui| {
             self.draw_tag_panel_attr_tags(ui);
         });
+    }
+
+    /// 旧タグ管理画面（オーバーレイ）を開く。「タグ・カテゴリ編集」から呼ぶ。
+    pub(super) fn open_tag_manager_overlay(&mut self) {
+        self.tag_manager_open = true;
+        self.tag_manager_session_snapped.set(false);
+        self.tag_master_gen_ui = None;
+        self.tag_danger_open = false;
+        self.tag_danger_clear_stage = 0;
+        self.tag_danger_recovery_ask = 0;
     }
 
     /// タグ付けレイアウト・ドラムUI: メインタグ編集トグルをOFFへ戻し、現在のタグ選択を
@@ -859,7 +1103,12 @@ impl NekoviewApp {
                 ids.push(main_id);
             }
         }
-        crate::spread_state::write_archive_tags(db, dir, filename, &ids);
+        // 手動で付け直した（新しく付けた）タグは、自動付与の記録から外す。再抽出の「前回分を外して付け直す」で消されないようにする。
+        let before = crate::spread_state::read_archive_tags(db, dir, filename);
+        let newly: Vec<u64> = ids.iter().copied().filter(|id| !before.contains(id)).collect();
+        if crate::spread_state::write_archive_tags(db, dir, filename, &ids) && !newly.is_empty() {
+            crate::tag_auto_record::remove_ids(db, dir, filename, &newly);
+        }
     }
 
     /// タグパネル: 選択中ファイルと`tag_main_selected`/`tag_attr_selected`の紐付けを
@@ -994,6 +1243,17 @@ impl NekoviewApp {
             center_galley,
             main_color,
         );
+        // 閲覧モードのときだけ、選択値の左クリックで「この要素をタグ検索」を出す（編集モードでは抑制）。
+        if !edit_on {
+            let (main_id, main_name) = (options[idx].0, selected_name.clone());
+            let center_resp = ui.interact(center_rect, ui.id().with("tag_main_center"), egui::Sense::click());
+            let mut search_req = None;
+            let searchable = main_id != crate::tag_manager::TAG_MAIN_UNSET_ID;
+            Self::tag_chip_search_popup(&center_resp, &mut self.tag_chip_menu, &mut search_req, main_id, &main_name, searchable);
+            if let Some(id) = search_req {
+                self.request_tag_search(id);
+            }
+        }
 
         if !edit_on {
             return;
@@ -1043,6 +1303,8 @@ impl NekoviewApp {
     /// `tag_manager_categories`（メインカテゴリを除く）を実データとして直接参照する。
     fn draw_tag_panel_attr_tags(&mut self, ui: &mut egui::Ui) {
         if self.tag_main_edit_toggle {
+            // 編集モードでは検索ポップアップを出さない。開いていたものは閉じておく（戻ったとき勝手に開かないように）。
+            self.tag_chip_menu = None;
             self.draw_tag_attr_edit_mode(ui);
         } else {
             self.draw_tag_attr_view_mode(ui);
@@ -1120,6 +1382,7 @@ impl NekoviewApp {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 let full_w = ui.available_width();
+                let mut search_req: Option<u64> = None;
                 ui.horizontal_wrapped(|ui| {
                     if self.tag_attr_selected.is_empty() {
                         ui.weak(i18n::t().tag_panel_no_selected_tags());
@@ -1134,11 +1397,15 @@ impl NekoviewApp {
                                 if !self.tag_attr_selected.contains(&tier.id) {
                                     continue;
                                 }
-                                tag_chip(ui, name, full_w, cat.color, text_color, egui::Sense::hover(), false);
+                                let resp = tag_chip(ui, name, full_w, cat.color, text_color, egui::Sense::click(), false);
+                                Self::tag_chip_search_popup(&resp, &mut self.tag_chip_menu, &mut search_req, tier.id, name, true);
                             }
                         }
                     }
                 });
+                if let Some(id) = search_req {
+                    self.request_tag_search(id);
+                }
             });
     }
 
@@ -1149,7 +1416,7 @@ impl NekoviewApp {
     /// タイミングは持たず、編集操作が確定するたびにこれを呼ぶ。合わせて、メインタグ
     /// メインタグ／属性タグパレットの選択肢をマスタ定義から再生成して結びつける。
     /// メインカテゴリの要素0件ガード。補填が走った場合はトーストで知らせる。
-    fn ensure_tag_main_nonempty(&mut self) {
+    pub(super) fn ensure_tag_main_nonempty(&mut self) {
         if crate::tag_manager::ensure_main_category_nonempty(
             &mut self.tag_manager_categories,
             &mut self.tag_manager_next_tier_id,
@@ -1158,7 +1425,7 @@ impl NekoviewApp {
         }
     }
 
-    fn save_tag_manager(&mut self) {
+    pub(super) fn save_tag_manager(&mut self) {
         let (main_options, attr_options) = crate::tag_manager::derive_tag_options(&self.tag_manager_categories);
         self.tag_main_options = main_options;
         // 選択中タグ自体が消えていれば（tier削除等）「未設定」へフォールバックする。
@@ -1173,7 +1440,43 @@ impl NekoviewApp {
         all.retain(|s| self.tag_attr_options.contains(s));
         self.tag_attr_dormant = crate::tag_manager::enforce_single_select(&self.tag_manager_categories, &mut all);
         self.tag_attr_selected = all;
-        crate::tag_manager::save(&self.config.config_root, &self.tag_manager_categories, self.tag_manager_next_tier_id);
+        self.save_tag_master_file();
+    }
+
+    /// タグマスターをファイルへ保存する。試用中は仮マスターへ、そうでなければ本物へ（本物は確定まで変えない）。
+    pub(super) fn save_tag_master_file(&self) {
+        // 本物へ書く前に、変更前の状態を世代として残す（連続編集はまとめる）。試用中は本物が変わらないので取らない。
+        // タグ管理画面を開いている間は、最初の保存で「開く前の状態」を1世代だけ残す（以降の編集では増やさない）。
+        // 画面を開いていない間の保存は、連続編集をまとめる従来の間隔で残す。
+        if !self.tag_trial_active {
+            let root = &self.config.config_root;
+            if !self.tag_manager_open {
+                crate::tag_master_gen::snapshot_before_save(root, self.tag_master_gen_keep(), false);
+            } else if !self.tag_manager_session_snapped.get() {
+                crate::tag_master_gen::snapshot_before_save(root, self.tag_master_gen_keep(), true);
+                self.tag_manager_session_snapped.set(true);
+            }
+        }
+        crate::tag_manager::save_slot(
+            &self.config.config_root,
+            self.tag_master_slot(),
+            &self.tag_manager_categories,
+            self.tag_manager_next_tier_id,
+        );
+    }
+
+    /// いま読み書きするマスターの保存先。
+    /// マスター世代を残す数（設定の「DB」タブ）。
+    pub(super) fn tag_master_gen_keep(&self) -> usize {
+        self.config.tag_master_generations as usize
+    }
+
+    pub(super) fn tag_master_slot(&self) -> crate::tag_manager::Slot {
+        if self.tag_trial_active {
+            crate::tag_manager::Slot::Trial
+        } else {
+            crate::tag_manager::Slot::Real
+        }
     }
 
     fn draw_tag_manager_overlay(&mut self, ctx: &egui::Context) {
@@ -1209,7 +1512,35 @@ impl NekoviewApp {
                             egui::vec2(total_w - TAG_MANAGER_CLOSE_BTN * 2.0, row_h),
                             egui::Layout::top_down(egui::Align::Center),
                             |ui| {
-                                ui.heading(i18n::t().tag_manager_title());
+                                let title = ui.heading(i18n::t().tag_manager_title());
+                                // タイトルは中央のまま、右隣に少し空けてロールバックボタンを置く。
+                                let btn_rect = egui::Rect::from_min_size(
+                                    egui::pos2(title.rect.right() + 16.0, title.rect.top()),
+                                    egui::vec2(ui.available_width().max(0.0), title.rect.height()),
+                                );
+                                ui.scope_builder(
+                                    egui::UiBuilder::new()
+                                        .max_rect(btn_rect)
+                                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                                    |ui| {
+                                        let r = ui.button(i18n::t().tag_gen_button());
+                                        self.tag_master_gen_btn_rect = r.rect;
+                                        if r.clicked() {
+                                            self.toggle_tag_master_gen_window();
+                                        }
+                                        // 右隣に「危険な設定」。試用中は押せない。
+                                        ui.add_space(8.0);
+                                        let d = ui.add_enabled(
+                                            !self.tag_trial_active,
+                                            egui::Button::new(egui::RichText::new(i18n::t().tag_danger_button()).color(egui::Color32::from_rgb(230, 90, 80))),
+                                        );
+                                        let d = if self.tag_trial_active { d.on_disabled_hover_text(i18n::t().tag_danger_trial_tip()) } else { d };
+                                        self.tag_danger_btn_rect = d.rect;
+                                        if d.clicked() {
+                                            self.toggle_tag_danger_window();
+                                        }
+                                    },
+                                );
                             },
                         );
                         ui.allocate_ui_with_layout(
@@ -1268,6 +1599,8 @@ impl NekoviewApp {
                     );
                 });
             });
+        self.draw_tag_master_gen_window(ctx);
+        self.draw_tag_danger_window(ctx);
     }
 
     /// タグマネージャー: カテゴリリスト左端の縦貫通エリア。選択カテゴリの並べ替えボタンを
@@ -1355,16 +1688,12 @@ impl NekoviewApp {
                 |ui| {
                     if ui.button("＋").clicked() {
                         let n = self.tag_manager_categories.len() + 1;
-                        let existing: Vec<egui::Color32> =
-                            self.tag_manager_categories.iter().map(|c| c.color).collect();
-                        self.tag_manager_categories.push(TagManagerCategoryUi {
-                            name: i18n::t().tag_manager_new_category_name(n),
-                            tiers: Vec::new(),
-                            color: pick_distinct_tag_color(&existing),
-                            is_main: false,
-                            single_select: false,
-                        });
-                        self.tag_manager_selected_category = Some(self.tag_manager_categories.len() - 1);
+                        let idx = crate::tag_master::TagMaster::new(
+                            &mut self.tag_manager_categories,
+                            &mut self.tag_manager_next_tier_id,
+                        )
+                        .add_category(i18n::t().tag_manager_new_category_name(n), false, None);
+                        self.tag_manager_selected_category = Some(idx);
                         self.tag_manager_bulk_input.clear();
                         self.save_tag_manager();
                     }
@@ -1375,14 +1704,14 @@ impl NekoviewApp {
 
         // 要素を持つtierが1つも無いカテゴリは、ピッカー側から呼び出せない「未成立」状態。
         // メインカテゴリ（is_main）は常に先頭に固定表示され、削除不可。
-        let rows: Vec<(String, bool, bool)> = self
+        let rows: Vec<(String, bool, bool, bool)> = self
             .tag_manager_categories
             .iter()
-            .map(|c| (c.display_name(), c.tiers.iter().any(|t| t.element.is_some()), c.is_main))
+            .map(|c| (c.display_name(), c.tiers.iter().any(|t| t.element.is_some()), c.is_main, c.system_kind.is_some()))
             .collect();
         let mut select_idx: Option<usize> = None;
         let mut delete_idx: Option<usize> = None;
-        for (i, (name, established, is_main)) in rows.iter().enumerate() {
+        for (i, (name, established, is_main, is_system)) in rows.iter().enumerate() {
             let selected = self.tag_manager_selected_category == Some(i);
             ui.horizontal(|ui| {
                 let label = if *is_main {
@@ -1397,6 +1726,9 @@ impl NekoviewApp {
                 }
                 if *is_main {
                     ui.add_enabled(false, egui::Button::new("－"));
+                } else if *is_system {
+                    // システムカテゴリは削除できない（要素の増減・名前・色は自由）。
+                    ui.add_enabled(false, egui::Button::new("－")).on_disabled_hover_text(i18n::t().tag_manager_system_category_tip());
                 } else if ui.small_button("－").clicked() {
                     delete_idx = Some(i);
                 }
@@ -1406,8 +1738,16 @@ impl NekoviewApp {
             self.tag_manager_selected_category = Some(i);
             self.tag_manager_bulk_input.clear();
         }
+        // 「－」は確認待ちにするだけで、削除は確認ダイアログのOKで行う。
         if let Some(i) = delete_idx {
-            self.tag_manager_categories.remove(i);
+            self.tag_manager_delete_confirm = Some((i, rows[i].0.clone()));
+        }
+        let delete_idx = self.draw_tag_category_delete_confirm(ui.ctx());
+        if let Some(i) = delete_idx
+            && crate::tag_master::TagMaster::new(&mut self.tag_manager_categories, &mut self.tag_manager_next_tier_id)
+                .remove_category(i)
+                .is_ok()
+        {
             let len = self.tag_manager_categories.len();
             self.tag_manager_selected_category = match self.tag_manager_selected_category {
                 Some(sel) if sel == i => {
@@ -1419,6 +1759,47 @@ impl NekoviewApp {
             self.tag_manager_bulk_input.clear();
             self.ensure_tag_main_nonempty();
             self.save_tag_manager();
+        }
+    }
+
+    /// カテゴリ削除の確認ダイアログを描き、OKが押されたら削除するカテゴリのindexを返す。
+    /// 確認待ちのカテゴリが消えた・名前が変わった（別のカテゴリになった）ときは黙って破棄する。
+    fn draw_tag_category_delete_confirm(&mut self, ctx: &egui::Context) -> Option<usize> {
+        use crate::confirm_dialog::{draw_confirm_dialog, ConfirmDialogSpec, ConfirmOutcome};
+        let (idx, name) = self.tag_manager_delete_confirm.clone()?;
+        let Some(cat) = self.tag_manager_categories.get(idx).filter(|c| c.display_name() == name) else {
+            self.tag_manager_delete_confirm = None;
+            return None;
+        };
+        let elements = cat.tiers.iter().filter(|t| t.element.is_some()).count();
+        let t = i18n::t();
+        let outcome = draw_confirm_dialog(
+            ctx,
+            ConfirmDialogSpec {
+                id_salt: "tag_manager_delete_category_window",
+                title: t.tag_manager_delete_category_title(),
+                ok_label: t.tag_manager_delete_category_ok(),
+                cancel_label: t.favorite_dialog_cancel(),
+                foreground: true,
+            },
+            |ui| {
+                ui.label(t.tag_manager_delete_category_body(&name, elements));
+            },
+        );
+        match outcome {
+            ConfirmOutcome::None => None,
+            ConfirmOutcome::Cancel => {
+                self.tag_manager_delete_confirm = None;
+                None
+            }
+            ConfirmOutcome::Ok => {
+                self.tag_manager_delete_confirm = None;
+                // 削除は取り返しがつかないので、間隔にかかわらず直前の状態を世代に残す。
+                if !self.tag_trial_active {
+                    crate::tag_master_gen::snapshot_before_save(&self.config.config_root, self.tag_master_gen_keep(), true);
+                }
+                Some(idx)
+            }
         }
     }
 
@@ -1695,13 +2076,10 @@ impl NekoviewApp {
             self.save_tag_manager();
         }
         if let Some(t_idx) = delete_tier {
-            let tiers = &mut self.tag_manager_categories[cat_idx].tiers;
-            tiers.remove(t_idx);
             // tierは常に連番(1,2,3,...)を保つ。negativeフラグは各tierが個別に
             // 持ったままなので、削除・再採番してもポジ/ネガの割り当ては変わらない。
-            for (i, t) in tiers.iter_mut().enumerate() {
-                t.tier_no = i as i32 + 1;
-            }
+            crate::tag_master::TagMaster::new(&mut self.tag_manager_categories, &mut self.tag_manager_next_tier_id)
+                .remove_tier(cat_idx, t_idx);
             // tierのindex構成が変わるため、編集中状態はインデックスのズレを避けて破棄する。
             self.tag_manager_editing_element = None;
             self.tag_manager_editing_buffer.clear();
@@ -1749,18 +2127,13 @@ impl NekoviewApp {
             if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                 let names = crate::tag_manager::parse_bulk_elements(&self.tag_manager_bulk_input);
                 if !names.is_empty() {
-                    let tiers = &mut self.tag_manager_categories[cat_idx].tiers;
-                    let mut next_no = tiers.len() as i32 + 1;
+                    // 手動入力は同名でも追加する（従来どおり）。
+                    let mut master = crate::tag_master::TagMaster::new(
+                        &mut self.tag_manager_categories,
+                        &mut self.tag_manager_next_tier_id,
+                    );
                     for name in names {
-                        let id = self.tag_manager_next_tier_id;
-                        self.tag_manager_next_tier_id += 1;
-                        tiers.push(TagManagerTierUi {
-                            id,
-                            tier_no: next_no,
-                            negative: false,
-                            element: Some(name),
-                        });
-                        next_no += 1;
+                        master.push_element(cat_idx, &name);
                     }
                     self.tag_manager_bulk_input.clear();
                     self.save_tag_manager();
@@ -1770,6 +2143,7 @@ impl NekoviewApp {
         ui.separator();
 
         let mut remove_tier: Option<usize> = None;
+        let mut promote_alias_at: Option<(usize, usize)> = None;
         let area_height = ui.available_height() * 0.9;
         egui::ScrollArea::vertical()
             .id_salt("tag_manager_flat_scroll")
@@ -1789,19 +2163,28 @@ impl NekoviewApp {
                     }
                     let text_color = contrasting_text_color(cat_color);
                     for (t_idx, name) in elements {
-                        if tag_chip_removable(ui, &name, full_w, cat_color, text_color, t_idx) {
+                        let (removed, promote) = tag_chip_removable(ui, &name, full_w, cat_color, text_color, t_idx);
+                        if removed {
                             remove_tier = Some(t_idx);
+                        }
+                        if let Some(pos) = promote {
+                            promote_alias_at = Some((t_idx, pos));
                         }
                     }
                 });
             });
 
-        if let Some(t_idx) = remove_tier {
-            self.tag_manager_categories[cat_idx].tiers.remove(t_idx);
-            let tiers = &mut self.tag_manager_categories[cat_idx].tiers;
-            for (i, t) in tiers.iter_mut().enumerate() {
-                t.tier_no = i as i32 + 1;
+        if let Some((t_idx, pos)) = promote_alias_at {
+            // 先頭見出しにする別名を入れ替える（要素名の並びだけが変わる。tier_id・付与済みのタグはそのまま）。
+            let tier = &mut self.tag_manager_categories[cat_idx].tiers[t_idx];
+            if let Some(name) = tier.element.as_deref() {
+                tier.element = Some(crate::tag_master::promote_alias(name, pos));
+                self.save_tag_manager();
             }
+        }
+        if let Some(t_idx) = remove_tier {
+            crate::tag_master::TagMaster::new(&mut self.tag_manager_categories, &mut self.tag_manager_next_tier_id)
+                .remove_tier(cat_idx, t_idx);
             self.ensure_tag_main_nonempty();
             self.save_tag_manager();
         }
@@ -1827,7 +2210,9 @@ impl NekoviewApp {
             match matched {
                 Some(t) => t,
                 None => {
-                    self.request_tag_preview(&path);
+                    if self.tag_preview_ready_to_request(ui.ctx(), &path) {
+                        self.request_tag_preview(&path);
+                    }
                     self.thumbnails.get(&path)?.clone()
                 }
             }
@@ -1860,6 +2245,33 @@ impl NekoviewApp {
             drawn_rect = Some(rect);
         });
         drawn_rect
+    }
+
+    /// 高画質プレビューの生成を、今リクエストしてよいか。選択が一定時間（`TAG_PREVIEW_DEBOUNCE`）続き、
+    /// アーカイブを開く処理中でなく、ページ読み等のディスク読みが静かなときだけ true。
+    /// 満たさないときは、満たす頃に再描画を予約する（待つ間はグリッド用サムネで代用される）。
+    fn tag_preview_ready_to_request(&mut self, ctx: &egui::Context, path: &std::path::Path) -> bool {
+        if self.tag_preview_pending.as_deref() == Some(path) {
+            return false;
+        }
+        let since = match &self.tag_preview_want {
+            Some((p, t)) if p.as_path() == path => *t,
+            _ => {
+                let now = std::time::Instant::now();
+                self.tag_preview_want = Some((path.to_path_buf(), now));
+                now
+            }
+        };
+        let waited = since.elapsed();
+        if waited < TAG_PREVIEW_DEBOUNCE {
+            ctx.request_repaint_after(TAG_PREVIEW_DEBOUNCE - waited);
+            return false;
+        }
+        if self.pending_open.is_some() || !crate::cache::foreground_io_quiet_for(TAG_PREVIEW_FG_QUIET) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+            return false;
+        }
+        true
     }
 
     /// タグパネル高画質プレビュー: 専用解像度（`TAG_PREVIEW_DECODE_EDGE`）で1件だけ
@@ -1917,7 +2329,7 @@ impl NekoviewApp {
             if search_resp.clicked() {
                 self.switch_folder_tab(FolderPaneTab::Search);
                 self.focused_pane = FocusPane::SearchForm;
-                self.search_form_focus = SearchFormFocus::NamePattern;
+                self.search_form_focus = self.search_form.mode.first_field();
                 self.search_form_focus_request = true;
             }
         });
@@ -2027,7 +2439,6 @@ impl NekoviewApp {
                 }
             }
             TreeAction::AddToVirtual(path) => self.open_virtual_dest_picker(path),
-            TreeAction::OpenInSearch(path) => self.open_in_search_tab(path),
             TreeAction::SortSetting => self.open_tree_sort_dialog(super::tree_sort_ui::TreeSortTarget::Real),
             TreeAction::Navigate(path) | TreeAction::DoubleClick(path) => {
                 self.focused_pane = FocusPane::TreeTab;
@@ -2088,7 +2499,8 @@ impl NekoviewApp {
         // 検索タブ選択中のみアイテムペインを縦割りにする（左: ツリー+ドライブ固定幅、右: 従来の中身）。
         // [Phase A] レイアウトのモック確認用: ツリー/ドライブは実ツリーと表示・状態を共有しており、
         // クリック時の動作もまだ実ナビゲーションのまま（検索基点への分離はPhase Bで対応）。
-        if self.folder_pane_tab == FolderPaneTab::Search {
+        // 新モードでは基点フォルダを使わないので、ツリー/ドライブは出さず、全幅を一覧に使う。
+        if self.folder_pane_tab == FolderPaneTab::Search && !self.search_tree_hidden() {
             const TREE_PANE_WIDTH: f32 = 200.0;
             // ui.horizontal + ui.vertical のネストだと子の available_height() が
             // 正しく伝播しない（egui挙動）ため、両ペインとも allocate_ui_with_layout で
@@ -2291,9 +2703,9 @@ impl NekoviewApp {
         ui.separator();
 
         {
-            // ローディング中は 0.5秒経過後にスピナーを表示（短いアクセスのチラツキ防止）
-            let is_loading = matches!(&self.scan_state, ScanState::Loading { started_at, .. }
-                if started_at.elapsed().as_secs_f32() > 0.5);
+            // ローディング中は 0.5秒経過後に表示（短いアクセスのチラツキ防止）。実ディレクトリの結果を
+            // 受け取らない表示（検索タブなど）では出さない（保留中のスキャンが「読み込み中」に見えるため）。
+            let is_loading = self.scan_loading_visible();
 
             const FILTER_BAR_H: f32 = 28.0;
             let content_h = (ui.available_height() - FILTER_BAR_H).max(0.0);
@@ -2645,37 +3057,11 @@ impl NekoviewApp {
                 4.0,
                 egui::Color32::from_gray(60),
             );
-            // ファイルID解決待ち（検証中）のファイルは、移動したファイルのサムネを
-            // 引っ越せるよう、解決が済むまで生成を始めない。
-            if !self.thumb_pending.contains(path)
-                && !self.thumb_failed.contains(path)
-                && !self.thumb_queued.contains(path)
-                && !self.identity_verifying.contains(path)
-            {
-                // キャッシュDBは表示中フォルダのもの。別フォルダのファイル（横断一覧・「消した組」ウィンドウ）に渡すと、
-                // サムネを間違ったフォルダのDBへ保存してしまうので、その場合はDBなしで生成する。
-                let same_dir_db = (self.folder_pane_tab.shows_real_dir() && path.parent() == Some(self.current_dir.as_path()))
-                    .then(|| self.cache_db.clone())
-                    .flatten();
-                if self.thumb_req_tx.try_send(ThumbRequest {
-                    archive_path: path.clone(),
-                    db: same_dir_db,
-                    is_raw_file: self.raw_image_files.contains(path),
-                    requested_edge: self.config.thumb_size,
-                    requested_filter: self.config.thumb_filter,
-                    generation_token: None,
-                    session_id: self.thumb_session.load(std::sync::atomic::Ordering::Acquire),
-                    is_tag_preview: false,
-                    thumbnail_selection: path.parent().and_then(|dir| {
-                        let filename = path.file_name()?.to_str()?;
-                        self.spread_db.as_ref().and_then(|db| {
-                            crate::spread_state::read_thumbnail_selection(db, dir, filename)
-                        })
-                    }),
-                }).is_ok() {
-                    self.thumb_pending.insert(path.clone());
-                }
-            }
+            self.request_visible_thumbnail(path);
+        }
+        // 設定変更で旧形式になったテクスチャは、旧サムネを見せたまま、新形式を作り直して差し替える。
+        if self.thumb_stale_textures.contains(path) {
+            self.request_visible_thumbnail(path);
         }
     }
 
@@ -2693,6 +3079,14 @@ impl NekoviewApp {
     ) {
         // リストの「ファイラー」ボタンを押したときは、選択や起動ではなくファイラーで開く。
         if self.try_click_reveal(ui, response, real_idx) {
+            return;
+        }
+        // リストの「実フォルダ」アイコンを押したときは、選択や起動ではなく、そのファイルの場所をフォルダタブで開く。
+        if self.try_click_goto(ui, response, real_idx) {
+            return;
+        }
+        // リストの「詳細」アイコンを押したときは、選択や起動ではなく詳細ウィンドウを開く。
+        if self.try_click_detail(ui, response, real_idx) {
             return;
         }
         // 編集の解除中に＋－を押したときは、選択や起動ではなく値を動かす。
@@ -2770,6 +3164,7 @@ impl NekoviewApp {
         // 0ならトーストのみ表示してメニューにその3項目を出さない（お気に入り詳細設定・
         // フォルダを開くは対象外の概念が無いため無条件に出す）。
         if response.secondary_clicked() {
+            self.cache_key_menu(path);
             let raw_targets: Vec<PathBuf> = if !self.multi_selected.is_empty() {
                 self.multi_selected.iter().filter_map(|&idx| self.archives.get(idx).cloned()).collect()
             } else {
@@ -2787,129 +3182,152 @@ impl NekoviewApp {
             };
             let filtered_targets = self.filter_bulk_setting_targets(raw_targets.clone());
 
-            if !self.multi_selected.is_empty() {
-                let count = self.multi_selected.len();
-                let r_item = ui.button(i18n::t().favorite_detail_menu_bulk(count));
-                help_tip_auto(&r_item, &i18n::t().help_card_favorite());
-                if r_item.clicked() {
-                    self.open_favorite_detail_dialog_for_paths(raw_targets.clone());
-                    ui.close();
+            // テーマ見出し（太字・クリック不可）で項目を分ける。テーマ間は区切り線。
+            crate::ui_widgets::menu_theme_heading(ui, i18n::t().menu_theme_file_settings());
+            crate::ui_widgets::menu_theme_items(ui, |ui| {
+                if !self.multi_selected.is_empty() {
+                    let count = self.multi_selected.len();
+                    let r_item = ui.button(i18n::t().favorite_detail_menu_bulk(count));
+                    help_tip_auto(&r_item, &i18n::t().help_card_favorite());
+                    if r_item.clicked() {
+                        self.open_favorite_detail_dialog_for_paths(raw_targets.clone());
+                        ui.close();
+                    }
+                    if !filtered_targets.is_empty() {
+                        let fcount = filtered_targets.len();
+                        let r_item = ui.button(i18n::t().sort_condition_menu_bulk(fcount));
+                        help_tip_auto(&r_item, &i18n::t().help_card_sort());
+                        if r_item.clicked() {
+                            self.open_sort_condition_dialog_for_paths(filtered_targets.clone());
+                            ui.close();
+                        }
+                        let r_item = ui.button(i18n::t().bookmark_setting_menu_bulk(fcount));
+                        help_tip_auto(&r_item, &i18n::t().help_card_bookmark());
+                        if r_item.clicked() {
+                            self.open_bookmark_setting_dialog_for_paths(filtered_targets.clone());
+                            ui.close();
+                        }
+                        let r_item = ui.button(i18n::t().spread_setting_menu_bulk(fcount));
+                        help_tip_auto(&r_item, &i18n::t().help_card_spread());
+                        if r_item.clicked() {
+                            self.open_spread_setting_dialog_for_paths(filtered_targets.clone());
+                            ui.close();
+                        }
+                        let r_item = ui.button(i18n::t().rating_setting_menu_bulk(fcount));
+                        help_tip_auto(&r_item, &i18n::t().help_card_rating());
+                        if r_item.clicked() {
+                            self.open_rating_setting_dialog_for_paths(filtered_targets.clone());
+                            ui.close();
+                        }
+                    }
+                } else {
+                    let r_item = ui.button(i18n::t().favorite_detail_menu());
+                    help_tip_auto(&r_item, &i18n::t().help_card_favorite());
+                    if r_item.clicked() {
+                        self.open_favorite_detail_dialog_for_paths(raw_targets.clone());
+                        ui.close();
+                    }
+                    if !filtered_targets.is_empty() {
+                        let r_item = ui.button(i18n::t().sort_condition_menu());
+                        help_tip_auto(&r_item, &i18n::t().help_card_sort());
+                        if r_item.clicked() {
+                            self.open_sort_condition_dialog_for_paths(filtered_targets.clone());
+                            ui.close();
+                        }
+                        let r_item = ui.button(i18n::t().bookmark_setting_menu());
+                        help_tip_auto(&r_item, &i18n::t().help_card_bookmark());
+                        if r_item.clicked() {
+                            self.open_bookmark_setting_dialog_for_paths(filtered_targets.clone());
+                            ui.close();
+                        }
+                        let r_item = ui.button(i18n::t().spread_setting_menu());
+                        help_tip_auto(&r_item, &i18n::t().help_card_spread());
+                        if r_item.clicked() {
+                            self.open_spread_setting_dialog_for_paths(filtered_targets.clone());
+                            ui.close();
+                        }
+                        let r_item = ui.button(i18n::t().rating_setting_menu());
+                        help_tip_auto(&r_item, &i18n::t().help_card_rating());
+                        if r_item.clicked() {
+                            self.open_rating_setting_dialog_for_paths(filtered_targets.clone());
+                            ui.close();
+                        }
+                    }
                 }
-                if !filtered_targets.is_empty() {
-                    let fcount = filtered_targets.len();
-                    let r_item = ui.button(i18n::t().sort_condition_menu_bulk(fcount));
-                    help_tip_auto(&r_item, &i18n::t().help_card_sort());
-                    if r_item.clicked() {
-                        self.open_sort_condition_dialog_for_paths(filtered_targets.clone());
-                        ui.close();
-                    }
-                    let r_item = ui.button(i18n::t().bookmark_setting_menu_bulk(fcount));
-                    help_tip_auto(&r_item, &i18n::t().help_card_bookmark());
-                    if r_item.clicked() {
-                        self.open_bookmark_setting_dialog_for_paths(filtered_targets.clone());
-                        ui.close();
-                    }
-                    let r_item = ui.button(i18n::t().spread_setting_menu_bulk(fcount));
-                    help_tip_auto(&r_item, &i18n::t().help_card_spread());
-                    if r_item.clicked() {
-                        self.open_spread_setting_dialog_for_paths(filtered_targets.clone());
-                        ui.close();
-                    }
-                    let r_item = ui.button(i18n::t().rating_setting_menu_bulk(fcount));
-                    help_tip_auto(&r_item, &i18n::t().help_card_rating());
-                    if r_item.clicked() {
-                        self.open_rating_setting_dialog_for_paths(filtered_targets.clone());
-                        ui.close();
-                    }
-                }
-            } else {
-                let r_item = ui.button(i18n::t().favorite_detail_menu());
-                help_tip_auto(&r_item, &i18n::t().help_card_favorite());
-                if r_item.clicked() {
-                    self.open_favorite_detail_dialog_for_paths(raw_targets.clone());
-                    ui.close();
-                }
-                if !filtered_targets.is_empty() {
-                    let r_item = ui.button(i18n::t().sort_condition_menu());
-                    help_tip_auto(&r_item, &i18n::t().help_card_sort());
-                    if r_item.clicked() {
-                        self.open_sort_condition_dialog_for_paths(filtered_targets.clone());
-                        ui.close();
-                    }
-                    let r_item = ui.button(i18n::t().bookmark_setting_menu());
-                    help_tip_auto(&r_item, &i18n::t().help_card_bookmark());
-                    if r_item.clicked() {
-                        self.open_bookmark_setting_dialog_for_paths(filtered_targets.clone());
-                        ui.close();
-                    }
-                    let r_item = ui.button(i18n::t().spread_setting_menu());
-                    help_tip_auto(&r_item, &i18n::t().help_card_spread());
-                    if r_item.clicked() {
-                        self.open_spread_setting_dialog_for_paths(filtered_targets.clone());
-                        ui.close();
-                    }
-                    let r_item = ui.button(i18n::t().rating_setting_menu());
-                    help_tip_auto(&r_item, &i18n::t().help_card_rating());
-                    if r_item.clicked() {
-                        self.open_rating_setting_dialog_for_paths(filtered_targets.clone());
-                        ui.close();
-                    }
-                }
-            }
+            });
 
             ui.separator();
-            self.draw_reveal_menu_item(ui, path);
+            crate::ui_widgets::menu_theme_heading(ui, i18n::t().menu_theme_search());
+            crate::ui_widgets::menu_theme_items(ui, |ui| {
+                self.draw_key_search_menu(ui, path);
+            });
             ui.separator();
-            if self.folder_pane_tab.shows_real_dir() {
-                let r_item = ui.button(i18n::t().explorer_open_folder_menu());
-                help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
-                if r_item.clicked() {
-                    if let Some(dir) = &self.viewing_dir {
-                        crate::translate::open_in_file_manager(dir);
+            crate::ui_widgets::menu_theme_heading(ui, i18n::t().menu_theme_os_file_manager());
+            crate::ui_widgets::menu_theme_items(ui, |ui| {
+                self.draw_reveal_menu_item(ui, path);
+                if self.folder_pane_tab.shows_real_dir() {
+                    let r_item = ui.button(i18n::t().explorer_open_folder_menu());
+                    help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
+                    if r_item.clicked() {
+                        if let Some(dir) = &self.viewing_dir {
+                            crate::translate::open_in_file_manager(dir);
+                        }
+                        ui.close();
                     }
-                    ui.close();
-                }
-            } else {
-                // お気に入り/検索の横断一覧は「現在のフォルダ」を持たないので、カードごとの親フォルダを開く。
-                // 複数選択中・ネットワークパス・親が存在しない場合はグレー（存在確認はメニューを開いている間だけ）。
-                let parent = path.parent().filter(|d| {
-                    self.multi_selected.is_empty()
-                        && crate::fs::mount::network_mount_root(d).is_none()
-                        && d.is_dir()
-                });
-                let r_item = ui.add_enabled(
-                    parent.is_some(),
-                    egui::Button::new(i18n::t().explorer_open_parent_folder_menu()),
-                );
-                help_tip_auto(&r_item, &i18n::t().help_open_parent_folder());
-                if r_item.clicked() {
-                    if let Some(dir) = parent {
-                        crate::translate::open_in_file_manager(dir);
+                } else {
+                    // お気に入り/検索の横断一覧は「現在のフォルダ」を持たないので、カードごとの親フォルダを開く。
+                    // 複数選択中・ネットワークパス・親が存在しない場合はグレー（存在確認はメニューを開いている間だけ）。
+                    let parent = path.parent().filter(|d| {
+                        self.multi_selected.is_empty()
+                            && crate::fs::mount::network_mount_root(d).is_none()
+                            && d.is_dir()
+                    });
+                    let r_item = ui.add_enabled(
+                        parent.is_some(),
+                        egui::Button::new(i18n::t().explorer_open_parent_folder_menu()),
+                    );
+                    help_tip_auto(&r_item, &i18n::t().help_open_parent_folder());
+                    if r_item.clicked() {
+                        if let Some(dir) = parent {
+                            crate::translate::open_in_file_manager(dir);
+                        }
+                        ui.close();
                     }
-                    ui.close();
                 }
-            }
+            });
+
+            ui.separator();
+            crate::ui_widgets::menu_theme_heading(ui, i18n::t().menu_theme_tag_learning());
+            crate::ui_widgets::menu_theme_items(ui, |ui| {
+                self.draw_tag_learn_menu_item(ui, path);
+            });
 
             // お気に入りタブ: 開けなくなったお気に入りの再紐付け・整理（relink_ui.rs）
             if self.folder_pane_tab == FolderPaneTab::Favorites {
                 ui.separator();
-                let ghosts = self.relink_ghost_ids(&raw_targets);
-                let r_item = ui.add_enabled(
-                    !ghosts.is_empty(),
-                    egui::Button::new(i18n::t().relink_menu()),
-                );
-                help_tip_auto(&r_item, &i18n::t().help_relink());
-                if r_item.clicked() {
-                    self.open_relink_picker(ghosts);
-                    ui.close();
-                }
-                let r_item = ui.button(i18n::t().favorite_unset_menu());
-                help_tip_auto(&r_item, &i18n::t().help_favorite_unset());
-                if r_item.clicked() {
-                    self.request_unset_favorites(raw_targets.clone());
-                    ui.close();
-                }
+                crate::ui_widgets::menu_theme_heading(ui, i18n::t().menu_theme_favorite_manage());
+                crate::ui_widgets::menu_theme_items(ui, |ui| {
+                    let ghosts = self.relink_ghost_ids(&raw_targets);
+                    let r_item = ui.add_enabled(
+                        !ghosts.is_empty(),
+                        egui::Button::new(i18n::t().relink_menu()),
+                    );
+                    help_tip_auto(&r_item, &i18n::t().help_relink());
+                    if r_item.clicked() {
+                        self.open_relink_picker(ghosts);
+                        ui.close();
+                    }
+                    let r_item = ui.button(i18n::t().favorite_unset_menu());
+                    help_tip_auto(&r_item, &i18n::t().help_favorite_unset());
+                    if r_item.clicked() {
+                        self.request_unset_favorites(raw_targets.clone());
+                        ui.close();
+                    }
+                });
             }
+
+            // 計測フィクスチャー（設定→デバッグのゲートがONの間だけ。perf_fixture_ui.rs）
+            self.draw_perf_fixture_menu(ui);
         });
     }
 
@@ -2953,17 +3371,19 @@ impl NekoviewApp {
             self.after_folder_click(ui, prev_selected);
         }
         response.context_menu(|ui| {
-            let r_item = ui.button(i18n::t().explorer_open_folder_menu());
-            help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
-            if r_item.clicked() {
-                if let Some(dir) = &self.viewing_dir {
-                    crate::translate::open_in_file_manager(dir);
+            crate::ui_widgets::menu_theme_heading(ui, i18n::t().menu_theme_os_file_manager());
+            crate::ui_widgets::menu_theme_items(ui, |ui| {
+                let r_item = ui.button(i18n::t().explorer_open_folder_menu());
+                help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
+                if r_item.clicked() {
+                    if let Some(dir) = &self.viewing_dir {
+                        crate::translate::open_in_file_manager(dir);
+                    }
+                    ui.close();
                 }
-                ui.close();
-            }
-            // このセル自身のフォルダ（「↑」は親フォルダ）が対象のメニュー
-            ui.separator();
-            this_folder_menu_items(ui, dir, &mut self.pending_open_in_search);
+                // このセル自身のフォルダ（「↑」は親フォルダ）が対象の項目
+                this_folder_menu_items(ui, dir);
+            });
         });
         response.double_clicked()
     }
@@ -3189,9 +3609,15 @@ impl NekoviewApp {
                             // 画像の上に半透明帯を重ねる。マーカー描画より前に置くことで、
                             // マーカー（赤×・お気に入り等）は帯の上に出る（重なりは許容）。
                             // 帯は「情報行（0..=3）＋評価行（0..=2, info2）」を上から順に積む。
+                            // カスタム書式が有効なら、従来方式の帯は出さず、カスタム帯だけを描く
+                            // （従来方式の描画コードは無変更。n_lines を0にして素通りさせる）。
+                            let custom_band: Option<Vec<crate::card_band::Item>> = self.card_band.render_items().map(|i| i.to_vec());
+                            if let Some(items) = &custom_band {
+                                self.paint_custom_card_band(ui, &response, rect, path, cell_h, items);
+                            }
                             let info_lines = self.card_info_mode.line_count();
                             let rating_lines = self.card_rating_mode.line_count();
-                            let n_lines = info_lines + rating_lines;
+                            let n_lines = if custom_band.is_some() { 0 } else { info_lines + rating_lines };
                             if n_lines > 0 {
                                 // 可視カードぶんだけメタデータを遅延取得（失敗時は次フレーム再試行）
                                 if info_lines > 0
@@ -3539,26 +3965,21 @@ impl NekoviewApp {
             // 有効にする。お気に入り/検索はカードごとに実パスが違うため余白では出さない。
             let bg_open_dir = if self.folder_pane_tab.shows_real_dir() { self.viewing_dir.clone() } else { None };
             grid_bg.context_menu(|ui| {
-                ui.add_enabled(false, egui::Button::new(i18n::t().favorite_detail_menu()));
+                crate::ui_widgets::menu_theme_heading(ui, i18n::t().menu_theme_file_settings());
+                crate::ui_widgets::menu_theme_items(ui, |ui| {
+                    ui.add_enabled(false, egui::Button::new(i18n::t().favorite_detail_menu()));
+                });
                 if let Some(dir) = &bg_open_dir {
                     ui.separator();
-                    let r_item = ui.button(i18n::t().explorer_open_folder_menu());
-                    help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
-                    if r_item.clicked() {
-                        crate::translate::open_in_file_manager(dir);
-                        ui.close();
-                    }
-                    // 余白は表示中のフォルダ（PWD）が対象。ネットワークパスは対象外
-                    let searchable = crate::fs::mount::network_mount_root(dir).is_none();
-                    let r_item = ui.add_enabled(
-                        searchable,
-                        egui::Button::new(i18n::t().explorer_open_in_search_menu()),
-                    );
-                    help_tip_auto(&r_item, &i18n::t().help_open_in_search());
-                    if r_item.clicked() {
-                        self.pending_open_in_search = Some(dir.clone());
-                        ui.close();
-                    }
+                    crate::ui_widgets::menu_theme_heading(ui, i18n::t().menu_theme_os_file_manager());
+                    crate::ui_widgets::menu_theme_items(ui, |ui| {
+                        let r_item = ui.button(i18n::t().explorer_open_folder_menu());
+                        help_tip_auto(&r_item, &i18n::t().help_card_open_folder());
+                        if r_item.clicked() {
+                            crate::translate::open_in_file_manager(dir);
+                            ui.close();
+                        }
+                    });
                 }
             });
             list_nav.or(grid_response.inner)
@@ -3587,9 +4008,14 @@ impl NekoviewApp {
         if !list_mode {
             self.grid_anchor.end_frame(self.explorer_scroll_offset, self.explorer_viewport_h, cell_h, cols, grid_total, selected_pos);
         }
-        // 一覧の右クリック「このフォルダを検索タブで開く」は、描画が終わってから消化する
-        if let Some(path) = self.pending_open_in_search.take() {
-            self.open_in_search_tab(path);
+        // 「実フォルダ」アイコンの移動も、描画が終わってから消化する（一覧の差し替えを描画の途中でしない）
+        if let Some(file) = self.pending_goto_real.take() {
+            self.open_file_location_in_folders_tab(file);
+            return;
+        }
+        // 「仮想フォルダ」アイコンも同様。登録が1つならそこへ移り、複数なら選択メニューを出す。
+        if let Some((file, anchor)) = self.pending_goto_virtual.take() {
+            self.start_goto_virtual(file, anchor);
             return;
         }
         match output.inner {
@@ -3600,21 +4026,14 @@ impl NekoviewApp {
     }
 }
 
-/// 右クリックしたフォルダ自身を対象にするメニュー項目（「このフォルダを開く」「このフォルダを検索タブで開く」）。
-/// 表示中のフォルダ（PWD）が対象の「現在のフォルダを開く」とは別物。ネットワークパスは無効化する。
-/// 検索タブで開く要求は `pending_search` に積み、一覧の描画後に消化する。
-pub(super) fn this_folder_menu_items(ui: &mut egui::Ui, folder: &Path, pending_search: &mut Option<PathBuf>) {
+/// 右クリックしたフォルダ自身を対象にするメニュー項目（「このフォルダをファイラーで開く」）。
+/// 表示中のフォルダ（PWD）が対象の「現在のフォルダをファイラーで開く」とは別物。ネットワークパスは無効化する。
+pub(super) fn this_folder_menu_items(ui: &mut egui::Ui, folder: &Path) {
     let enabled = crate::fs::mount::network_mount_root(folder).is_none();
     let r_item = ui.add_enabled(enabled, egui::Button::new(i18n::t().explorer_open_this_folder_menu()));
     help_tip_auto(&r_item, &i18n::t().help_open_this_folder());
     if r_item.clicked() {
         crate::translate::open_in_file_manager(folder);
-        ui.close();
-    }
-    let r_item = ui.add_enabled(enabled, egui::Button::new(i18n::t().explorer_open_in_search_menu()));
-    help_tip_auto(&r_item, &i18n::t().help_open_in_search());
-    if r_item.clicked() {
-        *pending_search = Some(folder.to_path_buf());
         ui.close();
     }
 }
@@ -3624,66 +4043,71 @@ pub(super) fn this_folder_menu_items(ui: &mut egui::Ui, folder: &Path, pending_s
 pub(super) struct TreeMenu {
     /// 「仮想フォルダに追加する」（仮想タブ内の実ツリーペインだけ）
     pub add_to_virtual: bool,
-    /// 「このフォルダを検索タブで開く」（実フォルダ/仮想フォルダタブのツリーだけ）
-    pub open_in_search: bool,
+    /// 「このフォルダをファイラーで開く」（実フォルダ/仮想フォルダタブのツリーだけ）
+    pub open_folder: bool,
     /// 「ソート条件設定」
     pub sort: bool,
 }
 
 impl TreeMenu {
-    pub const NONE: Self = Self { add_to_virtual: false, open_in_search: false, sort: false };
+    pub const NONE: Self = Self { add_to_virtual: false, open_folder: false, sort: false };
 
     fn any(self) -> bool {
-        self.add_to_virtual || self.open_in_search || self.sort
+        self.add_to_virtual || self.open_folder || self.sort
     }
 }
 
 /// 実ツリーの右クリックメニュー。`path` が行のパス、行の外（ツリー内の余白）は None。
 /// 行の外では、ツリー全体に効く「ソート条件設定」だけが有効で、ほかはグレーアウトする。
 fn real_tree_context_menu(ui: &mut egui::Ui, path: Option<&PathBuf>, menu: TreeMenu, action: &mut TreeAction) {
+    // テーマ見出し（太字・クリック不可）＋インデントした項目。テーマ間は区切り線。
+    let mut need_separator = false;
     if menu.add_to_virtual {
-        let r = ui.add_enabled(path.is_some(), egui::Button::new(i18n::t().virtual_menu_add_from_real()));
-        help_tip_auto(&r, &i18n::t().help_tree_add_to_virtual());
-        if r.clicked() {
-            if let Some(p) = path {
-                *action = TreeAction::AddToVirtual(p.clone());
+        crate::ui_widgets::menu_theme_heading(ui, i18n::t().menu_theme_virtual_folder());
+        crate::ui_widgets::menu_theme_items(ui, |ui| {
+            let r = ui.add_enabled(path.is_some(), egui::Button::new(i18n::t().virtual_menu_add_from_real()));
+            help_tip_auto(&r, &i18n::t().help_tree_add_to_virtual());
+            if r.clicked() {
+                if let Some(p) = path {
+                    *action = TreeAction::AddToVirtual(p.clone());
+                }
+                ui.close();
             }
-            ui.close();
-        }
-        if menu.open_in_search || menu.sort {
-            ui.separator();
-        }
+        });
+        need_separator = true;
     }
-    if menu.open_in_search {
-        // ネットワークパスは対象外（OS差が埋められないため）
-        let target = path.filter(|p| crate::fs::mount::network_mount_root(p).is_none());
-        let r = ui.add_enabled(target.is_some(), egui::Button::new(i18n::t().explorer_open_this_folder_menu()));
-        help_tip_auto(&r, &i18n::t().help_open_this_folder());
-        if r.clicked() {
-            if let Some(p) = target {
-                crate::translate::open_in_file_manager(p);
-            }
-            ui.close();
-        }
-        let r = ui.add_enabled(target.is_some(), egui::Button::new(i18n::t().explorer_open_in_search_menu()));
-        help_tip_auto(&r, &i18n::t().help_open_in_search());
-        if r.clicked() {
-            if let Some(p) = target {
-                *action = TreeAction::OpenInSearch(p.clone());
-            }
-            ui.close();
-        }
-        if menu.sort {
+    if menu.open_folder {
+        if need_separator {
             ui.separator();
         }
+        crate::ui_widgets::menu_theme_heading(ui, i18n::t().menu_theme_os_file_manager());
+        crate::ui_widgets::menu_theme_items(ui, |ui| {
+            // ネットワークパスは対象外（OS差が埋められないため）
+            let target = path.filter(|p| crate::fs::mount::network_mount_root(p).is_none());
+            let r = ui.add_enabled(target.is_some(), egui::Button::new(i18n::t().explorer_open_this_folder_menu()));
+            help_tip_auto(&r, &i18n::t().help_open_this_folder());
+            if r.clicked() {
+                if let Some(p) = target {
+                    crate::translate::open_in_file_manager(p);
+                }
+                ui.close();
+            }
+        });
+        need_separator = true;
     }
     if menu.sort {
-        let r = ui.button(i18n::t().tree_sort_menu());
-        help_tip_auto(&r, &i18n::t().help_tree_sort());
-        if r.clicked() {
-            *action = TreeAction::SortSetting;
-            ui.close();
+        if need_separator {
+            ui.separator();
         }
+        crate::ui_widgets::menu_theme_heading(ui, i18n::t().menu_theme_view());
+        crate::ui_widgets::menu_theme_items(ui, |ui| {
+            let r = ui.button(i18n::t().tree_sort_menu());
+            help_tip_auto(&r, &i18n::t().help_tree_sort());
+            if r.clicked() {
+                *action = TreeAction::SortSetting;
+                ui.close();
+            }
+        });
     }
 }
 
@@ -4089,7 +4513,7 @@ impl NekoviewApp {
     fn real_tree_menu(&self) -> TreeMenu {
         TreeMenu {
             add_to_virtual: self.folder_pane_tab == FolderPaneTab::VirtualFolders,
-            open_in_search: self.folder_pane_tab.shows_real_dir(),
+            open_folder: self.folder_pane_tab.shows_real_dir(),
             sort: true,
         }
     }
@@ -4125,7 +4549,9 @@ pub(super) fn tag_chip(
 ) -> egui::Response {
     let pad = egui::vec2(6.0, 2.0);
     let font = egui::TextStyle::Button.resolve(ui.style());
-    let galley = truncated_galley(ui, text, font, text_color, (full_w - pad.x * 2.0).max(8.0));
+    // 別名つき（`A|B|C`）は先頭の別名だけを表示し、ホバーで全文を出す。
+    let shown = crate::tag_master::display_name(text);
+    let galley = truncated_galley(ui, shown, font, text_color, (full_w - pad.x * 2.0).max(8.0));
     let size = galley.size() + pad * 2.0;
     let (rect, resp) = ui.allocate_exact_size(size, sense);
     let fill = if hover_fill && resp.hovered() { ui.visuals().widgets.hovered.weak_bg_fill } else { fill };
@@ -4134,9 +4560,44 @@ pub(super) fn tag_chip(
     resp.on_hover_text(text)
 }
 
+/// 検索タブの「有効なタグ」一覧用の、×付きチップ。×が押されたら true。文字部分は反応しない
+/// （`tag_chip_removable` と違い、別名の先頭切替ポップアップは持たない）。長い要素は文字側だけ`…`で省略し、×は右端に残す。
+pub(super) fn tag_chip_with_x(
+    ui: &mut egui::Ui,
+    text: &str,
+    full_w: f32,
+    fill: egui::Color32,
+    text_color: egui::Color32,
+    key: u64,
+) -> bool {
+    const X_W: f32 = 16.0;
+    let pad = egui::vec2(6.0, 2.0);
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let shown = crate::tag_master::display_name(text);
+    let galley = truncated_galley(ui, shown, font.clone(), text_color, (full_w - pad.x * 2.0 - X_W).max(8.0));
+    let size = egui::vec2(galley.size().x + pad.x * 2.0 + X_W, galley.size().y + pad.y * 2.0);
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::hover());
+    ui.painter().rect_filled(rect, 3.0, fill);
+    ui.painter().galley(rect.min + pad, galley, text_color);
+    let x_rect = egui::Rect::from_min_max(egui::pos2(rect.right() - X_W - pad.x, rect.top()), rect.right_bottom());
+    let x_resp = ui.interact(x_rect, ui.id().with(("tag_search_active_x", key)), egui::Sense::click());
+    let x_color = if x_resp.hovered() { text_color } else { text_color.gamma_multiply(0.6) };
+    ui.painter().text(
+        egui::pos2(rect.right() - X_W / 2.0 - pad.x / 2.0, rect.center().y),
+        egui::Align2::CENTER_CENTER,
+        "×",
+        font,
+        x_color,
+    );
+    resp.on_hover_text(text);
+    x_resp.clicked()
+}
+
 /// `tag_chip`の削除ボタン(×)付き版。文字部分と×を1個の矩形として確保するため、チップごと
 /// 折り返す。長い要素は文字側だけを`…`で省略し、×は常に右端に残す。×がクリック
 /// された（＝削除要求）時にtrueを返す。`key`はチップごとに一意なID用（要素のindex等）。
+/// 別名つき（`A|B|C`）は先頭の別名だけを表示し、ホバーで全文を出す。別名があるチップは、文字部分を
+/// クリックすると「先頭にする別名」のラジオが開き、選んだ別名の位置を返す（`(削除要求, 先頭にする別名の位置)`）。
 fn tag_chip_removable(
     ui: &mut egui::Ui,
     text: &str,
@@ -4144,13 +4605,17 @@ fn tag_chip_removable(
     fill: egui::Color32,
     text_color: egui::Color32,
     key: usize,
-) -> bool {
+) -> (bool, Option<usize>) {
     const X_W: f32 = 16.0;
     let pad = egui::vec2(6.0, 2.0);
     let font = egui::TextStyle::Button.resolve(ui.style());
-    let galley = truncated_galley(ui, text, font.clone(), text_color, (full_w - pad.x * 2.0 - X_W).max(8.0));
+    let aliases = crate::tag_master::split_aliases(text);
+    let has_aliases = aliases.len() > 1;
+    let shown = crate::tag_master::display_name(text);
+    let galley = truncated_galley(ui, shown, font.clone(), text_color, (full_w - pad.x * 2.0 - X_W).max(8.0));
     let size = egui::vec2(galley.size().x + pad.x * 2.0 + X_W, galley.size().y + pad.y * 2.0);
-    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let sense = if has_aliases { egui::Sense::click() } else { egui::Sense::hover() };
+    let (rect, resp) = ui.allocate_exact_size(size, sense);
     ui.painter().rect_filled(rect, 3.0, fill);
     ui.painter().galley(rect.min + pad, galley, text_color);
     let x_rect = egui::Rect::from_min_max(egui::pos2(rect.right() - X_W - pad.x, rect.top()), rect.right_bottom());
@@ -4163,6 +4628,17 @@ fn tag_chip_removable(
         font,
         x_color,
     );
+    let mut promote = None;
+    if has_aliases {
+        egui::Popup::menu(&resp).show(|ui| {
+            ui.weak(i18n::t().tag_confirm_primary_alias());
+            for (pos, a) in aliases.iter().enumerate() {
+                if ui.radio(pos == 0, *a).clicked() && pos != 0 {
+                    promote = Some(pos);
+                }
+            }
+        });
+    }
     resp.on_hover_text(text);
-    x_resp.clicked()
+    (x_resp.clicked(), promote)
 }

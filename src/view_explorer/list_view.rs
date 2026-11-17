@@ -1,6 +1,6 @@
 //! リスト表示（カードの代わりに1行1項目で並べる）。
 //!
-//! 列: エラー（最左）／重複／ファイラー（単体ファイルを選択状態でOSのファイラーで開く）／サムネ／名前／サイズ／更新日時／評価／訪問回数／属性（最右）。
+//! 列: エラー（最左）／重複／ファイラー（単体ファイルを選択状態でOSのファイラーで開く）／サムネ／名前／サイズ／更新日時／評価／訪問回数／ページ数／詳細／属性（最右）。
 //! 行の高さはサムネ設定に対する S=25% / M=40% / L=60%。「サムネ無し」は行を文字のみにする。
 //! 行にホバーしたときのサムネのポップアップは、サイズとは独立のチェックボックスで出す。列の幅は固定で、収まらないときは横スクロールする。
 //! フォルダ（「↑」・サブフォルダ・仮想フォルダ）も同じ列の行として並べる。
@@ -71,16 +71,26 @@ fn thumb_col_width(size: ListSize, row_h: f32) -> f32 {
 }
 
 /// 列の数（`Col` の要素数）。
-const COL_N: usize = 12;
+const COL_N: usize = 17;
 
-/// 列の幅（エラー・重複・ファイラー・サムネ・名前・場所・完全比較・サイズ・更新日時・評価・訪問回数・属性）。
-/// ユーザー設定は重複・名前・サイズ・更新日時・評価・訪問回数。エラー・属性は固定幅。
-/// `place_w`・`compare_w` は類似ファイル一覧のときだけ出す「場所」「完全比較」列の幅（出さないときは 0）。
-fn column_widths(thumb_w: f32, cols: &ListColumns, place_w: f32, compare_w: f32) -> [f32; COL_N] {
+/// 「場所」列（フルパス）を出す表示か。複数のフォルダにまたがる横断一覧（類似ファイル一覧・検索結果・
+/// お気に入り・タグ検索）だけで出す。「完全比較」列は類似ファイル一覧専用なので、ここでは決めない。
+fn place_column_shown(similar: bool, search: bool, favorites: bool, tag_search: bool) -> bool {
+    similar || search || favorites || tag_search
+}
+
+/// 列の幅（エラー・重複・ファイラー・サムネ・名前・場所・完全比較・サイズ・更新日時・評価・公開評価・訪問回数・ページ数・詳細・属性）。
+/// ユーザー設定は重複・名前・サイズ・更新日時・評価・訪問回数・ページ数。エラー・公開評価・詳細・属性は固定幅。
+/// `goto` は横断一覧のときだけ出す「実フォルダ」「仮想フォルダ」の移動アイコン列（出さないときは幅 0）。
+/// `place_w` は横断一覧のときだけ出す「場所」列、`compare_w` は類似ファイル一覧のときだけ出す「完全比較」列の幅（出さないときは 0）。
+fn column_widths(thumb_w: f32, cols: &ListColumns, place_w: f32, compare_w: f32, goto: bool) -> [f32; COL_N] {
+    let (real_go_w, virt_go_w) = if goto { (cols.width(7), cols.width(8)) } else { (0.0, 0.0) };
     [
         ERROR_COL_W,
         cols.width(0),
         REVEAL_COL_W,
+        real_go_w,
+        virt_go_w,
         thumb_w,
         cols.width(1),
         place_w,
@@ -88,13 +98,25 @@ fn column_widths(thumb_w: f32, cols: &ListColumns, place_w: f32, compare_w: f32)
         cols.width(2),
         cols.width(3),
         cols.width(4),
+        SOURCE_RATING_COL_W,
         cols.width(5),
+        cols.width(6),
+        DETAIL_COL_W,
         ATTR_COL_W,
     ]
 }
 
 /// 「エラー」列の幅（px。固定）。赤X・⚠ の2スロット。
 const ERROR_COL_W: f32 = 44.0;
+
+/// 「公開評価」列の幅（px。固定）。見出しと `4.82` の数値が収まる幅。
+const SOURCE_RATING_COL_W: f32 = 92.0;
+
+/// 「詳細」列の1スロットの幅（px）。種別バッジ（XML・JSON・TXT）が1つ入る。位置は種別ごとに固定。
+const DETAIL_SLOT_W: f32 = 32.0;
+
+/// 「詳細」列の幅（px。固定）。種別バッジ3スロットが並ぶ幅。
+const DETAIL_COL_W: f32 = CELL_PAD + DETAIL_SLOT_W * 3.0;
 
 /// 「属性」列の幅（px。固定）。保存設定4スロット（L/R・S・T・B）＋お気に入り3スロットの計7スロット。
 const ATTR_COL_W: f32 = 126.0;
@@ -115,18 +137,28 @@ enum Col {
     Dup = 1,
     /// 単体ファイルを選択状態でOSのファイラーで開くボタン。
     Reveal = 2,
-    Thumb = 3,
-    Name = 4,
-    /// 類似ファイル一覧のときだけ幅を持つ（それ以外は幅 0）。
-    Place = 5,
+    /// 横断一覧のときだけ幅を持つ（それ以外は幅 0）。このファイルの実フォルダをフォルダタブで開く移動アイコン。
+    RealGo = 3,
+    /// 横断一覧のときだけ幅を持つ。このファイルの場所を登録した仮想フォルダを仮想フォルダタブで開く移動アイコン。
+    VirtGo = 4,
+    Thumb = 5,
+    Name = 6,
+    /// 横断一覧のときだけ幅を持つ（それ以外は幅 0）。
+    Place = 7,
     /// 類似ファイル一覧のときだけ幅を持つ（完全比較の結果バッジ）。
-    Compare = 6,
-    Size = 7,
-    Mtime = 8,
-    Rating = 9,
-    Visits = 10,
+    Compare = 8,
+    Size = 9,
+    Mtime = 10,
+    Rating = 11,
+    /// アーカイブ内の info.txt の `Rating:`（公開評価）。固定幅。
+    SourceRating = 12,
+    Visits = 13,
+    /// ビューアーを開いたときに記録されたページ数（未取得は空欄）。
+    Pages = 14,
+    /// 詳細ファイル（ComicInfo.xml・meta.json・付属テキスト）の種別バッジ。
+    Detail = 15,
     /// 最右。保存設定マーカー（L/R・S・T・B）とお気に入りマーカー。
-    Attr = 11,
+    Attr = 16,
 }
 
 impl Col {
@@ -139,20 +171,25 @@ impl Col {
             Col::Mtime => Some(HeaderColumn::Date),
             Col::Rating => Some(HeaderColumn::Score),
             Col::Visits => Some(HeaderColumn::Visits),
-            Col::Error | Col::Dup | Col::Reveal | Col::Thumb | Col::Place | Col::Compare | Col::Attr => None,
+            Col::Pages => Some(HeaderColumn::Pages),
+            Col::SourceRating => Some(HeaderColumn::SourceRating),
+            Col::Error | Col::Dup | Col::Reveal | Col::RealGo | Col::VirtGo | Col::Thumb | Col::Place | Col::Compare | Col::Detail | Col::Attr => None,
         }
     }
 
     /// 幅を変えられる列の `ListColumns` 上の番号。サムネ列は行の高さで決まるので変えられない。
     fn resize_index(self) -> Option<usize> {
         match self {
-            Col::Error | Col::Reveal | Col::Thumb | Col::Place | Col::Compare | Col::Attr => None,
+            Col::Error | Col::Reveal | Col::Thumb | Col::Place | Col::Compare | Col::SourceRating | Col::Detail | Col::Attr => None,
             Col::Dup => Some(0),
             Col::Name => Some(1),
             Col::Size => Some(2),
             Col::Mtime => Some(3),
             Col::Rating => Some(4),
             Col::Visits => Some(5),
+            Col::Pages => Some(6),
+            Col::RealGo => Some(7),
+            Col::VirtGo => Some(8),
         }
     }
 }
@@ -200,6 +237,35 @@ fn cell_text(painter: &egui::Painter, rect: egui::Rect, text: &str, font: &egui:
         font.clone(),
         color,
     );
+}
+
+/// 「公開評価」列のセル。info.txt の `Rating:` を小数2桁の数値で出す。
+/// 確認済みで評価が無いときは薄い「－」、対応外の形式（詳細の記録が N/A）は「N/A」、未確認は空欄。
+fn paint_source_rating_cell(
+    ui: &egui::Ui,
+    response: &egui::Response,
+    cell: egui::Rect,
+    rating: crate::neko_dir::SourceRating,
+    detail: crate::neko_dir::DetailFlag,
+    font: &egui::FontId,
+    text_color: egui::Color32,
+) {
+    use crate::neko_dir::{DetailFlag, SourceRating};
+    if cell.width() <= 0.0 {
+        return;
+    }
+    let weak = ui.visuals().weak_text_color();
+    let t = i18n::t();
+    let (text, color, tip) = match (rating, detail) {
+        (SourceRating::Value(v), _) => (crate::fs::archive::meta::format_source_rating(v), text_color, t.list_source_rating_tip("value")),
+        (SourceRating::None, _) => ("－".to_owned(), weak, t.list_source_rating_tip("none")),
+        (SourceRating::Unknown, DetailFlag::NotApplicable) => ("N/A".to_owned(), weak, t.list_source_rating_tip("na")),
+        (SourceRating::Unknown, _) => return,
+    };
+    cell_text(ui.painter(), cell, &text, font, color);
+    if ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| cell.contains(p)) {
+        response.clone().on_hover_text(tip);
+    }
 }
 
 /// 行 `i` の当たり判定。行ごとの子UIの下にIDを置く。
@@ -258,9 +324,20 @@ impl NekoviewApp {
         // 編集の解除はリスト（一覧は封印中）のときだけ効く。
         let editing = self.list_edit_lock.is_unlocked() && self.view_mode.mode == ViewMode::List;
         let row_h = edit_row_height(base_row_h, editing);
-        let place_w = if self.viewing_similar.is_some() { PLACE_COL_W } else { 0.0 };
+        let place_w = if place_column_shown(
+            self.viewing_similar.is_some(),
+            self.viewing_search.is_some(),
+            self.viewing_favorites.is_some(),
+            self.folder_pane_tab == FolderPaneTab::TagSearch,
+        ) {
+            PLACE_COL_W
+        } else {
+            0.0
+        };
         let compare_w = if self.viewing_similar.is_some() { COMPARE_COL_W } else { 0.0 };
-        let widths = column_widths(thumb_col_width(size, base_row_h), &self.list_cols, place_w, compare_w);
+        // 「実フォルダ」「仮想フォルダ」の移動アイコン列は、場所列と同じ横断一覧のときに出す。
+        let goto = place_w > 0.0;
+        let widths = column_widths(thumb_col_width(size, base_row_h), &self.list_cols, place_w, compare_w, goto);
         ListMetrics { row_h, base_row_h, widths, total_w: widths.iter().sum() }
     }
 
@@ -286,6 +363,9 @@ impl NekoviewApp {
         ui.spacing_mut().item_spacing.y = ROW_GAP;
         // 「ファイラー」ボタンの当たり判定は、今フレームに描いた行のものだけ使う。
         self.reveal_icon_hits.clear();
+        self.goto_real_hits.clear();
+        self.goto_virtual_hits.clear();
+        self.detail_icon_hits.clear();
         self.list_edit_hits.clear();
 
         // 仮想スクロール: 全行ぶんの高さを一度だけ確保し、見えている行（＋前後1行）だけを作る。
@@ -406,7 +486,7 @@ impl NekoviewApp {
             }
             dup_click = resp.clicked();
         }
-        for col in [Col::Name, Col::Size, Col::Mtime, Col::Rating, Col::Visits] {
+        for col in [Col::Name, Col::Size, Col::Mtime, Col::Rating, Col::SourceRating, Col::Visits, Col::Pages] {
             let Some(sort_col) = col.sort_column() else { continue };
             let cell = col_rect(row, &m.widths, col).intersect(rect);
             if cell.width() <= 0.0 {
@@ -424,7 +504,7 @@ impl NekoviewApp {
         // 境界の操作を先に処理して、この後の描画（見出しと本体の行）に今フレームの幅を反映する。
         let mut changed = false;
         let mut active_idx: Option<usize> = None;
-        for col in [Col::Error, Col::Dup, Col::Reveal, Col::Name, Col::Place, Col::Compare, Col::Size, Col::Mtime, Col::Rating, Col::Visits, Col::Attr] {
+        for col in [Col::Error, Col::Dup, Col::Reveal, Col::RealGo, Col::VirtGo, Col::Name, Col::Place, Col::Compare, Col::Size, Col::Mtime, Col::Rating, Col::SourceRating, Col::Visits, Col::Pages, Col::Detail, Col::Attr] {
             let Some(idx) = col.resize_index() else { continue };
             let x = col_rect(row, &m.widths, col).max.x;
             let grab = egui::Rect::from_center_size(egui::pos2(x, rect.center().y), egui::vec2(RESIZE_GRAB_W, HEADER_H))
@@ -488,13 +568,18 @@ impl NekoviewApp {
             (Col::Error, t.list_col_error()),
             (Col::Dup, if self.is_look_alike_view() { t.list_col_restore() } else if self.viewing_similar.is_some() { t.list_col_base() } else { t.list_col_dup() }),
             (Col::Reveal, t.list_col_reveal()),
+            (Col::RealGo, t.list_col_goto_real()),
+            (Col::VirtGo, t.list_col_goto_virtual()),
             (Col::Name, t.list_col_name()),
             (Col::Place, t.list_col_place()),
             (Col::Compare, if self.is_look_alike_view() { t.list_col_similarity() } else { t.list_col_compare() }),
             (Col::Size, t.list_col_size()),
             (Col::Mtime, t.list_col_mtime()),
             (Col::Rating, t.list_col_rating()),
+            (Col::SourceRating, t.list_col_source_rating()),
             (Col::Visits, t.list_col_visits()),
+            (Col::Pages, t.list_col_pages()),
+            (Col::Detail, t.list_col_detail()),
             (Col::Attr, t.list_col_attr()),
         ] {
             // 並べている列は、昇順 ▲ / 降順 ▼ を付けて強調する
@@ -513,7 +598,7 @@ impl NekoviewApp {
         // 境界線。つかめる状態の境界（ホバー・ドラッグ中）だけ太く強調する（リサイズのマーカー）。
         let line = grid_line_color(ui);
         let marker = ui.visuals().strong_text_color();
-        for col in [Col::Error, Col::Dup, Col::Reveal, Col::Name, Col::Place, Col::Compare, Col::Size, Col::Mtime, Col::Rating, Col::Visits, Col::Attr] {
+        for col in [Col::Error, Col::Dup, Col::Reveal, Col::RealGo, Col::VirtGo, Col::Name, Col::Place, Col::Compare, Col::Size, Col::Mtime, Col::Rating, Col::SourceRating, Col::Visits, Col::Pages, Col::Detail, Col::Attr] {
             let x = col_rect(row, &m.widths, col).max.x;
             let active = col.resize_index().is_some() && col.resize_index() == active_idx;
             let stroke = if active { egui::Stroke::new(2.0, marker) } else { egui::Stroke::new(1.0, line) };
@@ -622,6 +707,7 @@ impl NekoviewApp {
             cell_text(ui.painter(), compare_cell, &text, font, color);
         }
         self.paint_reveal_cell(ui, response, col_rect(rect, widths, Col::Reveal), real_idx);
+        self.paint_goto_cells(ui, response, path, real_idx, col_rect(rect, widths, Col::RealGo), col_rect(rect, widths, Col::VirtGo));
         self.paint_error_cell(ui, response, col_rect(rect, widths, Col::Error), path);
         self.paint_attr_cell(ui, response, col_rect(rect, widths, Col::Attr), path);
         let dup_cell = col_rect(rect, widths, Col::Dup);
@@ -669,6 +755,17 @@ impl NekoviewApp {
         } else {
             cell_text(painter, visits_col, &visits.to_string(), font, text_color);
         }
+        // ページ数と詳細有無（ビューアーを開いて記録された値。ファイルが変わって古くなった記録は出さない）。
+        let info = meta.and_then(|(mt, sz)| self.fresh_archive_info(path, Some(mt), sz));
+        if let Some(info) = info {
+            let pages = crate::fs::archive::meta::format_page_count(info.page_count);
+            if !pages.is_empty() {
+                cell_text(ui.painter(), col_rect(rect, widths, Col::Pages), &pages, font, text_color);
+            }
+            let detail_cell = col_rect(rect, widths, Col::Detail);
+            self.paint_detail_cell(ui, response, detail_cell, real_idx, info.detail, font);
+            paint_source_rating_cell(ui, response, col_rect(rect, widths, Col::SourceRating), info.source_rating, info.detail, font, text_color);
+        }
         if editing {
             // 生画像は評価の対象外なので、評価の＋－は出さない（訪問回数は出す）。
             if !is_raw {
@@ -687,6 +784,62 @@ impl NekoviewApp {
         }
     }
 
+    /// 「詳細」列のセル。確認済みで有る種別は、XML・JSON・TXT の固定スロットにバッジを出す（押すとその種類の窓）。
+    /// 確認済みで無いときは薄い「－」、対応外の形式（7z・tar・フォルダ）は「N/A」、未確認は空欄。
+    fn paint_detail_cell(
+        &mut self,
+        ui: &egui::Ui,
+        response: &egui::Response,
+        cell: egui::Rect,
+        real_idx: usize,
+        flag: crate::neko_dir::DetailFlag,
+        font: &egui::FontId,
+    ) {
+        use crate::neko_dir::DetailFlag;
+        use super::detail_window::DetailKind;
+        if cell.width() <= 0.0 {
+            return;
+        }
+        let weak = ui.visuals().weak_text_color();
+        let hover_pos = ui.input(|i| i.pointer.hover_pos());
+        let t = i18n::t();
+        match flag {
+            DetailFlag::Unknown => {}
+            DetailFlag::NotApplicable => {
+                cell_text(ui.painter(), cell, "N/A", font, weak);
+                if hover_pos.is_some_and(|p| cell.contains(p)) {
+                    response.clone().on_hover_text(t.list_detail_tip("na"));
+                }
+            }
+            DetailFlag::Checked(kinds) if !kinds.any() => {
+                cell_text(ui.painter(), cell, "－", font, weak);
+                if hover_pos.is_some_and(|p| cell.contains(p)) {
+                    response.clone().on_hover_text(t.list_detail_tip("none"));
+                }
+            }
+            DetailFlag::Checked(kinds) => {
+                let mut hits = Vec::new();
+                for (i, kind) in DetailKind::ALL.into_iter().enumerate() {
+                    if !kind.is_in(kinds) {
+                        continue;
+                    }
+                    let slot = egui::Rect::from_min_size(
+                        egui::pos2(cell.min.x + CELL_PAD + DETAIL_SLOT_W * i as f32, cell.min.y),
+                        egui::vec2(DETAIL_SLOT_W, cell.height()),
+                    );
+                    let badge = egui::Rect::from_center_size(slot.center(), egui::vec2(DETAIL_SLOT_W - 4.0, 15.0));
+                    let on_badge = hover_pos.is_some_and(|p| badge.contains(p));
+                    nav_icons::draw_kind_badge(&ui.painter().with_clip_rect(ui.clip_rect()), badge, kind.label(), on_badge);
+                    if on_badge {
+                        response.clone().on_hover_text(t.list_detail_tip(kind.label()));
+                    }
+                    hits.push((badge, kind));
+                }
+                self.detail_icon_hits.insert(real_idx, hits);
+            }
+        }
+    }
+
     /// 「ファイラー」列のボタン（書類のアイコン）。押すとこのファイルを選択状態でOSのファイラーで開く。
     /// 矩形は `reveal_icon_hits` に登録し、押下は `try_click_reveal` が選択や起動より先に拾う。
     fn paint_reveal_cell(&mut self, ui: &egui::Ui, response: &egui::Response, cell: egui::Rect, real_idx: usize) {
@@ -701,6 +854,70 @@ impl NekoviewApp {
         if on_icon {
             response.clone().on_hover_text(i18n::t().list_reveal_tip());
         }
+    }
+
+    /// 「実フォルダ」「仮想フォルダ」列の移動アイコン。押すと、そのファイルの場所をフォルダタブ／仮想フォルダタブで開く
+    /// （当たり判定は `goto_real_hits` / `goto_virtual_hits` に登録し、押下は `try_click_goto` が選択や起動より先に拾う）。
+    /// 仮想フォルダ側は、そのファイルの場所を登録した仮想フォルダが無いときは灰色で、押せない。
+    fn paint_goto_cells(&mut self, ui: &egui::Ui, response: &egui::Response, path: &std::path::Path, real_idx: usize, real_cell: egui::Rect, virt_cell: egui::Rect) {
+        let t = i18n::t();
+        // 逆引きは、タブを移ったあとの最初の描画で引き直す（登録の変更を反映する）。
+        self.ensure_virtual_lookup();
+        let hover = ui.input(|i| i.pointer.hover_pos());
+        let painter = ui.painter().with_clip_rect(ui.clip_rect());
+        let cell_icon = |cell: egui::Rect, color: egui::Color32, enabled: bool, tip: &str| -> Option<egui::Rect> {
+            if cell.width() <= 0.0 {
+                return None;
+            }
+            // 移動マーカーと同じ大きさ（丸の中の→矢印）。
+            let side = super::dup_marker_ui::ICON_SIZE;
+            let icon_rect = egui::Rect::from_center_size(cell.center(), egui::vec2(side, side));
+            let on_icon = hover.is_some_and(|p| icon_rect.contains(p));
+            super::dup_marker_ui::paint_goto_icon(&painter, icon_rect, color, on_icon && enabled, enabled);
+            if on_icon {
+                response.clone().on_hover_text(tip);
+            }
+            Some(icon_rect)
+        };
+        if let Some(rect) = cell_icon(real_cell, super::dup_marker_ui::GOTO_REAL_COLOR, true, t.list_goto_real_tip()) {
+            self.goto_real_hits.insert(real_idx, rect);
+        }
+        let count = path.parent().map_or(0, |dir| self.virtual_nodes_for(dir).len());
+        let virt_tip = match count {
+            0 => t.list_goto_virtual_none_tip(),
+            1 => t.list_goto_virtual_tip(),
+            _ => t.list_goto_virtual_many_tip(),
+        };
+        if let Some(rect) = cell_icon(virt_cell, super::dup_marker_ui::GOTO_VIRTUAL_COLOR, count > 0, virt_tip) {
+            // 灰色（登録なし）でも当たり判定は持つ（押しても行の選択や起動にならないよう、押下は握りつぶす）。
+            self.goto_virtual_hits.insert(real_idx, rect);
+        }
+    }
+
+    /// 「実フォルダ」「仮想フォルダ」アイコンの押下なら、移動の要求を積んで true（選択や起動はしない）。
+    /// ダブルクリックの2回目も、起動させないよう握りつぶす。
+    pub(super) fn try_click_goto(&mut self, ui: &egui::Ui, response: &egui::Response, real_idx: usize) -> bool {
+        // 当たり判定はリスト描画のたびに作り直す。カードに切り替えた直後の古い矩形は拾わない。
+        if self.view_mode.mode == ViewMode::Card || !(response.clicked() || response.double_clicked()) {
+            return false;
+        }
+        let pointer = ui.input(|i| i.pointer.interact_pos());
+        let on = |rect: Option<egui::Rect>| rect.is_some_and(|r| pointer.is_some_and(|p| r.contains(p)));
+        let on_real = on(self.goto_real_hits.get(&real_idx).copied());
+        let on_virtual = on(self.goto_virtual_hits.get(&real_idx).copied());
+        if !on_real && !on_virtual {
+            return false;
+        }
+        if response.clicked()
+            && let Some(path) = self.archives.get(real_idx).cloned()
+        {
+            if on_real {
+                self.pending_goto_real = Some(path);
+            } else if let Some(p) = pointer {
+                self.pending_goto_virtual = Some((path, p));
+            }
+        }
+        true
     }
 
     /// ホバー形式: ポインタの横にサムネのポップアップを出す（遅延なし）。画面端では反対側へ寄せる。
@@ -839,6 +1056,9 @@ mod tests {
         assert_eq!(Col::Mtime.sort_column(), Some(H::Date), "更新日時は日付ソート");
         assert_eq!(Col::Rating.sort_column(), Some(H::Score));
         assert_eq!(Col::Visits.sort_column(), Some(H::Visits));
+        assert_eq!(Col::Pages.sort_column(), Some(H::Pages), "ページ数は第2セットのソート");
+        assert_eq!(Col::Detail.sort_column(), None, "詳細はソートなし");
+        assert_eq!(Col::SourceRating.sort_column(), Some(H::SourceRating), "公開評価はソート可");
     }
 
     #[test]
@@ -847,11 +1067,13 @@ mod tests {
         assert_eq!(Col::Place.resize_index(), None, "場所列の幅は固定");
         assert_eq!(Col::Error.resize_index(), None, "エラー列の幅は固定");
         assert_eq!(Col::Attr.resize_index(), None, "属性列の幅は固定");
-        let idx: Vec<_> = [Col::Dup, Col::Name, Col::Size, Col::Mtime, Col::Rating, Col::Visits]
+        assert_eq!(Col::Detail.resize_index(), None, "詳細列の幅は固定");
+        assert_eq!(Col::SourceRating.resize_index(), None, "公開評価列の幅は固定");
+        let idx: Vec<_> = [Col::Dup, Col::Name, Col::Size, Col::Mtime, Col::Rating, Col::Visits, Col::Pages]
             .into_iter()
             .map(|c| c.resize_index())
             .collect();
-        assert_eq!(idx, (0..6).map(Some).collect::<Vec<_>>());
+        assert_eq!(idx, (0..7).map(Some).collect::<Vec<_>>());
     }
 
     #[test]
@@ -875,27 +1097,43 @@ mod tests {
     }
 
     #[test]
+    fn place_column_is_shown_only_in_cross_folder_views() {
+        assert!(!place_column_shown(false, false, false, false), "通常のフォルダ表示では出さない");
+        assert!(place_column_shown(true, false, false, false), "類似ファイル一覧");
+        assert!(place_column_shown(false, true, false, false), "検索結果");
+        assert!(place_column_shown(false, false, true, false), "お気に入り");
+        assert!(place_column_shown(false, false, false, true), "タグ検索");
+    }
+
+    #[test]
     fn place_column_has_no_width_outside_the_similar_view() {
-        let widths = column_widths(40.0, &ListColumns::default(), 0.0, 0.0);
+        let widths = column_widths(40.0, &ListColumns::default(), 0.0, 0.0, false);
         assert_eq!((widths[Col::Place as usize], widths[Col::Compare as usize]), (0.0, 0.0));
-        let with = column_widths(40.0, &ListColumns::default(), PLACE_COL_W, COMPARE_COL_W);
-        assert_eq!(with.iter().sum::<f32>() - widths.iter().sum::<f32>(), PLACE_COL_W + COMPARE_COL_W);
+        let with = column_widths(40.0, &ListColumns::default(), PLACE_COL_W, COMPARE_COL_W, true);
+        assert_eq!(
+            with.iter().sum::<f32>() - widths.iter().sum::<f32>(),
+            PLACE_COL_W + COMPARE_COL_W + crate::view_explorer::list_columns::DEFAULT_WIDTHS[7] + crate::view_explorer::list_columns::DEFAULT_WIDTHS[8],
+            "横断一覧では、場所・完全比較・実フォルダ・仮想フォルダの列が増える"
+        );
+        assert_eq!((widths[Col::RealGo as usize], widths[Col::VirtGo as usize]), (0.0, 0.0), "通常の表示では移動アイコン列は出ない");
     }
 
     #[test]
     fn error_and_attr_columns_are_fixed_and_sit_at_both_ends() {
-        let widths = column_widths(40.0, &ListColumns::default(), 0.0, 0.0);
+        let widths = column_widths(40.0, &ListColumns::default(), 0.0, 0.0, false);
         assert_eq!((widths[Col::Error as usize], widths[Col::Attr as usize]), (ERROR_COL_W, ATTR_COL_W));
         assert_eq!((Col::Error as usize, Col::Attr as usize), (0, COL_N - 1));
-        // 固定幅なので、ユーザー設定（6個）の個数は変わらない
-        assert_eq!(crate::view_explorer::list_columns::COL_COUNT, 6);
+        // 固定幅なので、ユーザー設定（9個。ページ数と、実・仮想の移動アイコン列まで）の個数は変わらない
+        assert_eq!(crate::view_explorer::list_columns::COL_COUNT, 9);
+        assert_eq!(widths[Col::Detail as usize], DETAIL_COL_W, "詳細は固定幅");
+        assert_eq!(widths[Col::SourceRating as usize], SOURCE_RATING_COL_W, "公開評価は固定幅");
     }
 
     #[test]
     fn columns_tile_the_row_without_gaps_or_overlap() {
-        let widths = column_widths(40.0, &ListColumns::default(), PLACE_COL_W, COMPARE_COL_W);
+        let widths = column_widths(40.0, &ListColumns::default(), PLACE_COL_W, COMPARE_COL_W, true);
         let row = egui::Rect::from_min_size(egui::pos2(10.0, 5.0), egui::vec2(widths.iter().sum(), 30.0));
-        let cols = [Col::Error, Col::Dup, Col::Reveal, Col::Thumb, Col::Name, Col::Place, Col::Compare, Col::Size, Col::Mtime, Col::Rating, Col::Visits, Col::Attr];
+        let cols = [Col::Error, Col::Dup, Col::Reveal, Col::RealGo, Col::VirtGo, Col::Thumb, Col::Name, Col::Place, Col::Compare, Col::Size, Col::Mtime, Col::Rating, Col::SourceRating, Col::Visits, Col::Pages, Col::Detail, Col::Attr];
         let mut x = row.min.x;
         for c in cols {
             let r = col_rect(row, &widths, c);

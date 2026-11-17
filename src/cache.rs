@@ -104,6 +104,9 @@ pub struct LoadRequest {
     /// 画像処理フィルター設定（ViewerConfigから都度取得）。静止画（PageContent::Static）
     /// にのみ適用し、アニメーション（GIF/APNG/AVIF/WebP）には適用しない。
     pub image_filter: crate::image_filter::ImageFilterSettings,
+    /// P8: 等倍に近い縮小をスキップする条件（None = 従来どおり必ず縮小）。通常表示のページ要求にだけ付ける
+    /// （原寸・虫眼鏡・サムネは None）。静止画の縮小（`resize_for_display_with`）にだけ効く。
+    pub near_unity_skip: Option<NearUnitySkip>,
     /// 表示解像度・Orientation等、デコード条件の世代。結果回収時に現行世代と一致しない
     /// 結果を破棄し、リサイズ前の遅い要求が新しいキャッシュを上書きするのを防ぐ。
     pub generation: u64,
@@ -112,6 +115,9 @@ pub struct LoadRequest {
 /// ワーカースレッド内で保持する開きっぱなしアーカイブ（ディスク版・メモリ版を統合）
 enum OpenArchive {
     Disk(zip::ZipArchive<std::fs::File>),
+    /// `ZipArchive::new` を通さず、中央ディレクトリだけで開いたzip（冷たいHDDの初回を速くする。
+    /// 判断できないzipは `Disk` にフォールバックする）。
+    Fast(crate::fs::archive::FastZip),
     Mem(zip::ZipArchive<std::io::Cursor<Arc<[u8]>>>),
     /// 7z/tar のソリッド圧縮は開いた時点で画像を一括展開済み。
     /// ページ送りは再展開せずここから引く。
@@ -143,10 +149,14 @@ fn open_archive_from_disk(path: &std::path::Path) -> Option<OpenArchive> {
             let map = Arc::new(crate::fs::archive::extract_all_images_tar_path(path));
             Some(OpenArchive::Extracted(map))
         }
-        crate::fs::archive::ArchiveFormat::Zip => std::fs::File::open(path)
-            .ok()
-            .and_then(|f| zip::ZipArchive::new(f).ok())
-            .map(OpenArchive::Disk),
+        crate::fs::archive::ArchiveFormat::Zip => crate::fs::archive::FastZip::open(path)
+            .map(OpenArchive::Fast)
+            .or_else(|| {
+                std::fs::File::open(path)
+                    .ok()
+                    .and_then(|f| zip::ZipArchive::new(f).ok())
+                    .map(OpenArchive::Disk)
+            }),
     }
 }
 
@@ -154,6 +164,23 @@ impl OpenArchive {
     fn load_page(&mut self, entry_name: &str, filter: image::imageops::FilterType, cache_budget_bytes: usize, ring_bounds: (usize, usize), frame_hard_limit_bytes: usize, target_size: Option<(u32, u32)>, exif_enabled: bool) -> Option<PageContent> {
         match self {
             Self::Disk(a) => load_page_content(a, entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled),
+            Self::Fast(z) => {
+                let t_read = std::time::Instant::now();
+                let (buf, display_name) = z.load_bytes(entry_name)?;
+                let read = t_read.elapsed();
+                let t_dec = std::time::Instant::now();
+                clear_last_resize_info();
+                let content = decode_bytes_to_content(&buf, &display_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled);
+                log_perf!(
+                    "[perf/open] ページ内訳 {} ディスク読み={:.1}ms サイズ={}KB デコード={:.1}ms{}",
+                    display_name,
+                    read.as_secs_f64() * 1000.0,
+                    buf.len() / 1024,
+                    t_dec.elapsed().as_secs_f64() * 1000.0,
+                    last_resize_info_text(),
+                );
+                content
+            }
             Self::Mem(a)  => load_page_content(a, entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled),
             Self::Extracted(map) => {
                 let buf = map.get(entry_name)?;
@@ -222,6 +249,71 @@ pub fn take_last_page_meta() -> Option<PageMeta> {
     LAST_PAGE_META.with(|c| c.take())
 }
 
+/// 静止画1枚の「縮小（または縮小なしのRGBA化）」の内訳。perf ログ用（`[perf/open] ページ内訳` 等に付ける）。
+/// デコード本体と縮小のどちらが重いかを、画像の寸法・形式つきで見分けるための計測値。
+#[derive(Clone, Copy, Debug)]
+pub struct ResizeInfo {
+    pub src: (u32, u32),
+    pub dst: (u32, u32),
+    pub color: image::ColorType,
+    /// 縮小に使った経路（`fir_resize` が控える）。例: `U8x3` / `L8:U8` / `L8:RGBA→U8x4` / `RGBA→U8x4`。縮小なしは空。
+    pub path: &'static str,
+    pub elapsed: std::time::Duration,
+}
+
+impl ResizeInfo {
+    /// ログ用の短い説明。例: `元=3000x4000(L8) →1080x1440 縮小=11.8ms` / `元=800x1200(Rgb8) 縮小なし 変換=0.9ms`
+    pub fn describe(&self) -> String {
+        let ms = self.elapsed.as_secs_f64() * 1000.0;
+        if self.src == self.dst {
+            let path = if self.path.is_empty() { String::new() } else { format!("[{}]", self.path) };
+            format!("元={}x{}({:?}) 縮小なし 変換={:.1}ms{}", self.src.0, self.src.1, self.color, ms, path)
+        } else {
+            format!("元={}x{}({:?}) →{}x{} 縮小={:.1}ms[{}]", self.src.0, self.src.1, self.color, self.dst.0, self.dst.1, ms, self.path)
+        }
+    }
+}
+
+thread_local! {
+    /// `fir_resize` が最後に使った経路名（`ResizeInfo.path` 用）。
+    static LAST_RESIZE_PATH: std::cell::Cell<&'static str> = const { std::cell::Cell::new("") };
+}
+
+fn set_resize_path(name: &'static str) {
+    LAST_RESIZE_PATH.with(|c| c.set(name));
+}
+
+thread_local! {
+    /// このスレッドで処理中のページジョブの P8 条件。ページ用デコードワーカーが、ジョブごとに
+    /// `LoadRequest.near_unity_skip` を入れて、終わったら戻す。デコード関数群の引数を増やさずに
+    /// 静止画の縮小まで届けるための受け渡し口（`LAST_PAGE_META` と同じ考え方）。
+    /// サムネ用ワーカー・OCR など、設定しないスレッドは常に None（従来どおり必ず縮小）。
+    static JOB_NEAR_UNITY_SKIP: std::cell::Cell<Option<NearUnitySkip>> = const { std::cell::Cell::new(None) };
+}
+
+fn set_job_near_unity_skip(skip: Option<NearUnitySkip>) {
+    JOB_NEAR_UNITY_SKIP.with(|c| c.set(skip));
+}
+
+fn job_near_unity_skip() -> Option<NearUnitySkip> {
+    JOB_NEAR_UNITY_SKIP.with(|c| c.get())
+}
+
+thread_local! {
+    /// 直近にこのスレッドで完了した静止画の縮小内訳。取り出しても消えない（読み取り専用）。
+    /// 消すのは `clear_last_resize_info`（ジョブ開始時）だけ。アニメ・TXTなど縮小を通らない経路では None のまま。
+    static LAST_RESIZE_INFO: std::cell::Cell<Option<ResizeInfo>> = const { std::cell::Cell::new(None) };
+}
+
+pub fn clear_last_resize_info() {
+    LAST_RESIZE_INFO.with(|c| c.set(None));
+}
+
+/// 直近の縮小内訳をログ用の文字列にする。縮小を通らなかったときは空文字。
+pub fn last_resize_info_text() -> String {
+    LAST_RESIZE_INFO.with(|c| c.get()).map(|i| format!(" {}", i.describe())).unwrap_or_default()
+}
+
 // ワーカースレッドからの結果
 pub struct LoadResult {
     pub archive_path: PathBuf,
@@ -266,6 +358,17 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                 let exif_enabled = req.exif_enabled;
                 let image_filter = req.image_filter;
                 let _ = take_last_page_meta();
+                clear_last_resize_info();
+                set_job_near_unity_skip(req.near_unity_skip);
+                let t_job = std::time::Instant::now();
+                let _fg = ForegroundIoGuard::begin();
+                let _page_io = PageIoGuard::begin();
+                let src_kind = match (&req.file_cache_entry, req.is_raw_file) {
+                    (_, true) => "raw",
+                    (Some(FileCacheEntry::Raw(_)), _) => "mem",
+                    (Some(FileCacheEntry::Extracted(_)), _) => "extracted",
+                    (None, _) => "disk",
+                };
                 let mut content = if req.is_raw_file {
                     match req.file_cache_entry {
                         Some(FileCacheEntry::Raw(bytes)) => {
@@ -298,15 +401,18 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                     // スレッドローカルに展開する安全弁で、通常はFileCache側の先出しにより
                     // ほぼ発生しない）
                     let is_same = open_archive.as_ref().map_or(false, |(p, a)| {
-                        p == &req.archive_path && matches!(a, OpenArchive::Disk(_) | OpenArchive::Extracted(_) | OpenArchive::Folder)
+                        p == &req.archive_path && matches!(a, OpenArchive::Disk(_) | OpenArchive::Fast(_) | OpenArchive::Extracted(_) | OpenArchive::Folder)
                     });
                     if !is_same {
+                        let t_open = std::time::Instant::now();
                         open_archive = open_archive_from_disk(&req.archive_path)
                             .map(|a| (req.archive_path.clone(), a));
+                        crate::log_perf!("[perf/open] デコードワーカーがディスクからアーカイブを開く={:.1}ms", t_open.elapsed().as_secs_f64() * 1000.0);
                     }
                     open_archive.as_mut().and_then(|(_, a)| a.load_page(&req.entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled))
                 };
 
+                set_job_near_unity_skip(None);
                 let meta = if content.is_some() { take_last_page_meta() } else { None };
 
                 // 画像処理フィルターは静止画のみに適用する（アニメーションは対象外）。
@@ -314,7 +420,25 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                     crate::image_filter::apply_image_filters(rgba, &image_filter);
                 }
 
-                if worker_queue.finish(job_id) {
+                crate::log_perf!(
+                    "[perf/open] ページジョブ(デコードワーカー) index={} 入力={} {} 所要={:.1}ms{}",
+                    req.index,
+                    src_kind,
+                    if content.is_some() { "OK" } else { "失敗" },
+                    t_job.elapsed().as_secs_f64() * 1000.0,
+                    last_resize_info_text(),
+                );
+
+                let finished = worker_queue.finish_detail(job_id);
+                if finished != crate::decode_jobs::FinishOutcome::Accepted {
+                    crate::log_perf!(
+                        "[perf/open] ページ結果破棄 index={} 所要={:.1}ms 理由={}",
+                        req.index,
+                        t_job.elapsed().as_secs_f64() * 1000.0,
+                        finished.describe(),
+                    );
+                }
+                if finished == crate::decode_jobs::FinishOutcome::Accepted {
                     let outcome = match content {
                         Some(content) => DecodeJobOutcome::Ready(content),
                         None => DecodeJobOutcome::Failed,
@@ -345,27 +469,84 @@ fn to_fir_alg(filter: image::imageops::FilterType) -> ResizeAlg {
     }
 }
 
-// RGB 画像は RGB のまま resize し、小さくなった出力だけ RGBA に変換する。
-// デバッグモードでは大きな入力を to_rgba8() するコストが支配的になるため。
+// RGB・グレー(L8)画像は元の形式のまま resize し、小さくなった出力だけ RGBA に変換する。
+// 大きな入力を先に RGBA 化するコストが支配的になるため（L8 は 6MP で約35ms→縮小も約5倍遅かった）。
 fn fir_resize(img: image::DynamicImage, nw: u32, nh: u32, filter: image::imageops::FilterType) -> image::RgbaImage {
     let options = ResizeOptions::new().resize_alg(to_fir_alg(filter));
     match img {
         image::DynamicImage::ImageRgb8(rgb) => {
+            set_resize_path("Rgb8:U8x3");
             let (w, h) = (rgb.width(), rgb.height());
             let src = FirImage::from_vec_u8(w, h, rgb.into_raw(), PixelType::U8x3).unwrap();
             let mut dst = FirImage::new(nw, nh, PixelType::U8x3);
             Resizer::new().resize(&src, &mut dst, &options).unwrap();
             let rgb_out = image::RgbImage::from_raw(nw, nh, dst.into_vec()).unwrap();
-            image::DynamicImage::ImageRgb8(rgb_out).to_rgba8()
+            image::DynamicImage::ImageRgb8(rgb_out).into_rgba8()
+        }
+        image::DynamicImage::ImageLuma8(gray) => {
+            let (w, h) = (gray.width(), gray.height());
+            if l8_prefers_single_channel(w, h, nw, nh, filter) {
+                set_resize_path("L8:U8");
+                let src = FirImage::from_vec_u8(w, h, gray.into_raw(), PixelType::U8).unwrap();
+                let mut dst = FirImage::new(nw, nh, PixelType::U8);
+                Resizer::new().resize(&src, &mut dst, &options).unwrap();
+                let gray_out = image::GrayImage::from_raw(nw, nh, dst.into_vec()).unwrap();
+                luma8_to_rgba(&gray_out)
+            } else {
+                // 縮小が緩い（カーネルが小さい）ときは、1チャンネル経路が極端に遅い。RGBA化して4チャンネルで縮小する。
+                set_resize_path("L8:RGBA→U8x4");
+                resize_rgba8(luma8_to_rgba(&gray), nw, nh, &options)
+            }
         }
         _ => {
-            let rgba = img.into_rgba8();
-            let (w, h) = (rgba.width(), rgba.height());
-            let src = FirImage::from_vec_u8(w, h, rgba.into_raw(), PixelType::U8x4).unwrap();
-            let mut dst = FirImage::new(nw, nh, PixelType::U8x4);
-            Resizer::new().resize(&src, &mut dst, &options).unwrap();
-            image::RgbaImage::from_raw(nw, nh, dst.into_vec()).unwrap()
+            set_resize_path("RGBA→U8x4");
+            resize_rgba8(img.into_rgba8(), nw, nh, &options)
         }
+    }
+}
+
+fn resize_rgba8(rgba: image::RgbaImage, nw: u32, nh: u32, options: &ResizeOptions) -> image::RgbaImage {
+    let (w, h) = (rgba.width(), rgba.height());
+    let src = FirImage::from_vec_u8(w, h, rgba.into_raw(), PixelType::U8x4).unwrap();
+    let mut dst = FirImage::new(nw, nh, PixelType::U8x4);
+    Resizer::new().resize(&src, &mut dst, options).unwrap();
+    image::RgbaImage::from_raw(nw, nh, dst.into_vec()).unwrap()
+}
+
+/// L8 の縮小を、1チャンネル(U8)のまま行うか（true）、RGBA(U8x4)に変えて行うか（false）。
+/// fast_image_resize 5.x の U8 は、畳み込みカーネルのタップ数（≒ 2×サポート÷縮小率）が小さいと
+/// 極端に遅くなる（実測：CatmullRom/Lanczos3 はタップ数8未満で U8x4 の2〜3倍、Triangle は約3未満で逆転）。
+/// 強縮小（タップ数が大きい）では U8 のほうが速い。縮小率が大きいほうの軸（タップ数が小さい軸）で判定する。
+/// 目安は decode_bench（decode_bench_l8_taps_rule）の実測。
+fn l8_prefers_single_channel(w: u32, h: u32, nw: u32, nh: u32, filter: image::imageops::FilterType) -> bool {
+    use image::imageops::FilterType;
+    let (support, min_taps) = match filter {
+        FilterType::Nearest => return true,
+        FilterType::Triangle | FilterType::Gaussian => (1.0f32, 3.0f32),
+        FilterType::CatmullRom => (2.0, 8.0),
+        FilterType::Lanczos3 => (3.0, 8.0),
+    };
+    let scale = (nw as f32 / w.max(1) as f32).max(nh as f32 / h.max(1) as f32).max(f32::MIN_POSITIVE);
+    2.0 * support / scale >= min_taps
+}
+
+/// L8 → RGBA（[g,g,g,255]）。image クレートの汎用変換より速い単純ループ（自動ベクトル化される）。
+fn luma8_to_rgba(gray: &image::GrayImage) -> image::RgbaImage {
+    let (w, h) = gray.dimensions();
+    let mut out = vec![255u8; w as usize * h as usize * 4];
+    for (dst, &g) in out.chunks_exact_mut(4).zip(gray.as_raw()) {
+        dst[0] = g;
+        dst[1] = g;
+        dst[2] = g;
+    }
+    image::RgbaImage::from_raw(w, h, out).unwrap()
+}
+
+/// 縮小しない経路の RGBA 化。Rgba8 はコピーせず移動、L8 は専用ループ、他は image クレートの変換。
+fn into_rgba_fast(img: image::DynamicImage) -> image::RgbaImage {
+    match img {
+        image::DynamicImage::ImageLuma8(gray) => luma8_to_rgba(&gray),
+        other => other.into_rgba8(),
     }
 }
 
@@ -418,7 +599,7 @@ fn load_raw_content_from_bytes(buf: &[u8], path: &std::path::Path, filter: image
     }
 
     let img = crate::fs::archive::decode_image_bytes(buf, exif_enabled)?;
-    Some(PageContent::Static(resize_for_display(img, filter, target_size)))
+    Some(PageContent::Static(resize_for_display_with(img, filter, target_size, job_near_unity_skip())))
 }
 
 /// アーカイブエントリを PageContent としてデコードする。GIF/WebP/APNGはアニメーション展開、それ以外は静止画。
@@ -456,23 +637,65 @@ fn decode_bytes_to_content(
     }
 
     let img = crate::fs::archive::decode_image_bytes(buf, exif_enabled)?;
-    Some(PageContent::Static(resize_for_display(img, filter, target_size)))
+    Some(PageContent::Static(resize_for_display_with(img, filter, target_size, job_near_unity_skip())))
+}
+
+/// P8: 等倍に近い縮小を CPU で行わず、元の大きさのまま GPU（LINEAR 補間）に任せる条件。
+/// CPU 縮小（Lanczos3 等）より画質はわずかに落ちるが、1ページ 6〜15ms の縮小が丸ごと消える。
+/// 設定（GUI の ON/OFF）でのみ有効にする（呼び出し側が `Some` を渡す）。サムネ・原寸/虫眼鏡は渡さない。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NearUnitySkip {
+    /// 縮小率（枠に収める倍率 = min(枠幅/元幅, 枠高/元高)）がこの値以上ならスキップ。
+    pub min_scale: f32,
+    /// GPU テクスチャの1辺の上限。元画像がこれを超えるときは、必ず縮小する。
+    pub max_side: u32,
+}
+
+/// 既定のしきい値（縮小率）。0.85 以上＝縮小量が15%以内。実ログの 1062x1500→941x1330 は 0.887。
+/// 縮小率0.85では、GPU の LINEAR 補間が1出力画素あたり元の約1.18画素を参照するだけで、折り返しは小さい。
+pub const NEAR_UNITY_SKIP_SCALE: f32 = 0.85;
+
+impl NearUnitySkip {
+    /// 元 `w`x`h` を枠 `tw`x`th` に収める縮小を、スキップしてよいか。
+    pub fn applies(&self, w: u32, h: u32, tw: u32, th: u32) -> bool {
+        if w == 0 || h == 0 || w > self.max_side || h > self.max_side {
+            return false;
+        }
+        let scale = (tw as f32 / w as f32).min(th as f32 / h as f32);
+        scale < 1.0 && scale >= self.min_scale
+    }
 }
 
 /// `target` に縮小する（拡大はしない）。`target` が None のときは無制限（原寸のまま）。
 /// フェーズ6: 従来の固定上限(1920x1080)から、リサイズ再デコード対応のため呼び出し側指定に変更。
 pub fn resize_for_display(img: image::DynamicImage, filter: image::imageops::FilterType, target: Option<(u32, u32)>) -> image::RgbaImage {
+    resize_for_display_with(img, filter, target, None)
+}
+
+/// `resize_for_display` に、P8（等倍に近い縮小のスキップ）の条件を足したもの。`skip` が None なら従来どおり。
+pub fn resize_for_display_with(img: image::DynamicImage, filter: image::imageops::FilterType, target: Option<(u32, u32)>, skip: Option<NearUnitySkip>) -> image::RgbaImage {
     set_last_page_meta(PageMeta { orig: (img.width(), img.height()), animated: false });
-    let Some((tw, th)) = target else {
-        return img.to_rgba8();
+    let (w, h, color) = (img.width(), img.height(), img.color());
+    set_resize_path("");
+    let t = std::time::Instant::now();
+    let (dst, out) = match target {
+        Some((tw, th)) => {
+            let (nw, nh) = crate::anim::fit_within(w, h, tw, th);
+            if (nw, nh) == (w, h) {
+                ((w, h), into_rgba_fast(img))
+            } else if skip.is_some_and(|p| p.applies(w, h, tw, th)) {
+                // 縮小せず元の大きさで返す。表示側が、枠に合わせて GPU で縮める。
+                set_resize_path("スキップ(GPU任せ)");
+                ((w, h), into_rgba_fast(img))
+            } else {
+                ((nw, nh), fir_resize(img, nw, nh, filter))
+            }
+        }
+        None => ((w, h), into_rgba_fast(img)),
     };
-    let (w, h) = (img.width(), img.height());
-    let (nw, nh) = crate::anim::fit_within(w, h, tw, th);
-    if (nw, nh) != (w, h) {
-        fir_resize(img, nw, nh, filter)
-    } else {
-        img.to_rgba8()
-    }
+    let info = ResizeInfo { src: (w, h), dst, color, path: LAST_RESIZE_PATH.with(|c| c.get()), elapsed: t.elapsed() };
+    LAST_RESIZE_INFO.with(|c| c.set(Some(info)));
+    out
 }
 
 // ── フェーズ3: リングバッファ式アニメーション（GIF/APNG/AVIF）───────────────────
@@ -744,28 +967,12 @@ impl RingAnimation {
         resize_to: Option<(u32, u32)>,
         filter: image::imageops::FilterType,
         frame_hard_limit_bytes: usize,
-        format: AnimFormat,
+        _format: AnimFormat,
     ) -> (usize, AnimFrame, std::time::Duration) {
         let resize_started = std::time::Instant::now();
         let guarded = Self::guard_frame_size(raw.frame, frame_hard_limit_bytes, filter, raw.index);
         let resized = Self::apply_resize(guarded, resize_to, filter);
         let resize_elapsed = resize_started.elapsed();
-        if raw.decode_elapsed >= std::time::Duration::from_millis(8)
-            || resize_elapsed >= std::time::Duration::from_millis(8)
-        {
-            log_perf!(
-                "[diag/anim-frame] format={:?} frame={} source={}x{} output={}x{} decode={:.1}ms resize={:.1}ms delay={:.1}ms worker=pipeline",
-                format,
-                raw.index,
-                raw.source_size.0,
-                raw.source_size.1,
-                resized.image.width(),
-                resized.image.height(),
-                raw.decode_elapsed.as_secs_f64() * 1000.0,
-                resize_elapsed.as_secs_f64() * 1000.0,
-                resized.delay.as_secs_f64() * 1000.0,
-            );
-        }
         (raw.index, resized, resize_elapsed)
     }
 
@@ -1527,6 +1734,176 @@ fn content_bytes(content: &PageContent) -> usize {
 
 // ── ファイルキャッシュワーカー ─────────────────────────────────────────────────
 
+// ── FileCache の先読みを、画面に出すためのI/Oへ譲る仕組み ──────────────────────────
+// zip を丸ごとメモリへ読む FileCache ワーカーは、HDD ではページ/サムネのデコードワーカーと
+// 同じディスクを取り合い、ページ送りが1〜2秒止まる（計測: [perf/open] ページジョブ 1.5〜1.8s）。
+// そこでデコードワーカー（ページ・アーカイブ内サムネ）が動いている間と、その直後の短い静かな
+// 時間は、FileCache ワーカーが区切りごとに待つ。ページ送りが続く限り読み込みは進まない。
+
+/// デコードワーカーが処理中のジョブ数。
+static FG_IO_ACTIVE: AtomicUsize = AtomicUsize::new(0);
+/// 直近にジョブが終わった時刻（`fg_epoch` からの経過ミリ秒）。
+static FG_IO_LAST_END_MS: AtomicU64 = AtomicU64::new(0);
+/// 最後のジョブ終了からこの時間は「まだ操作中」とみなして待つ。
+const FG_IO_QUIET_MS: u64 = 150;
+/// 待つ間の確認間隔。
+const FG_IO_POLL_MS: u64 = 30;
+/// FileCache の読み込みを区切るサイズ。1区切り＝HDDで十数〜数十ms。
+const FILE_CACHE_READ_CHUNK: usize = 2 * 1024 * 1024;
+
+fn fg_epoch() -> std::time::Instant {
+    static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    *EPOCH.get_or_init(std::time::Instant::now)
+}
+
+fn fg_now_ms() -> u64 {
+    fg_epoch().elapsed().as_millis() as u64
+}
+
+/// 画面に出すためのディスク読み（ページ・アーカイブ内サムネのデコード、アーカイブを開く処理）が
+/// 動いている間だけ生きる印。FileCache の丸読みと手すきサムネ生成は、これが静かになるまで譲る。
+pub(crate) struct ForegroundIoGuard;
+
+impl ForegroundIoGuard {
+    pub(crate) fn begin() -> Self {
+        FG_IO_ACTIVE.fetch_add(1, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for ForegroundIoGuard {
+    fn drop(&mut self) {
+        FG_IO_LAST_END_MS.store(fg_now_ms(), Ordering::SeqCst);
+        FG_IO_ACTIVE.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// 画面表示用のディスク読みが、動いておらず、最後に終わってから `quiet` 以上たっているか。
+/// 待たずに答えだけ返す（手すきサムネ生成が、毎フレーム「今送ってよいか」を見るのに使う）。
+pub(crate) fn foreground_io_quiet_for(quiet: std::time::Duration) -> bool {
+    let since_end = fg_now_ms().saturating_sub(FG_IO_LAST_END_MS.load(Ordering::SeqCst));
+    FG_IO_ACTIVE.load(Ordering::SeqCst) == 0 && since_end >= quiet.as_millis() as u64
+}
+
+/// デコードワーカーが静かになるまで待つ。待った合計を返す。
+fn wait_foreground_idle() -> std::time::Duration {
+    let t = std::time::Instant::now();
+    loop {
+        let active = FG_IO_ACTIVE.load(Ordering::SeqCst);
+        let since_end = fg_now_ms().saturating_sub(FG_IO_LAST_END_MS.load(Ordering::SeqCst));
+        if active == 0 && since_end >= FG_IO_QUIET_MS {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(FG_IO_POLL_MS));
+    }
+    t.elapsed()
+}
+
+// ── ページ読みを、サムネバー用の丸読みより優先する仕組み ──────────────────────────
+// ビューアーのサムネバー（アーカイブ内サムネ）は、全ページ分を CPU 数のスレッドで並行して丸読みする。
+// 巨大なアニメ画像（GIF/WebP 数MB〜20MB）が多い本では、いま見ているページの読みが、同時刻の十数本の
+// 読みに埋もれて 1.5 秒かかっていた（計測: ディスク読み 1567ms・デコード 6ms）。
+// そこで、ページ用デコードワーカーが動いている間は、サムネワーカーは次のジョブを始めずに待つ。
+// すでに読み始めた分は止められないので、各ワーカーの1件ぶんは残る。
+
+/// ページ用デコードワーカーが処理中のジョブ数。
+static PAGE_IO_ACTIVE: AtomicUsize = AtomicUsize::new(0);
+/// ページ用デコードワーカーが最後にジョブを終えた時刻（`fg_epoch` からの経過ミリ秒）。
+static PAGE_IO_LAST_END_MS: AtomicU64 = AtomicU64::new(0);
+/// ページ読みが終わってから、サムネが次を始めるまでに空ける静けさ。ページ送りの連続の合間に割り込まないため。
+const PAGE_IO_QUIET_MS: u64 = 100;
+/// サムネが1件の前で待つ最大時間。ページ送りが続いても、サムネバーがいつまでも出ない事態は避ける。
+const PAGE_IO_WAIT_CAP: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// ページ用デコードワーカーが1ジョブ処理している間だけ生きる印。
+pub(crate) struct PageIoGuard;
+
+impl PageIoGuard {
+    pub(crate) fn begin() -> Self {
+        PAGE_IO_ACTIVE.fetch_add(1, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for PageIoGuard {
+    fn drop(&mut self) {
+        PAGE_IO_LAST_END_MS.store(fg_now_ms(), Ordering::SeqCst);
+        PAGE_IO_ACTIVE.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// サムネバー（アーカイブ内サムネ）が、ディスクから同時に丸読みする最大数。HDDでは並行しても帯域は増えない。
+const THUMB_DISK_READ_MAX: usize = 2;
+static THUMB_DISK_READ_LIMITER: ReadLimiter = ReadLimiter::new(THUMB_DISK_READ_MAX);
+
+/// 同時に許す数を絞る簡単なセマフォ。取得した `ReadPermit` が生きている間だけ1枠を使う。
+struct ReadLimiter {
+    used: Mutex<usize>,
+    freed: Condvar,
+    max: usize,
+}
+
+struct ReadPermit<'a>(&'a ReadLimiter);
+
+impl ReadLimiter {
+    const fn new(max: usize) -> Self {
+        Self { used: Mutex::new(0), freed: Condvar::new(), max }
+    }
+
+    /// 空きができるまで待って、1枠取る。
+    fn acquire(&self) -> ReadPermit<'_> {
+        let mut used = self.used.lock().unwrap();
+        while *used >= self.max {
+            used = self.freed.wait(used).unwrap();
+        }
+        *used += 1;
+        ReadPermit(self)
+    }
+}
+
+impl Drop for ReadPermit<'_> {
+    fn drop(&mut self) {
+        *self.0.used.lock().unwrap() -= 1;
+        self.0.freed.notify_one();
+    }
+}
+
+/// ページ読みが動いておらず、最後に終わってから `quiet_ms` たつまで待つ（最大 `cap`）。待った合計を返す。
+fn wait_page_jobs_idle(quiet_ms: u64, cap: std::time::Duration) -> std::time::Duration {
+    let t = std::time::Instant::now();
+    loop {
+        let since_end = fg_now_ms().saturating_sub(PAGE_IO_LAST_END_MS.load(Ordering::SeqCst));
+        if PAGE_IO_ACTIVE.load(Ordering::SeqCst) == 0 && since_end >= quiet_ms {
+            break;
+        }
+        if t.elapsed() >= cap {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(FG_IO_POLL_MS));
+    }
+    t.elapsed()
+}
+
+/// ファイルを区切りごとに読む。区切りの前にデコードワーカーの稼働を確認して待つ（画面表示を優先）。
+/// 返り値: (中身, 譲って待った合計)。読めなければ None。
+fn read_file_yielding(path: &std::path::Path) -> Option<(Vec<u8>, std::time::Duration)> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len() as usize;
+    let mut buf: Vec<u8> = Vec::with_capacity(len);
+    let mut waited = std::time::Duration::ZERO;
+    loop {
+        waited += wait_foreground_idle();
+        let before = buf.len();
+        let n = (&mut f).take(FILE_CACHE_READ_CHUNK as u64).read_to_end(&mut buf).ok()?;
+        debug_assert_eq!(buf.len(), before + n);
+        if n == 0 {
+            break;
+        }
+    }
+    Some((buf, waited))
+}
+
 /// ファイルをバックグラウンドで読み込む単一スレッドのワーカーを起動する。
 /// 7z(ソリッド圧縮)は開いた時点で全画像エントリを一括展開して`Extracted`として返す
 /// （ランダムアクセスできないための一括展開。プロセス全体でこの1回きりになり、
@@ -1552,6 +1929,8 @@ pub fn spawn_file_cache_worker(ctx: egui::Context, max_bytes: usize) -> (mpsc::S
                 ctx.request_repaint();
                 continue;
             }
+            let t_fc = std::time::Instant::now();
+            let mut yielded = std::time::Duration::ZERO;
             let entry = match crate::fs::archive::detect_format(&path) {
                 #[cfg(feature = "fmt-7z")]
                 crate::fs::archive::ArchiveFormat::SevenZ => {
@@ -1564,9 +1943,18 @@ pub fn spawn_file_cache_worker(ctx: egui::Context, max_bytes: usize) -> (mpsc::S
                     Some(FileCacheEntry::Extracted(Arc::new(map)))
                 }
                 crate::fs::archive::ArchiveFormat::Zip => {
-                    std::fs::read(&path).ok().map(|bytes| FileCacheEntry::Raw(Arc::from(bytes)))
+                    read_file_yielding(&path).map(|(bytes, waited)| {
+                        yielded = waited;
+                        FileCacheEntry::Raw(Arc::from(bytes))
+                    })
                 }
             };
+            crate::log_perf!(
+                "[perf/open] FileCacheワーカー読み込み={:.1}ms (うち譲り待ち={:.1}ms) サイズ={}",
+                t_fc.elapsed().as_secs_f64() * 1000.0,
+                yielded.as_secs_f64() * 1000.0,
+                std::fs::metadata(&path).map_or(0, |m| m.len()),
+            );
             // 読み込み失敗(None)でも必ず返送し、呼び出し側が pending を解放できるようにする
             let _ = res_tx.send((path, entry));
             // ROOT を起こして poll_workers に結果を回収させる
@@ -1614,7 +2002,65 @@ pub struct ThumbResult {
     pub session_id: u64,
     pub stage: ThumbResultStage,
     pub failed: bool,
+    /// 元ファイルの更新時刻を読めなかった（実体が無い、またはstatに失敗した）。
+    /// キャッシュ済みサムネを返した場合も立つ。検索結果の表示中に、消えたファイルを一覧から外す判断に使う。
+    pub missing: bool,
     pub is_tag_preview: bool,
+}
+
+// ── 飛び地一覧（お気に入り・検索・タグ検索・類似）のサムネ参照 ──
+// 飛び地一覧のサムネ要求は db=None で来る（表示中フォルダ以外のDBへ誤って保存しないため）。
+// プローブレーンは、そのファイル自身の親フォルダのサムネDB（既存のものだけ・作らない）を読み取り専用で引き、
+// 当たれば表示する。保存はしない。外れ（DB無し・行無し・条件違い）は従来どおりメモリ上だけで生成する。
+
+static THUMB_CACHE_ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// 親フォルダ → サムネDB。開いたDBだけを覚える（DB無しは覚えない。後からそのフォルダを開いて作られうるため）。
+type ParentDbMap = HashMap<PathBuf, Arc<Mutex<redb::Database>>>;
+static PARENT_DBS: Mutex<Option<ParentDbMap>> = Mutex::new(None);
+
+/// 飛び地のサムネ参照が対象DBを探すためのキャッシュルートを登録する（起動時に1回）。
+pub fn set_thumb_cache_root(root: Option<PathBuf>) {
+    if let Some(root) = root {
+        let _ = THUMB_CACHE_ROOT.set(root);
+    }
+}
+
+fn is_foreign_request(req: &ThumbRequest) -> bool {
+    req.db.is_none() && !req.is_tag_preview
+}
+
+/// 飛び地要求のファイルについて、親フォルダの既存サムネDBを返す。
+fn resolve_parent_db(path: &std::path::Path) -> Option<Arc<Mutex<redb::Database>>> {
+    let parent = path.parent()?;
+    if let Ok(guard) = PARENT_DBS.lock() {
+        if let Some(db) = guard.as_ref().and_then(|m| m.get(parent)) {
+            return Some(Arc::clone(db));
+        }
+    }
+    let root = THUMB_CACHE_ROOT.get()?;
+    let neko_dir = crate::neko_dir::neko_dir_for_root(parent, root);
+    let db = crate::neko_dir::open_cache_db_if_exists(&neko_dir, parent)?;
+    if let Ok(mut guard) = PARENT_DBS.lock() {
+        guard.get_or_insert_with(HashMap::new).insert(parent.to_path_buf(), Arc::clone(&db));
+    }
+    Some(db)
+}
+
+/// 飛び地要求のキャッシュ参照。当たれば (デコード済みRGBA, 親DB) を返す。
+fn probe_foreign_thumb(req: &ThumbRequest) -> Option<(image::RgbaImage, Arc<Mutex<redb::Database>>)> {
+    if !is_foreign_request(req) { return None; }
+    let filename = req.archive_path.file_name().and_then(|n| n.to_str())?;
+    let t0 = std::time::Instant::now();
+    let db = resolve_parent_db(&req.archive_path)?;
+    let t_open = t0.elapsed();
+    let (_, jpeg) = crate::neko_dir::read_thumb_unchecked(&db, filename)?;
+    let rgba = image::load_from_memory(&jpeg).ok()?.to_rgba8();
+    log_perf!(
+        "[perf/foreign-thumb] {filename} 当たり open={:.1}ms total={:.1}ms",
+        t_open.as_secs_f64() * 1000.0, t0.elapsed().as_secs_f64() * 1000.0,
+    );
+    Some((rgba, db))
 }
 
 /// プローブレーンのスレッド数。ローカルDB読み＋JPEGデコードのみで軽いため少数で足りる。
@@ -1688,7 +2134,11 @@ fn spawn_thumb_gen_pool(
                     continue;
                 }
                 // 失敗（None）でも必ず返送し、呼び元が thumb_pending を解放できるようにする
+                let gen_started = std::time::Instant::now();
                 let rgba = generate_thumb(&req);
+                if !req.is_tag_preview {
+                    crate::perf_fixture::item(crate::perf_fixture::Stage::Thumb, gen_started.elapsed());
+                }
                 if rgba.is_none() {
                     if let (Some(db), Some(token), Some(filename)) = (
                         req.db.as_ref(),
@@ -1710,6 +2160,7 @@ fn spawn_thumb_gen_pool(
                     session_id: req.session_id,
                     stage: ThumbResultStage::Complete,
                     failed,
+                    missing: false,
                 });
                 // ROOT を起こして poll_workers に結果を回収させる
                 ctx.request_repaint();
@@ -1757,6 +2208,65 @@ pub fn spawn_thumb_worker(
                 if req.session_id != current_session.load(Ordering::Acquire) {
                     continue;
                 }
+                // 飛び地一覧（db=None）: 親フォルダのサムネDBを読み取り専用で引く。保存はしない。
+                if let Some((rgba, foreign_db)) = probe_foreign_thumb(&req) {
+                    let source_key = req.thumbnail_selection.as_ref().map(thumbnail_selection_cache_key);
+                    let _ = res_tx.send(ThumbResult {
+                        is_tag_preview: false,
+                        path: req.archive_path.clone(),
+                        rgba: Some(rgba),
+                        source_key: source_key.clone(),
+                        requested_edge: req.requested_edge,
+                        requested_filter: req.requested_filter.thumbnail_cache_id(),
+                        session_id: req.session_id,
+                        stage: ThumbResultStage::Preview,
+                        failed: false,
+                        missing: false,
+                    });
+                    ctx.request_repaint();
+                    // 後追い検証: 元ファイルのmtimeと生成条件が一致すれば完了。食い違うときだけ、
+                    // 旧画像を表示したままメモリ上で再生成する（DBは更新しない）。
+                    let t_stat = std::time::Instant::now();
+                    let current_mtime = crate::neko_dir::file_mtime(&req.archive_path);
+                    let d_stat = t_stat.elapsed();
+                    let desired_source = req.thumbnail_selection.as_ref()
+                        .map(thumbnail_selection_cache_key)
+                        .unwrap_or_default();
+                    let is_current = current_mtime != 0
+                        && req.archive_path.file_name().and_then(|n| n.to_str()).is_some_and(|filename| {
+                            crate::neko_dir::is_thumbnail_current(
+                                &foreign_db,
+                                filename,
+                                current_mtime,
+                                req.requested_edge,
+                                req.requested_filter.thumbnail_cache_id(),
+                                &desired_source,
+                            )
+                        });
+                    log_perf!(
+                        "[perf/foreign-thumb] {} 検証 stat={:.1}ms 現行={is_current}",
+                        req.archive_path.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
+                        d_stat.as_secs_f64() * 1000.0,
+                    );
+                    if is_current || current_mtime == 0 {
+                        let _ = res_tx.send(ThumbResult {
+                            is_tag_preview: false,
+                            path: req.archive_path,
+                            rgba: None,
+                            source_key,
+                            requested_edge: req.requested_edge,
+                            requested_filter: req.requested_filter.thumbnail_cache_id(),
+                            session_id: req.session_id,
+                            stage: ThumbResultStage::Complete,
+                            failed: false,
+                            missing: current_mtime == 0,
+                        });
+                        ctx.request_repaint();
+                    } else {
+                        forward_thumb_gen(req, &gen_tx, &net_gen_tx);
+                    }
+                    continue;
+                }
                 match probe_cached_thumb(&req) {
                     Some((rgba, stored_mtime)) => {
                         // キャッシュヒット: statを待たずに先に表示へ回す
@@ -1771,6 +2281,7 @@ pub fn spawn_thumb_worker(
                             session_id: req.session_id,
                             stage: ThumbResultStage::Preview,
                             failed: false,
+                            missing: false,
                         });
                         ctx.request_repaint();
                         // 後追い検証とCAS: stale/mtime不一致なら旧画像を残したまま再生成する。
@@ -1789,6 +2300,7 @@ pub fn spawn_thumb_worker(
                                 session_id: req.session_id,
                                 stage: ThumbResultStage::Complete,
                                 failed: false,
+                                missing: current_mtime == 0,
                             });
                             ctx.request_repaint();
                         }
@@ -1807,6 +2319,7 @@ pub fn spawn_thumb_worker(
                                 session_id: req.session_id,
                                 stage: ThumbResultStage::Complete,
                                 failed: true,
+                                missing: current_mtime == 0,
                             });
                             ctx.request_repaint();
                         }
@@ -1877,6 +2390,19 @@ pub fn spawn_entry_thumb_worker(filter: image::imageops::FilterType, num_threads
                 };
 
                 let target = Some((req.edge, req.edge));
+                // ディスクから読むジョブだけ、同時数を絞り、ページ読みを優先する。FileCache のメモリから作れる
+                // ジョブ（file_cache_entry あり）はディスクを使わないので、どちらも不要。
+                let needs_disk = req.file_cache_entry.is_none();
+                // 同時に丸読みする数を絞る（HDDでは並行しても帯域は増えず、シークが散るだけ）。
+                let _read_permit = needs_disk.then(|| THUMB_DISK_READ_LIMITER.acquire());
+                // ページ読みを優先する（サムネバーの丸読みで、いま見ているページが遅れないように）。
+                if needs_disk {
+                    let waited = wait_page_jobs_idle(PAGE_IO_QUIET_MS, PAGE_IO_WAIT_CAP);
+                    if waited >= std::time::Duration::from_millis(50) {
+                        log_perf!("[perf/open] サムネ(アーカイブ内) index={} ページ読みを優先して待機={:.1}ms", req.original_index, waited.as_secs_f64() * 1000.0);
+                    }
+                }
+                let _fg = ForegroundIoGuard::begin();
                 // サムネ用途でもframe0の保持を保証し、ビューアー用リング設定と独立させる。
                 let ring_bounds = (2, 2);
                 // アーカイブ内サムネイルはビューアーのExif ON/OFF設定(D)と独立、常時EXIF自動回転を適用する。
@@ -1916,7 +2442,7 @@ pub fn spawn_entry_thumb_worker(filter: image::imageops::FilterType, num_threads
                     // スレッドローカルに展開する安全弁で、通常はFileCache側の先出しにより
                     // ほぼ発生しない）
                     let is_same = open_archive.as_ref().map_or(false, |(p, a)| {
-                        p == &req.archive_path && matches!(a, OpenArchive::Disk(_) | OpenArchive::Extracted(_) | OpenArchive::Folder)
+                        p == &req.archive_path && matches!(a, OpenArchive::Disk(_) | OpenArchive::Fast(_) | OpenArchive::Extracted(_) | OpenArchive::Folder)
                     });
                     if !is_same {
                         open_archive = open_archive_from_disk(&req.archive_path)
@@ -1962,9 +2488,7 @@ fn probe_cached_thumb(req: &ThumbRequest) -> Option<(image::RgbaImage, i64)> {
     let db = req.db.as_ref()?;
     let filename = req.archive_path.file_name().and_then(|n| n.to_str())?;
     let (stored_mtime, jpeg) = crate::neko_dir::read_thumb_unchecked(db, filename)?;
-    let t0 = std::time::Instant::now();
     let rgba = image::load_from_memory(&jpeg).ok()?.to_rgba8();
-    log_perf!("[perf/thumb] db_cache={:.1}ms", t0.elapsed().as_secs_f64() * 1000.0);
     Some((rgba, stored_mtime))
 }
 
@@ -2022,10 +2546,14 @@ fn generate_thumb(req: &ThumbRequest) -> Option<image::RgbaImage> {
         let t2 = std::time::Instant::now();
         let result = resize_thumbnail(img, req.requested_edge, filter);
         log_perf!(
-            "[perf/thumb] load={:.1}ms resize={:.1}ms total={:.1}ms",
+            "[perf/thumb] load={:.1}ms resize={:.1}ms total={:.1}ms 対象={} edge={} 登録サムネ={} タグプレビュー={}",
             t_load.as_secs_f64() * 1000.0,
             t2.elapsed().as_secs_f64() * 1000.0,
             t_total.elapsed().as_secs_f64() * 1000.0,
+            crate::config::short_log_name(&filename),
+            req.requested_edge,
+            req.thumbnail_selection.is_some(),
+            req.is_tag_preview,
         );
         result
     };
@@ -2130,6 +2658,128 @@ mod ring_integration_tests {
     const TEST_RING_MAX: usize = TEST_RING_BOUNDS.1;
     /// フェーズ5: 実際のデフォルト(100MB)と同じ値。テストフィクスチャは全て十分小さいので影響しない。
     const TEST_FRAME_HARD_LIMIT_BYTES: usize = 100 * MB;
+
+    fn gradient_gray(w: u32, h: u32) -> image::GrayImage {
+        image::GrayImage::from_fn(w, h, |x, y| image::Luma([((x * 7 + y * 13) % 256) as u8]))
+    }
+
+    #[test]
+    fn luma8_to_rgba_matches_image_crate_conversion_exactly() {
+        let gray = gradient_gray(37, 23);
+        let expected = image::DynamicImage::ImageLuma8(gray.clone()).to_rgba8();
+        assert_eq!(luma8_to_rgba(&gray).as_raw(), expected.as_raw());
+    }
+
+    #[test]
+    fn gray_resize_matches_rgba_path_within_one_level() {
+        use image::imageops::FilterType;
+        let gray = gradient_gray(200, 120);
+        for filter in [FilterType::CatmullRom, FilterType::Lanczos3, FilterType::Triangle] {
+            let fast = fir_resize(image::DynamicImage::ImageLuma8(gray.clone()), 100, 60, filter);
+            let reference = fir_resize(image::DynamicImage::ImageRgba8(image::DynamicImage::ImageLuma8(gray.clone()).to_rgba8()), 100, 60, filter);
+            assert_eq!(fast.dimensions(), (100, 60));
+            let max_diff = fast.as_raw().iter().zip(reference.as_raw()).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+            assert!(max_diff <= 1, "{filter:?}: 従来経路との差 {max_diff}");
+            assert!(fast.pixels().all(|p| p.0[0] == p.0[1] && p.0[1] == p.0[2] && p.0[3] == 255), "{filter:?}: グレー・不透明のまま");
+        }
+    }
+
+    #[test]
+    fn gray_resize_picks_single_channel_only_when_the_kernel_is_wide() {
+        use image::imageops::FilterType::*;
+        // 強縮小（1/4）: カーネルが広いので U8
+        for f in [Nearest, Triangle, CatmullRom, Lanczos3] {
+            assert!(l8_prefers_single_channel(2000, 3000, 500, 750, f), "{f:?} 強縮小");
+        }
+        // 近等倍（実ログの 1062x1500→941x1330）: U8 が極端に遅いので U8x4（Nearest は常に U8）
+        for f in [Triangle, CatmullRom, Lanczos3] {
+            assert!(!l8_prefers_single_channel(1062, 1500, 941, 1330, f), "{f:?} 近等倍");
+        }
+        assert!(l8_prefers_single_channel(1062, 1500, 941, 1330, Nearest));
+        // 境目: Lanczos3 は縮小率0.75まで U8、0.8から U8x4。CatmullRom は0.5まで U8、0.6から U8x4（実測の境目）
+        assert!(l8_prefers_single_channel(2000, 3000, 1500, 2250, Lanczos3));
+        assert!(!l8_prefers_single_channel(2000, 3000, 1600, 2400, Lanczos3));
+        assert!(l8_prefers_single_channel(2000, 3000, 1000, 1500, CatmullRom));
+        assert!(!l8_prefers_single_channel(2000, 3000, 1200, 1800, CatmullRom));
+    }
+
+    #[test]
+    fn gray_resize_near_unity_uses_rgba_path_and_stays_within_one_level() {
+        use image::imageops::FilterType;
+        // 近等倍（U8x4 側の経路）でも、グレー・不透明のままで、参照（全部RGBA経路）と一致する
+        let gray = gradient_gray(200, 120);
+        for filter in [FilterType::CatmullRom, FilterType::Lanczos3, FilterType::Triangle] {
+            assert!(!l8_prefers_single_channel(200, 120, 180, 108, filter), "{filter:?}");
+            let out = fir_resize(image::DynamicImage::ImageLuma8(gray.clone()), 180, 108, filter);
+            let reference = fir_resize(image::DynamicImage::ImageRgba8(image::DynamicImage::ImageLuma8(gray.clone()).to_rgba8()), 180, 108, filter);
+            assert_eq!(out.as_raw(), reference.as_raw(), "{filter:?}: 同じ経路なので完全一致");
+            assert!(out.pixels().all(|p| p.0[0] == p.0[1] && p.0[1] == p.0[2] && p.0[3] == 255));
+        }
+    }
+
+    #[test]
+    fn near_unity_skip_applies_only_between_threshold_and_one() {
+        let p = NearUnitySkip { min_scale: NEAR_UNITY_SKIP_SCALE, max_side: 16384 };
+        // 実ログ: 1062x1500 → 枠 941x1330（縮小率 0.887）はスキップ
+        assert!(p.applies(1062, 1500, 941, 1330));
+        // 境目: 0.85ちょうどは含み、0.84は含まない
+        assert!(p.applies(1000, 1000, 850, 850));
+        assert!(!p.applies(1000, 1000, 840, 840));
+        // 強い縮小は従来どおり縮小する
+        assert!(!p.applies(3840, 2560, 1920, 1280));
+        // 縮小が要らない（枠が元以上）はスキップ対象外（もともと縮小しない）
+        assert!(!p.applies(800, 600, 1000, 1000));
+        // 縦横で厳しい側の縮小率で判定する（縦は0.8、横は0.95 → 0.8 → 縮小する）
+        assert!(!p.applies(1000, 1000, 950, 800));
+        assert!(p.applies(1000, 1000, 950, 900));
+        // 0 サイズ
+        assert!(!p.applies(0, 10, 5, 5));
+    }
+
+    #[test]
+    fn near_unity_skip_never_exceeds_texture_limit() {
+        // 元が GPU テクスチャの上限を超えるときは、縮小率が0.9でも必ず縮小する
+        let p = NearUnitySkip { min_scale: NEAR_UNITY_SKIP_SCALE, max_side: 8192 };
+        assert!(!p.applies(9000, 6000, 8192, 5461));
+        assert!(p.applies(8000, 6000, 7400, 5550));
+    }
+
+    #[test]
+    fn resize_for_display_with_skip_returns_source_size_and_keeps_pixels() {
+        use image::imageops::FilterType;
+        let rgb = image::RgbImage::from_fn(100, 150, |x, y| image::Rgb([(x * 2) as u8, (y * 2 % 256) as u8, 7]));
+        let img = image::DynamicImage::ImageRgb8(rgb);
+        let expected = img.to_rgba8();
+        let p = Some(NearUnitySkip { min_scale: NEAR_UNITY_SKIP_SCALE, max_side: 16384 });
+
+        let _ = take_last_page_meta();
+        clear_last_resize_info();
+        // 枠 90x135（縮小率0.9）→ スキップ: 元の大きさ・画素のまま、元寸法は PageMeta に残る
+        let out = resize_for_display_with(img.clone(), FilterType::Lanczos3, Some((90, 135)), p);
+        assert_eq!(out.dimensions(), (100, 150));
+        assert_eq!(out.as_raw(), expected.as_raw());
+        assert_eq!(take_last_page_meta().unwrap().orig, (100, 150));
+        assert!(last_resize_info_text().contains("スキップ"));
+
+        // 枠 60x90（縮小率0.6）→ 縮小する
+        let out = resize_for_display_with(img.clone(), FilterType::Lanczos3, Some((60, 90)), p);
+        assert_eq!(out.dimensions(), (60, 90));
+
+        // skip が None（設定OFF）なら、同じ枠でも従来どおり縮小する
+        let out = resize_for_display_with(img, FilterType::Lanczos3, Some((90, 135)), None);
+        assert_eq!(out.dimensions(), (90, 135));
+    }
+
+    #[test]
+    fn gray_page_without_resize_stays_exact_and_reports_original_size() {
+        let gray = gradient_gray(50, 40);
+        let expected = image::DynamicImage::ImageLuma8(gray.clone()).to_rgba8();
+        let _ = take_last_page_meta();
+        // 枠に収まる → 縮小なし
+        let out = resize_for_display(image::DynamicImage::ImageLuma8(gray), image::imageops::FilterType::CatmullRom, Some((100, 100)));
+        assert_eq!(out.as_raw(), expected.as_raw());
+        assert_eq!(take_last_page_meta().unwrap().orig, (50, 40));
+    }
 
     #[test]
     fn thumbnail_source_crop_uses_exact_left_and_right_halves() {
@@ -2282,6 +2932,120 @@ mod ring_integration_tests {
         assert_eq!(complete.stage, ThumbResultStage::Complete);
         assert!(complete.rgba.is_none());
         assert!(!complete.failed);
+        assert!(!complete.missing, "実在するファイルは missing にならない");
+        drop(tx);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 飛び地一覧（db=None）の要求は、親フォルダの既存サムネDBを読み取り専用で引く。
+    /// 当たれば再生成せず、外れた分はメモリ上だけで生成してDBへ書かない。
+    #[test]
+    fn foreign_request_reads_parent_db_and_never_writes_it() {
+        let stamp = format!(
+            "{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+        );
+        let cache_root = THUMB_CACHE_ROOT
+            .get_or_init(|| std::env::temp_dir().join(format!("nekoviewer_foreign_root_{stamp}")))
+            .clone();
+        let source_dir = std::env::temp_dir().join(format!("nekoviewer_foreign_src_{stamp}"));
+        std::fs::create_dir_all(&source_dir).unwrap();
+        for name in ["hit.png", "miss.png"] {
+            image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(8, 8, image::Rgba([1, 2, 3, 255])))
+                .save(source_dir.join(name)).unwrap();
+        }
+        let neko_dir = crate::neko_dir::neko_dir_for_root(&source_dir, &cache_root);
+        let db = crate::neko_dir::open_cache_db(&neko_dir, &source_dir).unwrap();
+        let (tx, rx, _) = spawn_thumb_worker(2, egui::Context::default());
+        let request = |name: &str, db: Option<Arc<Mutex<redb::Database>>>| ThumbRequest {
+            archive_path: source_dir.join(name),
+            db,
+            is_raw_file: true,
+            thumbnail_selection: None,
+            requested_edge: 64,
+            requested_filter: crate::config::ResizeFilter::Triangle,
+            generation_token: None,
+            session_id: 1,
+            is_tag_preview: false,
+        };
+        let wait = || rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+
+        // 実フォルダの経路で hit.png だけ生成済みにする。
+        tx.send(request("hit.png", Some(Arc::clone(&db)))).unwrap();
+        assert!(wait().rgba.is_some());
+
+        // 飛び地（db=None）: 当たり → 暫定表示＋完了（再生成なし）。
+        tx.send(request("hit.png", None)).unwrap();
+        let preview = wait();
+        let complete = wait();
+        assert_eq!(preview.stage, ThumbResultStage::Preview);
+        assert!(preview.rgba.is_some());
+        assert_eq!(complete.stage, ThumbResultStage::Complete);
+        assert!(complete.rgba.is_none() && !complete.failed && !complete.missing);
+
+        // 飛び地（db=None）: 行が無い → メモリ上だけで生成。DBへは書かない。
+        tx.send(request("miss.png", None)).unwrap();
+        let generated = wait();
+        assert_eq!(generated.stage, ThumbResultStage::Complete);
+        assert!(generated.rgba.is_some());
+        assert!(
+            crate::neko_dir::read_thumb_unchecked(&db, "miss.png").is_none(),
+            "飛び地の生成結果は親フォルダのDBへ保存しない",
+        );
+        drop(tx);
+        let _ = std::fs::remove_dir_all(&source_dir);
+    }
+
+    /// 消えたファイルは、キャッシュ済みサムネの有無によらず `missing` で知らせる
+    /// （検索結果の表示中に、一覧から外す判断に使う）。
+    #[test]
+    fn thumbnail_worker_flags_missing_source_with_or_without_cached_thumb() {
+        let root = std::env::temp_dir().join(format!(
+            "nekoviewer_thumb_missing_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+        ));
+        let source_dir = root.join("source");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        let cached_path = source_dir.join("cached.png");
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            8, 8, image::Rgba([1, 2, 3, 255]),
+        )).save(&cached_path).unwrap();
+        let never_path = source_dir.join("never.png"); // 一度も作らない（キャッシュも無い）
+        let db = crate::neko_dir::open_cache_db(&root.join("cache"), &source_dir).unwrap();
+        let (tx, rx, _) = spawn_thumb_worker(2, egui::Context::default());
+        let request = |path: &std::path::Path| ThumbRequest {
+            archive_path: path.to_path_buf(),
+            db: Some(Arc::clone(&db)),
+            is_raw_file: true,
+            thumbnail_selection: None,
+            requested_edge: 64,
+            requested_filter: crate::config::ResizeFilter::Triangle,
+            generation_token: None,
+            session_id: 1,
+            is_tag_preview: false,
+        };
+        let wait = std::time::Duration::from_secs(5);
+
+        // キャッシュを作ってから、元ファイルを消す。
+        tx.send(request(&cached_path)).unwrap();
+        let generated = rx.recv_timeout(wait).unwrap();
+        assert!(generated.rgba.is_some() && !generated.missing);
+        std::fs::remove_file(&cached_path).unwrap();
+
+        // キャッシュあり・実体なし: サムネは出る（Xは付かない）が、missing で知らせる。
+        tx.send(request(&cached_path)).unwrap();
+        let preview = rx.recv_timeout(wait).unwrap();
+        let complete = rx.recv_timeout(wait).unwrap();
+        assert!(preview.rgba.is_some());
+        assert!(!complete.failed && complete.missing);
+
+        // キャッシュなし・実体なし: 失敗（赤X）でもあり、missing でもある。
+        tx.send(request(&never_path)).unwrap();
+        let none = rx.recv_timeout(wait).unwrap();
+        assert!(none.rgba.is_none() && none.failed && none.missing);
         drop(tx);
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -2714,6 +3478,7 @@ mod ring_integration_tests {
                 target_size: Some((800, 600)),
                 exif_enabled: true,
                 image_filter: crate::image_filter::ImageFilterSettings::default(),
+                near_unity_skip: None,
                 generation: 0,
             },
         }));
@@ -2771,6 +3536,7 @@ mod ring_integration_tests {
                 target_size: None,
                 exif_enabled: true,
                 image_filter: settings,
+                near_unity_skip: None,
                 generation: 0,
             },
         }));
@@ -3261,6 +4027,7 @@ mod ring_integration_tests {
                 target_size: Some((60, 60)),
                 exif_enabled: true,
                 image_filter: crate::image_filter::ImageFilterSettings::default(),
+                near_unity_skip: None,
                 generation: 0,
             },
         }));
@@ -3273,3 +4040,84 @@ mod ring_integration_tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 }
+
+#[cfg(test)]
+mod file_cache_yield_tests {
+    use super::*;
+
+    /// 区切りをまたぐ大きさ（2MB超・端数あり）でも、中身が元ファイルと一致する。
+    #[test]
+    fn read_file_yielding_matches_std_read_across_chunks() {
+        let dir = std::env::temp_dir().join(format!("neko_fc_yield_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("blob.bin");
+        let data: Vec<u8> = (0..(FILE_CACHE_READ_CHUNK * 2 + 12345)).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&path, &data).unwrap();
+        let (got, _waited) = read_file_yielding(&path).expect("read");
+        assert_eq!(got, data);
+        // 空ファイルも読める
+        let empty = dir.join("empty.bin");
+        std::fs::write(&empty, b"").unwrap();
+        assert_eq!(read_file_yielding(&empty).unwrap().0.len(), 0);
+        assert!(read_file_yielding(&dir.join("none.bin")).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 同時数の上限: 枠が埋まると3本目は待ち、1枠返すと進む。
+    #[test]
+    fn read_limiter_blocks_beyond_max_and_resumes_on_release() {
+        let lim = ReadLimiter::new(2);
+        let a = lim.acquire();
+        let _b = lim.acquire();
+        std::thread::scope(|s| {
+            let handle = s.spawn(|| {
+                let _c = lim.acquire();
+            });
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            assert!(!handle.is_finished(), "枠が埋まっている間は3本目が待つ");
+            drop(a);
+            handle.join().unwrap();
+        });
+        assert_eq!(*lim.used.lock().unwrap(), 1, "取った枠はすべて返る（_b の分だけ残る）");
+    }
+
+    /// ページ読み中は待ち、終わって静かな時間がたてば抜ける。上限を超えたら待ちきらずに抜ける。
+    #[test]
+    fn wait_page_jobs_idle_blocks_while_page_job_active_and_honors_cap() {
+        let g = PageIoGuard::begin();
+        let handle = std::thread::spawn(|| wait_page_jobs_idle(PAGE_IO_QUIET_MS, std::time::Duration::from_secs(5)));
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(!handle.is_finished(), "ページ読み中は待ち続ける");
+        drop(g);
+        let waited = handle.join().unwrap();
+        assert!(waited >= std::time::Duration::from_millis(200), "終わった後も抜けるまで待つ: {waited:?}");
+
+        // 上限: ページ読みが続いていても、上限で抜ける。
+        let g = PageIoGuard::begin();
+        let waited = wait_page_jobs_idle(PAGE_IO_QUIET_MS, std::time::Duration::from_millis(120));
+        assert!(waited >= std::time::Duration::from_millis(120) && waited < std::time::Duration::from_secs(2), "{waited:?}");
+        drop(g);
+    }
+
+    /// ジョブ中は待ち、終わって静かな時間が過ぎれば抜ける。
+    #[test]
+    fn wait_foreground_idle_blocks_while_job_active() {
+        let g = ForegroundIoGuard::begin();
+        let handle = std::thread::spawn(wait_foreground_idle);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(!handle.is_finished(), "ジョブ中は待ち続ける");
+        drop(g);
+        let waited = handle.join().unwrap();
+        assert!(waited >= std::time::Duration::from_millis(200), "終了後も静かな時間ぶん待つ: {waited:?}");
+
+        // 待たずに答える版（手すきサムネ生成用）。グローバルの状態を使うので、同じテストの中で順に確かめる。
+        assert!(foreground_io_quiet_for(std::time::Duration::from_millis(FG_IO_QUIET_MS)), "静かになった後は true");
+        let g = ForegroundIoGuard::begin();
+        assert!(!foreground_io_quiet_for(std::time::Duration::ZERO), "ジョブ中は false");
+        drop(g);
+        assert!(!foreground_io_quiet_for(std::time::Duration::from_secs(5)), "終わった直後は、長い静けさを要求すると false");
+    }
+}
+
+#[cfg(test)]
+mod decode_bench;

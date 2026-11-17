@@ -14,11 +14,14 @@ pub struct LogConfig {
     pub perf:   bool,
     pub key:    bool,
     pub common: bool,
+    /// サムネ周りのリファクタリング用。計測フィクスチャー（`perf_fixture`）のメニューを有効にする。
+    pub thumb_refactor: bool,
 }
 
 static LOG_PERF:   AtomicBool = AtomicBool::new(false);
 static LOG_KEY:    AtomicBool = AtomicBool::new(false);
 static LOG_COMMON: AtomicBool = AtomicBool::new(false);
+static LOG_THUMB_REFACTOR: AtomicBool = AtomicBool::new(false);
 
 /// どこからでも呼べるログ設定取得。AppConfig::load() より前に呼ぶとデフォルト値を返す。
 pub fn log() -> LogConfig {
@@ -26,6 +29,7 @@ pub fn log() -> LogConfig {
         perf:   LOG_PERF.load(Ordering::Relaxed),
         key:    LOG_KEY.load(Ordering::Relaxed),
         common: LOG_COMMON.load(Ordering::Relaxed),
+        thumb_refactor: LOG_THUMB_REFACTOR.load(Ordering::Relaxed),
     }
 }
 
@@ -33,6 +37,13 @@ pub fn set_log(cfg: LogConfig) {
     LOG_PERF.store(cfg.perf, Ordering::Relaxed);
     LOG_KEY.store(cfg.key, Ordering::Relaxed);
     LOG_COMMON.store(cfg.common, Ordering::Relaxed);
+    LOG_THUMB_REFACTOR.store(cfg.thumb_refactor, Ordering::Relaxed);
+}
+
+/// perf ログに出すファイル名の表記。先頭10文字に切り詰め、足りなければ空白で埋める（行の桁をそろえて読みやすくする）。
+pub fn short_log_name(name: &str) -> String {
+    let head: String = name.chars().take(10).collect();
+    format!("{head:<10}")
 }
 
 // perf ログは高頻度パス（デコードループ等）から呼ばれるため、リングバッファ(Mutex)への
@@ -121,6 +132,59 @@ pub const UNCONFIRMED_RETENTION_DAYS_DEFAULT: u32 = 60;
 pub const BACKUP_GENERATIONS_MIN: u32 = 1;
 pub const BACKUP_GENERATIONS_MAX: u32 = 10;
 pub const BACKUP_GENERATIONS_DEFAULT: u32 = 3;
+/// タグマスター（`tag_master_gen/`）の世代数の範囲と既定値。
+pub const TAG_MASTER_GENERATIONS_MIN: u32 = 1;
+pub const TAG_MASTER_GENERATIONS_MAX: u32 = 10;
+pub const TAG_MASTER_GENERATIONS_DEFAULT: u32 = 5;
+/// 一括タグ取得で、1カテゴリあたりに作れる新規要素数の上限（既定値）の範囲。超えたときは確認ウィンドウで拡張・維持を選ぶ。
+pub const TAG_NEW_ELEMENT_LIMIT_MIN: u32 = 1000;
+pub const TAG_NEW_ELEMENT_LIMIT_MAX: u32 = 20000;
+pub const TAG_NEW_ELEMENT_LIMIT_DEFAULT: u32 = 5000;
+
+/// 一括タグ取得で、新規に登録する要素の主表記（`A|B` の先頭）にどの言語を優先するか。内部の照合は日本語のまま。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum TagRegisterName {
+    /// 表示言語に合わせる（日本語表示なら日本語、それ以外は英字だけの表記）。
+    #[default]
+    FollowUi,
+    Japanese,
+    English,
+}
+
+impl TagRegisterName {
+    pub fn as_key(self) -> &'static str {
+        match self {
+            Self::FollowUi => "follow",
+            Self::Japanese => "japanese",
+            Self::English => "english",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key.trim() {
+            "follow" => Some(Self::FollowUi),
+            "japanese" => Some(Self::Japanese),
+            "english" => Some(Self::English),
+            _ => None,
+        }
+    }
+
+    /// 主表記を選ぶときに使う言語（`pick_registration_name` へ渡す）。表示言語に合わせるときは `ui` を返す。
+    pub fn name_lang(self, ui: crate::i18n::Lang) -> crate::i18n::Lang {
+        match self {
+            Self::FollowUi => ui,
+            Self::Japanese => crate::i18n::Lang::Japanese,
+            Self::English => crate::i18n::Lang::English,
+        }
+    }
+}
+pub const TAG_NEW_ELEMENT_LIMIT_STEP: u32 = 1000;
+/// 手すき時間のサムネ生成を始めるまでの待ち（最後の入力から、秒）。
+pub const IDLE_THUMB_WAIT_MIN: u32 = 1;
+pub const IDLE_THUMB_WAIT_MAX: u32 = 30;
+pub const IDLE_THUMB_WAIT_DEFAULT: u32 = 1;
+/// ビューアー窓が開いている間も手すき生成を続けるかの既定。
+pub const IDLE_THUMB_WHILE_VIEWER_DEFAULT: bool = true;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ResizeFilter {
@@ -209,8 +273,20 @@ pub struct AppConfig {
     pub unconfirmed_retention_days: u32,
     /// DBバックアップ（`backup_auto/` の世代）を残す世代数（1〜10）。
     pub backup_generations: u32,
+    /// タグマスターの履歴（`tag_master_gen/`）を残す世代数（1〜10）。
+    pub tag_master_generations: u32,
+    /// 一括タグ取得の、1カテゴリあたりの新規要素数の上限（既定値）。
+    pub tag_new_element_limit: u32,
+    /// 一括タグ取得で新規登録する要素の主表記の言語。
+    pub tag_register_name: TagRegisterName,
     /// ページデコードの並列スレッド数（0 = 自動: 論理コア数/2）
     pub decode_threads: usize,
+    /// 操作が止まっている間に、現在地フォルダのサムネ生成を続けるか（1件ずつ。idle_thumb.rs）。
+    pub idle_thumb_generation: bool,
+    /// 手すき生成を始めるまでの待ち（最後の入力から、秒。1〜30）。
+    pub idle_thumb_wait_secs: u32,
+    /// ビューアー窓が開いている間も手すき生成を続けるか（既定は続ける）。
+    pub idle_thumb_while_viewer: bool,
     /// 虫眼鏡の拡大縮小（Shift+ホイール等）の割り当てを起動時に知らせ済みか。永続設定
     /// （state の `app_magnifier_zoom_notice_shown`）。
     pub magnifier_zoom_notice_shown: bool,
@@ -241,10 +317,22 @@ pub struct AppConfig {
     pub keymap: Keymap,
     /// keymap.ini/state/spread.redb の置き場所（resolve_config_root() で解決済み）。
     pub config_root: PathBuf,
-    /// 「フォルダ本アクセス」の初回警告（各種保存系操作を行わない旨）を
-    /// 「次回から表示しない」チェック済みで確認したか。永続設定
-    /// （state の `app_folder_book_access_warning_seen`）。
-    pub folder_book_access_warning_seen: bool,
+    /// アーカイブ内TXTを画像ページとして開く設定（有効・高さ上限・切り詰め/分割・読込上限・ページ数への算入）。
+    /// 永続設定（state の `app_text_page`）。変更時は `fs::archive::text_page::set_options` へ反映する。
+    pub text_page: crate::fs::archive::text_page::TextPageOptions,
+    /// 一括タグ付けの照合の切替項目（正規化5項目・類似のしきい値）。永続設定（state の `app_tag_match`）。
+    pub tag_match: crate::tag_similarity::MatchOptions,
+    /// 一括タグ付けの判定で、学習結果（`tag_learning`）を使うか。永続設定（state の `app_tag_learning_use`）。既定は使う。
+    pub tag_learning_use: bool,
+    /// 一括タグ付けの確認窓を開いたとき、要確認の候補だけを先に表示するか。永続設定（state の `app_tag_confirm_default_review`）。既定は表示する。
+    pub tag_confirm_default_review: bool,
+    /// 一括タグ付けの確認窓の冒頭の説明を、開いた状態にするか。永続設定（state の `app_tag_confirm_intro_open`）。既定は開く。
+    pub tag_confirm_intro_open: bool,
+    /// 学習データが無いまま一括取得を押したときの、学習の案内を今後表示しない。永続設定（state の `app_tag_learn_intro_hidden`）。
+    pub tag_learn_intro_hidden: bool,
+    /// 次回起動時に X11 バックエンド（XWayland）で起動するか（state の `app_launch_x11`）。
+    /// Wayland セッションでだけ意味を持つ。詳細は [display_backend.rs](crate::display_backend)。
+    pub launch_x11: bool,
     /// 前回起動したときのバージョン（state の `app_last_run_version`）。空=記録なし（1.11より前の版、または新規）。
     /// 起動時の注意ダイアログ（[release_notice.rs](crate::release_notice)）の表示判定に使う。
     pub last_run_version: String,
@@ -287,7 +375,13 @@ impl AppConfig {
             thumb_size: 256,
             unconfirmed_retention_days: UNCONFIRMED_RETENTION_DAYS_DEFAULT,
             backup_generations: BACKUP_GENERATIONS_DEFAULT,
+            tag_master_generations: TAG_MASTER_GENERATIONS_DEFAULT,
+            tag_new_element_limit: TAG_NEW_ELEMENT_LIMIT_DEFAULT,
+            tag_register_name: TagRegisterName::default(),
             decode_threads: 0,
+            idle_thumb_generation: true,
+            idle_thumb_wait_secs: IDLE_THUMB_WAIT_DEFAULT,
+            idle_thumb_while_viewer: IDLE_THUMB_WHILE_VIEWER_DEFAULT,
             magnifier_zoom_notice_shown: false,
             pending_magnifier_zoom_notice: None,
             startup: StartupConfig {
@@ -304,7 +398,13 @@ impl AppConfig {
             pending_decode_edge_prompt: None,
             keymap: Keymap::load(&root),
             config_root: root,
-            folder_book_access_warning_seen: false,
+            text_page: Default::default(),
+            tag_match: Default::default(),
+            tag_learning_use: true,
+            tag_confirm_default_review: true,
+            tag_confirm_intro_open: true,
+            tag_learn_intro_hidden: false,
+            launch_x11: false,
             last_run_version: String::new(),
         }
     }
@@ -502,6 +602,15 @@ pub fn filter_to_str(f: ResizeFilter) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_log_name_cuts_at_ten_chars_and_pads_short_names() {
+        assert_eq!(short_log_name("[Patreon] Waero [2023-01 - 2026].zip"), "[Patreon] ");
+        assert_eq!(short_log_name("a.zip"), "a.zip     ");
+        // 文字数で数える（バイト数ではない）。日本語名でも途中で切れて壊れない。
+        assert_eq!(short_log_name("アサ - Fleurdelys (Wuthering Waves).zip"), "アサ - Fleur");
+        assert_eq!(short_log_name("").chars().count(), 10);
+    }
 
     #[cfg(unix)]
     #[test]

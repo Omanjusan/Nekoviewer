@@ -33,6 +33,8 @@ pub(crate) enum SettingsTab {
     Keymap,
     /// コマ送り（疑似コマ送りモード）。2段目の先頭。
     Koma,
+    /// データベース（本体DB・タグマスター・バックアップ場所）。2段目。
+    Database,
     #[cfg(windows)]
     Windows,
     Other,
@@ -54,7 +56,7 @@ fn settings_tab_rows() -> [Vec<SettingsTab>; 2] {
     ];
     #[cfg(windows)]
     first.push(SettingsTab::Windows);
-    [first, vec![SettingsTab::Koma, SettingsTab::Other, SettingsTab::Debug]]
+    [first, vec![SettingsTab::Koma, SettingsTab::Database, SettingsTab::Other, SettingsTab::Debug]]
 }
 
 fn settings_tab_label(tab: SettingsTab) -> &'static str {
@@ -69,6 +71,7 @@ fn settings_tab_label(tab: SettingsTab) -> &'static str {
         SettingsTab::Translate => t.settings_tab_translate(),
         SettingsTab::Keymap => "キーアサイン",
         SettingsTab::Koma => t.settings_tab_koma(),
+        SettingsTab::Database => t.settings_tab_database(),
         #[cfg(windows)]
         SettingsTab::Windows => t.settings_tab_windows(),
         SettingsTab::Other => t.settings_tab_other(),
@@ -135,12 +138,21 @@ pub(crate) struct SettingsDraft {
     /// ダイアログを開いた時点のシステム総RAM(MB)。毎フレームのsysinfo呼び出しを避けるためキャッシュする。
     system_ram_mb: u64,
     max_decode_edge: u32,
+    /// アーカイブ内TXTを画像ページとして開く設定。
+    text_page: crate::fs::archive::text_page::TextPageOptions,
     thumb_size: u32,
     unconfirmed_retention_days: u32,
     backup_generations: u32,
+    tag_master_generations: u32,
+    tag_new_element_limit: u32,
+    tag_register_name: crate::config::TagRegisterName,
+    idle_thumb_generation: bool,
+    idle_thumb_wait_secs: u32,
+    idle_thumb_while_viewer: bool,
+    /// 一括タグ付けの判定で学習結果を使うか。
+    tag_learning_use: bool,
     viewer_filter: ResizeFilter,
     thumb_filter: ResizeFilter,
-    lang: i18n::Lang,
     show_hidden: bool,
     /// サムネカード情報帯の日付書式（エクスプローラータブで編集）。
     card_date_format: CardDateFormat,
@@ -151,14 +163,12 @@ pub(crate) struct SettingsDraft {
     thumbbar_pos: ThumbbarPos,
     thumbbar_thumb_size: u32,
     thumbbar_idle_hide_ms: u64,
-    thumbbar_overlap: bool,
     thumbbar_marker_r: u8,
     thumbbar_marker_g: u8,
     thumbbar_marker_b: u8,
     thumbbar_marker_a: u8,
     exif_orientation_enabled: bool,
-    /// ビューアーを開くときの既定スロット（0..3 = F5〜F8）。None = デフォルト無し。
-    default_slot: Option<usize>,
+    near_unity_skip_enabled: bool,
     /// スライドショータブ: 通常時のトランジション種類・遷移時間(ms)。
     transition_kind: TransitionKind,
     transition_duration_ms: u64,
@@ -192,6 +202,7 @@ pub(crate) struct SettingsDraft {
     log_perf: bool,
     log_key: bool,
     log_common: bool,
+    log_thumb_refactor: bool,
     /// ページデコードの並列スレッド数をユーザーが手動指定するか。false = 自動(論理コア数/2)。
     decode_threads_user_set: bool,
     decode_threads: usize,
@@ -288,12 +299,19 @@ impl SettingsDraft {
             cache_total_mb: config.cache_total_mb.unwrap_or_else(crate::cache::default_cache_total_mb),
             system_ram_mb,
             max_decode_edge: config.max_decode_edge,
+            text_page: config.text_page,
             thumb_size: config.thumb_size,
             unconfirmed_retention_days: config.unconfirmed_retention_days,
             backup_generations: config.backup_generations,
+            tag_master_generations: config.tag_master_generations,
+            tag_new_element_limit: config.tag_new_element_limit,
+            tag_register_name: config.tag_register_name,
+            idle_thumb_generation: config.idle_thumb_generation,
+            idle_thumb_wait_secs: config.idle_thumb_wait_secs,
+            idle_thumb_while_viewer: config.idle_thumb_while_viewer,
+            tag_learning_use: config.tag_learning_use,
             viewer_filter: config.viewer_filter,
             thumb_filter: config.thumb_filter,
-            lang: i18n::t(),
             show_hidden,
             card_date_format,
             ring_min: config.anim_ring_min_frames,
@@ -302,13 +320,12 @@ impl SettingsDraft {
             thumbbar_pos: viewer_cfg.thumbbar_pos,
             thumbbar_thumb_size: viewer_cfg.thumbbar_thumb_size,
             thumbbar_idle_hide_ms: viewer_cfg.thumbbar_idle_hide_ms,
-            thumbbar_overlap: viewer_cfg.thumbbar_overlap,
             thumbbar_marker_r: viewer_cfg.thumbbar_marker_r,
             thumbbar_marker_g: viewer_cfg.thumbbar_marker_g,
             thumbbar_marker_b: viewer_cfg.thumbbar_marker_b,
             thumbbar_marker_a: viewer_cfg.thumbbar_marker_a,
             exif_orientation_enabled: viewer_cfg.exif_orientation_enabled,
-            default_slot: config.default_slot,
+            near_unity_skip_enabled: viewer_cfg.near_unity_skip_enabled,
             transition_kind: viewer_cfg.transition_kind,
             transition_duration_ms: viewer_cfg.transition_duration_ms,
             slideshow_interval_ms: viewer_cfg.slideshow_interval_ms,
@@ -329,6 +346,7 @@ impl SettingsDraft {
             log_perf: crate::config::log().perf,
             log_key: crate::config::log().key,
             log_common: crate::config::log().common,
+            log_thumb_refactor: crate::config::log().thumb_refactor,
             decode_threads_user_set: config.decode_threads != 0,
             decode_threads: if config.decode_threads == 0 { config.resolved_decode_threads() } else { config.decode_threads },
             startup_use_last_dir: config.startup.use_last_dir,
@@ -351,6 +369,8 @@ impl SettingsDraft {
         viewer_cfg.resize_debounce_ms = self.debounce_ms;
         config.cache_total_mb = if self.cache_total_user_set { Some(self.cache_total_mb) } else { None };
         config.max_decode_edge = self.max_decode_edge;
+        config.text_page = self.text_page.clamped();
+        crate::fs::archive::text_page::set_options(config.text_page);
         config.thumb_size = self.thumb_size;
         config.unconfirmed_retention_days = self.unconfirmed_retention_days.clamp(
             crate::config::UNCONFIRMED_RETENTION_DAYS_MIN,
@@ -359,9 +379,21 @@ impl SettingsDraft {
         config.backup_generations = self
             .backup_generations
             .clamp(crate::config::BACKUP_GENERATIONS_MIN, crate::config::BACKUP_GENERATIONS_MAX);
+        config.tag_master_generations = self
+            .tag_master_generations
+            .clamp(crate::config::TAG_MASTER_GENERATIONS_MIN, crate::config::TAG_MASTER_GENERATIONS_MAX);
+        config.tag_new_element_limit = self
+            .tag_new_element_limit
+            .clamp(crate::config::TAG_NEW_ELEMENT_LIMIT_MIN, crate::config::TAG_NEW_ELEMENT_LIMIT_MAX);
+        config.tag_register_name = self.tag_register_name;
+        config.idle_thumb_generation = self.idle_thumb_generation;
+        config.idle_thumb_wait_secs = self
+            .idle_thumb_wait_secs
+            .clamp(crate::config::IDLE_THUMB_WAIT_MIN, crate::config::IDLE_THUMB_WAIT_MAX);
+        config.idle_thumb_while_viewer = self.idle_thumb_while_viewer;
+        config.tag_learning_use = self.tag_learning_use;
         config.viewer_filter = self.viewer_filter;
         config.thumb_filter = self.thumb_filter;
-        i18n::set(self.lang);
 
         config.anim_ring_min_frames = self.ring_min;
         config.anim_ring_max_frames = self.ring_max;
@@ -372,6 +404,7 @@ impl SettingsDraft {
             perf: self.log_perf,
             key: self.log_key,
             common: self.log_common,
+            thumb_refactor: self.log_thumb_refactor,
         });
 
         config.startup.use_last_dir = self.startup_use_last_dir;
@@ -381,13 +414,12 @@ impl SettingsDraft {
         viewer_cfg.thumbbar_pos = self.thumbbar_pos;
         viewer_cfg.thumbbar_thumb_size = self.thumbbar_thumb_size;
         viewer_cfg.thumbbar_idle_hide_ms = self.thumbbar_idle_hide_ms;
-        viewer_cfg.thumbbar_overlap = self.thumbbar_overlap;
         viewer_cfg.thumbbar_marker_r = self.thumbbar_marker_r;
         viewer_cfg.thumbbar_marker_g = self.thumbbar_marker_g;
         viewer_cfg.thumbbar_marker_b = self.thumbbar_marker_b;
         viewer_cfg.thumbbar_marker_a = self.thumbbar_marker_a;
         viewer_cfg.exif_orientation_enabled = self.exif_orientation_enabled;
-        config.default_slot = self.default_slot;
+        viewer_cfg.near_unity_skip_enabled = self.near_unity_skip_enabled;
         viewer_cfg.transition_kind = self.transition_kind;
         viewer_cfg.transition_duration_ms = self.transition_duration_ms;
         self.koma_shrink.apply_to(&mut viewer_cfg.magnifier);
@@ -563,6 +595,41 @@ fn draw_resize_filter_combo(ui: &mut egui::Ui, id: &str, value: &mut ResizeFilte
         });
 }
 
+/// アーカイブ内TXTを画像ページとして開く設定（共通タブ）。
+fn draw_text_page_settings(ui: &mut egui::Ui, o: &mut crate::fs::archive::text_page::TextPageOptions) {
+    use crate::fs::archive::text_page::{HEIGHT_LIMIT_MAX, HEIGHT_LIMIT_MIN, READ_LIMIT_MAX, READ_LIMIT_MIN};
+    let t = i18n::t();
+    ui.checkbox(&mut o.enabled, t.settings_text_page_enabled());
+    ui.add_enabled_ui(o.enabled, |ui| {
+        ui.indent("text_page_children", |ui| {
+            ui.label(t.settings_text_page_height_label());
+            ui.scope(|ui| {
+                ui.spacing_mut().slider_width = 200.0;
+                ui.horizontal(|ui| {
+                    ui.add(egui::Slider::new(&mut o.height_limit, HEIGHT_LIMIT_MIN..=HEIGHT_LIMIT_MAX).show_value(false).step_by(100.0));
+                    ui.label(format!("{} px", o.height_limit));
+                });
+            });
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut o.split, false, t.settings_text_page_truncate());
+                ui.radio_value(&mut o.split, true, t.settings_text_page_split());
+            });
+            ui.label(t.settings_text_page_read_limit_label());
+            let mut kb = (o.read_limit / 1024) as u32;
+            ui.scope(|ui| {
+                ui.spacing_mut().slider_width = 200.0;
+                ui.horizontal(|ui| {
+                    ui.add(egui::Slider::new(&mut kb, (READ_LIMIT_MIN / 1024) as u32..=(READ_LIMIT_MAX / 1024) as u32).show_value(false).step_by(64.0));
+                    ui.label(format!("{kb} KB"));
+                });
+            });
+            o.read_limit = kb as usize * 1024;
+            ui.checkbox(&mut o.count_in_pages, t.settings_text_page_count());
+        });
+    });
+    ui.label(egui::RichText::new(t.settings_text_page_explain()).weak());
+}
+
 fn draw_settings_tab_common(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
     ui.label(i18n::t().settings_base_resolution_label());
     ui.horizontal(|ui| {
@@ -630,20 +697,38 @@ fn draw_settings_tab_common(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
     draw_resize_filter_combo(ui, "common_thumb_filter", &mut draft.thumb_filter);
     ui.separator();
 
+    draw_text_page_settings(ui, &mut draft.text_page);
+    ui.separator();
+
+    // 操作が止まっている間のサムネ生成（idle_thumb.rs）。待ち時間とビューアー中の扱いは、ONのときだけ操作できる。
+    let t = i18n::t();
+    ui.checkbox(&mut draft.idle_thumb_generation, t.settings_idle_thumb_toggle());
+    ui.add_enabled_ui(draft.idle_thumb_generation, |ui| {
+        ui.indent("idle_thumb_children", |ui| {
+            ui.label(t.settings_idle_thumb_wait_label());
+            ui.scope(|ui| {
+                ui.spacing_mut().slider_width = 200.0;
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::Slider::new(
+                            &mut draft.idle_thumb_wait_secs,
+                            crate::config::IDLE_THUMB_WAIT_MIN..=crate::config::IDLE_THUMB_WAIT_MAX,
+                        )
+                        .show_value(false),
+                    );
+                    ui.label(t.settings_idle_thumb_wait_value(draft.idle_thumb_wait_secs));
+                });
+            });
+            ui.checkbox(&mut draft.idle_thumb_while_viewer, t.settings_idle_thumb_while_viewer());
+        });
+    });
+    ui.label(t.settings_idle_thumb_explain());
+    ui.separator();
+
     ui.horizontal(|ui| {
         ui.label(i18n::t().settings_show_hidden_label());
         ui.checkbox(&mut draft.show_hidden, "");
     });
-    ui.separator();
-
-    ui.label(i18n::t().settings_lang_label());
-    egui::ComboBox::from_id_salt("settings_lang")
-        .selected_text(draft.lang.native_name())
-        .show_ui(ui, |ui| {
-            for lang in [i18n::Lang::Japanese, i18n::Lang::English, i18n::Lang::Chinese] {
-                ui.selectable_value(&mut draft.lang, lang, lang.native_name());
-            }
-        });
 }
 
 // ── エクスプローラータブ: サムネカード情報帯の日付書式 ──────────────────────
@@ -791,6 +876,11 @@ fn draw_settings_tab_explorer(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
     ui.separator();
     // ライブプレビュー（現在のモード・言語で解決した実際の書式）
     ui.label(i18n::t().settings_card_date_preview(&f.preview(lang)));
+
+    // タグ自動取得: 学習結果を使うか（タグ学習窓のチェックと同じ値）。
+    ui.add_space(6.0);
+    ui.separator();
+    ui.checkbox(&mut draft.tag_learning_use, i18n::t().tag_learn_use_checkbox());
 }
 
 fn draw_settings_tab_anim(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
@@ -827,6 +917,8 @@ fn draw_settings_tab_debug(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
     ui.checkbox(&mut draft.log_perf, i18n::t().settings_debug_log_perf());
     ui.checkbox(&mut draft.log_key, i18n::t().settings_debug_log_key());
     ui.checkbox(&mut draft.log_common, i18n::t().settings_debug_log_common());
+    // 開発専用のため i18n へは入れず日本語直書き（perf_fixture のメニューを有効にする）。
+    ui.checkbox(&mut draft.log_thumb_refactor, "サムネ周りのリファクタリング用ログ（計測フィクスチャー）");
 
     ui.separator();
     ui.label(i18n::t().settings_decode_threads_label());
@@ -846,6 +938,12 @@ fn draw_settings_tab_viewer(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
         ui.checkbox(&mut draft.exif_orientation_enabled, "");
     });
     ui.label(i18n::t().settings_exif_orientation_explain());
+    ui.separator();
+    ui.horizontal(|ui| {
+        ui.label(i18n::t().settings_near_unity_skip_label());
+        ui.checkbox(&mut draft.near_unity_skip_enabled, "");
+    });
+    ui.label(i18n::t().settings_near_unity_skip_explain());
     ui.separator();
 
     // 大項目見出し。下の各項目ラベル(■付き)と混同しないよう太字・大きめで区別する。
@@ -897,13 +995,6 @@ fn draw_settings_tab_viewer(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
     ui.label(i18n::t().settings_thumbbar_idle_explain());
     ui.separator();
 
-    ui.horizontal(|ui| {
-        ui.label(i18n::t().settings_thumbbar_overlap_label());
-        ui.checkbox(&mut draft.thumbbar_overlap, "");
-    });
-    ui.label(i18n::t().settings_thumbbar_overlap_explain());
-    ui.separator();
-
     ui.label(i18n::t().settings_thumbbar_marker_label());
     ui.label(i18n::t().settings_thumbbar_marker_explain());
 
@@ -935,16 +1026,6 @@ fn draw_settings_tab_viewer(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
             ui.add(egui::Slider::new(&mut draft.thumbbar_marker_a, 0..=100));
         });
     });
-
-    ui.separator();
-    ui.label(i18n::t().settings_default_slot_label());
-    ui.horizontal(|ui| {
-        ui.selectable_value(&mut draft.default_slot, None, i18n::t().settings_default_slot_none());
-        for i in 0..4 {
-            ui.selectable_value(&mut draft.default_slot, Some(i), i18n::t().slot_label(i + 5));
-        }
-    });
-    ui.label(i18n::t().settings_default_slot_explain());
 }
 
 fn draw_settings_tab_slideshow(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
@@ -1523,10 +1604,7 @@ impl NekoviewApp {
 
             match self.settings_tab {
                 SettingsTab::Common => draw_settings_tab_common(ui, &mut self.settings_draft),
-                SettingsTab::Explorer => {
-                    draw_settings_tab_explorer(ui, &mut self.settings_draft);
-                    self.draw_settings_database_section(ui);
-                }
+                SettingsTab::Explorer => draw_settings_tab_explorer(ui, &mut self.settings_draft),
                 SettingsTab::Anim => draw_settings_tab_anim(ui, &mut self.settings_draft),
                 SettingsTab::Static => self.draw_settings_tab_static(ui),
                 SettingsTab::Viewer => draw_settings_tab_viewer(ui, &mut self.settings_draft),
@@ -1534,6 +1612,7 @@ impl NekoviewApp {
                 SettingsTab::Translate => self.draw_settings_tab_translate(ui, ctx),
                 SettingsTab::Keymap => draw_settings_tab_keymap(ui, &mut self.settings_draft),
                 SettingsTab::Koma => draw_settings_tab_koma(ui, &mut self.settings_draft),
+                SettingsTab::Database => self.draw_settings_tab_database(ui),
                 #[cfg(windows)]
                 SettingsTab::Windows => self.draw_settings_tab_windows(ui),
                 SettingsTab::Other => self.draw_settings_tab_other(ui),
@@ -1806,11 +1885,11 @@ impl NekoviewApp {
         });
     }
 
-    /// エクスプローラータブ末尾の「データベース管理」。未確認IDの保持日数とバックアップ関連を集約する。
-    fn draw_settings_database_section(&mut self, ui: &mut egui::Ui) {
+    /// 「DB」タブ。本体データベース・タグマスター・バックアップ場所の3セクション。
+    fn draw_settings_tab_database(&mut self, ui: &mut egui::Ui) {
+        let t = i18n::t();
         // 重複の解決UIの「削除まで残り○日」の元になる、未確認IDの保持日数。
-        ui.separator();
-        ui.label(i18n::t().settings_database_heading());
+        ui.label(egui::RichText::new(t.settings_database_heading()).strong().size(15.0));
         ui.add_space(4.0);
         ui.label(i18n::t().settings_unconfirmed_retention_label());
         ui.horizontal(|ui| {
@@ -1841,8 +1920,58 @@ impl NekoviewApp {
         self.draw_db_backup_section(ui);
         self.draw_unreachable_clean_section(ui);
 
+        // タグマスター（nekoviewer_tags.json）の履歴の世代数。履歴の操作はタグ管理画面の「ロールバック」。
+        ui.separator();
+        ui.label(egui::RichText::new(t.settings_tag_master_heading()).strong().size(15.0));
+        ui.add_space(4.0);
+        ui.label(t.settings_tag_master_generations_label());
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::Slider::new(
+                    &mut self.settings_draft.tag_master_generations,
+                    crate::config::TAG_MASTER_GENERATIONS_MIN..=crate::config::TAG_MASTER_GENERATIONS_MAX,
+                )
+                .show_value(false),
+            );
+            ui.label(t.settings_tag_master_generations_value(self.settings_draft.tag_master_generations));
+        });
+        ui.label(t.settings_tag_master_generations_explain());
+
+        // 一括タグ取得で、1カテゴリあたりに作れる新規要素数の上限。超えたら確認ウィンドウで拡張か維持（切り捨て）を選ぶ。
+        ui.add_space(6.0);
+        ui.label(t.settings_tag_new_limit_label());
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::Slider::new(
+                    &mut self.settings_draft.tag_new_element_limit,
+                    crate::config::TAG_NEW_ELEMENT_LIMIT_MIN..=crate::config::TAG_NEW_ELEMENT_LIMIT_MAX,
+                )
+                .step_by(crate::config::TAG_NEW_ELEMENT_LIMIT_STEP as f64)
+                .show_value(false),
+            );
+            ui.label(t.settings_tag_new_limit_value(self.settings_draft.tag_new_element_limit));
+        });
+        ui.label(t.settings_tag_new_limit_explain());
+
+        // 新規に登録する要素の主表記（`A|B` の先頭）の言語。既存の要素は書き換えない。
+        ui.add_space(6.0);
+        ui.label(t.settings_tag_register_name_label());
+        ui.horizontal_wrapped(|ui| {
+            use crate::config::TagRegisterName as N;
+            for (v, text) in [
+                (N::FollowUi, t.settings_tag_register_name_follow()),
+                (N::Japanese, t.settings_tag_register_name_japanese()),
+                (N::English, t.settings_tag_register_name_english()),
+            ] {
+                ui.radio_value(&mut self.settings_draft.tag_register_name, v, text);
+            }
+        });
+        ui.label(t.settings_tag_register_name_explain());
+
         // 移行前の自動バックアップ（`backup_auto/`）の場所を開く。まだ無ければ押せない。
         ui.separator();
+        ui.label(egui::RichText::new(t.settings_backup_folder_heading()).strong().size(15.0));
+        ui.add_space(4.0);
         ui.label(i18n::t().settings_backup_folder_label());
         let backup_dir = crate::dev_db_backup::auto_backup_dir(&self.config.config_root);
         let exists = backup_dir.is_dir();
@@ -1919,7 +2048,7 @@ mod tests {
     #[test]
     fn settings_tabs_are_two_rows_with_koma_leading_the_second() {
         let [first, second] = settings_tab_rows();
-        assert_eq!(second, vec![SettingsTab::Koma, SettingsTab::Other, SettingsTab::Debug]);
+        assert_eq!(second, vec![SettingsTab::Koma, SettingsTab::Database, SettingsTab::Other, SettingsTab::Debug]);
         // 1段目は従来の並び（コマ送り・その他・デバッグを含まない）。
         assert_eq!(first[0], SettingsTab::Common);
         assert_eq!(first[7], SettingsTab::Keymap);
@@ -1933,7 +2062,7 @@ mod tests {
         let mut expected = vec![
             SettingsTab::Common, SettingsTab::Explorer, SettingsTab::Anim, SettingsTab::Static,
             SettingsTab::Viewer, SettingsTab::Slideshow, SettingsTab::Translate, SettingsTab::Keymap,
-            SettingsTab::Koma, SettingsTab::Other, SettingsTab::Debug,
+            SettingsTab::Koma, SettingsTab::Database, SettingsTab::Other, SettingsTab::Debug,
         ];
         #[cfg(windows)]
         expected.push(SettingsTab::Windows);

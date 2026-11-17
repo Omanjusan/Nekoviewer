@@ -61,6 +61,52 @@ impl NekoviewApp {
         f
     }
 
+    /// 自動テスト用: 「ビューアー復帰」ボタンと同じ要求を立てる。
+    #[cfg(feature = "test-control")]
+    pub fn test_request_recover(&mut self) {
+        if self.viewer_is_open() {
+            self.viewer_recover_requested = true;
+        }
+    }
+
+    /// 自動テスト用: ビューアーへスロット操作コマンドを渡す。ビューアーが無ければ false。
+    #[cfg(feature = "test-control")]
+    pub fn test_push_viewer_cmd(&self, cmd: crate::test_control::Cmd) -> bool {
+        match self.viewer.lock().unwrap().as_mut() {
+            Some(v) => { v.test_push_cmd(cmd); true }
+            None => false,
+        }
+    }
+
+    /// 自動テスト用: 渡したコマンドが全て処理済みで、復帰要求も残っていないか。
+    #[cfg(feature = "test-control")]
+    pub fn test_viewer_idle(&self) -> bool {
+        !self.viewer_recover_requested
+            && self.viewer.lock().unwrap().as_ref().map_or(true, |v| v.test_cmds_idle())
+    }
+
+    /// 自動テスト用: 永続化される側の状態（スロット・自動展開）と、ビューアーの開閉。
+    #[cfg(feature = "test-control")]
+    pub fn test_state_json(&self) -> serde_json::Value {
+        let slots: Vec<serde_json::Value> = self.viewer_slots.iter().map(|s| match s {
+            Some(s) => serde_json::json!({"x": s.x, "y": s.y, "w": s.w, "h": s.h}),
+            None => serde_json::Value::Null,
+        }).collect();
+        serde_json::json!({
+            "viewer_open": self.viewer_is_open(),
+            "slots": slots,
+            "default_slot": self.config.default_slot,
+            "launch_x11": self.config.launch_x11,
+            "backend": format!("{:?}", crate::display_backend::mode()),
+            "search": self.test_search_json(),
+        })
+    }
+
+    /// ビューアー窓を画面中央へ戻す要求を取り出す（取り出したら false に戻す）。
+    pub fn take_viewer_recover_request(&mut self) -> bool {
+        std::mem::take(&mut self.viewer_recover_requested)
+    }
+
     /// ビューアーを閉じる（OS のクローズボタン等から winit_app が呼ぶ）。
     pub fn close_viewer(&mut self) {
         self.deactivate_tag_main_edit();
@@ -330,6 +376,12 @@ impl NekoviewApp {
     /// OCR/翻訳子ウィンドウの1フレーム描画。winit_app が子窓の egui パスから呼ぶ。
     /// 左＝OCR原文、右＝翻訳結果のDIFF風2ペイン。OCRと翻訳は完全に独立したボタン/処理単位。
     pub fn render_translate_window(&mut self, ui: &mut egui::Ui) {
+        // 独立 OS 窓のルートには背景塗りが無い（クリア色は黒）。ライト時に暗い文字が黒地に載らないよう、
+        // テーマ連動の背景を持つパネルに載せる。
+        egui::CentralPanel::default().show(ui, |ui| self.render_translate_window_body(ui));
+    }
+
+    fn render_translate_window_body(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         // ビューアー窓側の通常のページ送りでこの独立Contextの窓を起こせるよう、
         // 毎フレーム自身の ctx を保持しておく（render_viewer側の対応処理と対）。
@@ -549,6 +601,16 @@ impl NekoviewApp {
 
         if let Some(slots) = output.save_slots {
             self.viewer_slots = slots;
+            self.persist_state();
+        }
+
+        if let Some(v) = output.launch_x11_change {
+            self.config.launch_x11 = v;
+            self.persist_state();
+        }
+
+        if let Some(v) = output.default_slot_change {
+            self.config.default_slot = v;
             self.persist_state();
         }
 
@@ -1118,6 +1180,8 @@ impl NekoviewApp {
             cfg.magnifier_on = false;
         }
         self.deactivate_tag_main_edit();
+        // 詳細窓は、ほかの画像・アーカイブを開いた時点で片づける。
+        self.close_detail_windows();
         self.flush_current_sort_if_changed();
         self.flush_current_bookmark_if_enabled();
         let path = state.archive_path().clone();
@@ -1134,6 +1198,16 @@ impl NekoviewApp {
         if let Some((key, ascending)) = saved_sort {
             state.restore_saved_sort(key, ascending);
             state.set_saved_sort(Some((key, ascending)));
+        } else {
+            // 保存済みが無いときだけ、設定の既定ソート（指定がある場合）を使う。
+            // 保存はONにならない（saved_sortはNoneのまま）。指定なしなら従来どおり名前・昇順。
+            let default_sort = {
+                let cfg = self.viewer_cfg.lock().unwrap();
+                cfg.default_sort_key.map(|key| (key, cfg.default_sort_ascending))
+            };
+            if let Some((key, ascending)) = default_sort {
+                state.restore_saved_sort(key, ascending);
+            }
         }
         let saved_spread = if archive_dir == self.current_dir {
             self.spread_states.get(filename).copied()

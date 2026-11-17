@@ -7,12 +7,16 @@ use std::path::Path;
 pub mod decode;
 pub mod detect;
 mod folder;
+pub mod meta;
+pub mod text_page;
 mod progress;
 #[cfg(feature = "fmt-7z")]
 mod sevenz;
 #[cfg(feature = "fmt-tar")]
 mod tar;
 mod zip;
+// 末尾だけを読む中央ディレクトリの自前解析（HDDの冷たい状態でのzipオープンの近道。meta.rs の read_zip_bundle が使う）。
+pub(crate) mod zip_cd;
 
 // 既存の呼び出し元が使う `crate::fs::archive::NAME` パスを維持するための再エクスポート。
 pub use decode::decode_image_bytes;
@@ -23,6 +27,7 @@ pub use sevenz::extract_all_images_7z_path;
 #[cfg(feature = "fmt-tar")]
 pub use tar::extract_all_images_tar_path;
 pub use zip::load_bytes_from_archive;
+pub(crate) use zip::FastZip;
 
 /// ZIP/CBZ/7z/CB7 内の画像エントリ
 pub struct ImageEntry {
@@ -32,6 +37,9 @@ pub struct ImageEntry {
     pub entry_name: String,
     /// 日付ソートキー（年月日時分秒を1桁ずつパックした u64）
     pub date_key: u64,
+    /// 格納順（アーカイブ内の列挙順。TXT分割ページは元ファイル内のページ順）。
+    /// 「格納順」ソート用で、フォルダ（仮想本）では名前順と同義（列挙順＝FS依存のため使わない）。
+    pub stored_index: usize,
 }
 
 /// フェーズ2: 総ページ数に応じてサンプリング対象のインデックスを決める。
@@ -210,6 +218,15 @@ pub fn list_images_with_progress(path: &Path, on_progress: &mut ProgressCallback
     if path.is_dir() {
         return folder::list_images_folder_with_progress(path, on_progress);
     }
+    // 拡張子が zip/cbz なら、形式判定（先頭のマジック読み）より先に近道で一覧を作る。
+    // 中央ディレクトリが読めれば zip と確定するので、形式キャッシュへ覚えさせて以降の判定も省く。
+    // 読めない（7z の偽名など）ときは、従来どおり形式判定を通す。
+    if detect::has_zip_extension(path) {
+        if let Some(result) = zip::try_list_images_zip_fast(path, on_progress) {
+            detect::remember_zip(path);
+            return result;
+        }
+    }
     match detect::detect_format(path) {
         #[cfg(feature = "fmt-7z")]
         ArchiveFormat::SevenZ => sevenz::list_images_7z_with_progress(path, on_progress),
@@ -226,13 +243,53 @@ pub fn load_first_image(path: &Path) -> Option<image::DynamicImage> {
     if path.is_dir() {
         return folder::load_first_image_folder(path);
     }
+    // 拡張子が zip/cbz なら、形式判定（先頭のマジック読み。冷たいHDDでシーク1回）より先に、順読みを試す。
+    // 順読みは先頭の `PK\x03\x04` を自分で確かめるので、成功すれば zip と確定する（形式キャッシュにも覚えさせる）。
+    // 失敗したら、これまでどおり形式判定を通る。
+    let mut tried_sequential = false;
+    if detect::has_zip_extension(path) {
+        tried_sequential = true;
+        let t = std::time::Instant::now();
+        if let Some(img) = zip::load_first_image_sequential(path) {
+            detect::remember_zip(path);
+            crate::log_perf!("[perf/thumb] 先頭画像 順読み={:.1}ms（拡張子で先行）", t.elapsed().as_secs_f64() * 1000.0);
+            return Some(img);
+        }
+    }
     match detect::detect_format(path) {
         #[cfg(feature = "fmt-7z")]
         ArchiveFormat::SevenZ => sevenz::load_first_image_7z(path),
         #[cfg(feature = "fmt-tar")]
         ArchiveFormat::Tar => tar::load_first_image_tar(path),
         ArchiveFormat::Zip => {
-            zip::load_first_image_sequential(path).or_else(|| zip::load_first_image_via_archive(path))
+            // 計測: 順読み（先頭から読む。シーク少なめ）で取れたか、失敗して ZipArchive 経由に落ちたか。
+            let t = std::time::Instant::now();
+            if !tried_sequential {
+                if let Some(img) = zip::load_first_image_sequential(path) {
+                    crate::log_perf!("[perf/thumb] 先頭画像 順読み={:.1}ms", t.elapsed().as_secs_f64() * 1000.0);
+                    return Some(img);
+                }
+            }
+            let t_seq = t.elapsed();
+            // 順読みが使えない zip は、まず中央ディレクトリの近道で読む（`ZipArchive::new` は冷たいHDDで秒単位）。
+            // 近道で判断できなければ、これまでどおり ZipArchive 経由に戻る。
+            if let Some(result) = zip::load_first_image_fast(path) {
+                crate::log_perf!(
+                    "[perf/thumb] 先頭画像 順読み失敗({:.1}ms)→近道(中央ディレクトリ)={:.1}ms {}",
+                    t_seq.as_secs_f64() * 1000.0,
+                    (t.elapsed() - t_seq).as_secs_f64() * 1000.0,
+                    if result.is_some() { "OK" } else { "画像なし" },
+                );
+                return result;
+            }
+            let img = zip::load_first_image_via_archive(path);
+            crate::log_perf!(
+                "[perf/thumb] 先頭画像 順読み失敗({:.1}ms)→ZipArchive経由={:.1}ms {}",
+                t_seq.as_secs_f64() * 1000.0,
+                (t.elapsed() - t_seq).as_secs_f64() * 1000.0,
+                if img.is_some() { "OK" } else { "失敗" },
+            );
+            img
         }
     }
 }
@@ -264,17 +321,21 @@ pub(crate) fn unix_secs_to_date_key(secs: u64) -> u64 {
 
 /// (display_name, entry_name, date_key) のペア列から、ソート・衝突回避済みの
 /// `ImageEntry` 列を組み立てる（ZIP/7z/フォルダ共通処理）。
-pub(crate) fn finalize_entries(mut pairs: Vec<(String, String, u64)>) -> Vec<ImageEntry> {
-    // ファイル名優先、同名はentry_nameで安定ソート
-    pairs.sort_by(|(da, ea, _), (db, eb, _)| {
-        basename(da).cmp(basename(db)).then(ea.cmp(eb))
-    });
+pub(crate) fn finalize_entries(pairs: Vec<(String, String, u64)>) -> Vec<ImageEntry> {
+    // 呼び出し側の列挙順＝格納順。ソートで失われる前に連番を振る。
+    let mut pairs: Vec<(String, String, u64, usize)> = pairs
+        .into_iter()
+        .enumerate()
+        .map(|(i, (d, e, k))| (d, e, k, i))
+        .collect();
+    // ファイル名優先、同名は格納順で安定ソート（先に格納されたものが無印、後続に "_01" を付ける）
+    pairs.sort_by(|(da, _, _, ia), (db, _, _, ib)| basename(da).cmp(basename(db)).then(ia.cmp(ib)));
 
     // 衝突検出: 同じファイル名が2回目以降なら "stem_01.ext" 形式を付与
     let mut seen: HashMap<String, usize> = HashMap::new();
     let mut entries: Vec<ImageEntry> = pairs
         .into_iter()
-        .map(|(display_name, entry_name, date_key)| {
+        .map(|(display_name, entry_name, date_key, stored_index)| {
             let base = basename(&display_name).to_string();
             let count = seen.entry(base.clone()).or_insert(0);
             let final_display = if *count == 0 {
@@ -283,7 +344,7 @@ pub(crate) fn finalize_entries(mut pairs: Vec<(String, String, u64)>) -> Vec<Ima
                 collision_name(&base, *count)
             };
             *count += 1;
-            ImageEntry { display_name: final_display, entry_name, date_key }
+            ImageEntry { display_name: final_display, entry_name, date_key, stored_index }
         })
         .collect();
 
@@ -357,6 +418,43 @@ mod tests {
         assert!(!entries.is_empty(), "画像エントリが0件");
         let has_thumbs_db = entries.iter().any(|e| e.display_name == "Thumbs.db");
         assert!(!has_thumbs_db, "Thumbs.db が除外されていない");
+    }
+
+    #[test]
+    fn finalize_entries_records_stored_order_before_sorting() {
+        use super::finalize_entries;
+        // 格納順: z, a, sub/a（basename 衝突）, m
+        let pairs = vec![
+            ("z.webp".to_string(), "z.webp".to_string(), 0u64),
+            ("a.webp".to_string(), "a.webp".to_string(), 0),
+            ("sub/a.webp".to_string(), "sub/a.webp".to_string(), 0),
+            ("m.webp".to_string(), "m.webp".to_string(), 0),
+        ];
+        let entries = finalize_entries(pairs);
+        // 名前順に並ぶ（衝突は先に格納された方が無印、後続に _01）
+        let names: Vec<&str> = entries.iter().map(|e| e.display_name.as_str()).collect();
+        assert_eq!(names, ["a.webp", "a_01.webp", "m.webp", "z.webp"]);
+        let stored: Vec<usize> = entries.iter().map(|e| e.stored_index).collect();
+        assert_eq!(stored, [1, 2, 3, 0]);
+        // stored_index で並べ直すと元の列挙順に戻る
+        let mut by_stored: Vec<&super::ImageEntry> = entries.iter().collect();
+        by_stored.sort_by_key(|e| e.stored_index);
+        let entry_names: Vec<&str> = by_stored.iter().map(|e| e.entry_name.as_str()).collect();
+        assert_eq!(entry_names, ["z.webp", "a.webp", "sub/a.webp", "m.webp"]);
+    }
+
+    #[test]
+    fn finalize_entries_collision_prefers_earlier_stored_entry() {
+        use super::finalize_entries;
+        // パス順なら "a/x" < "b/x" だが、格納順で "b/x" が先なら "b/x" が無印になる
+        let pairs = vec![
+            ("b/x.webp".to_string(), "b/x.webp".to_string(), 0u64),
+            ("a/x.webp".to_string(), "a/x.webp".to_string(), 0),
+        ];
+        let entries = finalize_entries(pairs);
+        assert_eq!(entries[0].display_name, "x.webp");
+        assert_eq!(entries[0].entry_name, "b/x.webp");
+        assert_eq!(entries[1].display_name, "x_01.webp");
     }
 
     #[test]

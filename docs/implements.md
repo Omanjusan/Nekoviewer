@@ -72,6 +72,7 @@ Rust + egui（生winit + egui-wgpu、eframe不使用）で作る画像ビュー�
 | ファイルサイズ | ✓ |
 
 - 保存先はディレクトリごとではなく、`nekoviewer.state`にグローバル単一設定として保存する
+- 操作はメニューバーの「ソート」展開メニュー。評価キー（スコア・訪問回数）もある。ビューアーを開くときのデフォルトソート（任意）も同じメニューで指定する。詳細は [features/sort-menu.md](features/sort-menu.md) 参照
 
 ---
 
@@ -88,7 +89,7 @@ Rust + egui（生winit + egui-wgpu、eframe不使用）で作る画像ビュー�
 | `Enter` | ズーム（実寸 ⇔ フィット）切替 |
 | `Alt`+`Enter` | フルスクリーン切替（擬似フルスクリーン） |
 | `Esc` | クローズ（フルスクリーン解除も兼ねる） |
-| `F5`〜`F8` | ウィンドウ位置・サイズのスロット適用/保存 |
+| `F5`〜`F8` | ウィンドウ位置・サイズのスロット適用（保存・削除は `[ウィンドウ位置]` メニュー。[features/window-position-menu.md](features/window-position-menu.md)） |
 
 - マルチウィンドウ対応: 各ビューアが独立したOSネイティブウィンドウとして開く（生winit採用によって実現）
 
@@ -117,7 +118,7 @@ Rust + egui（生winit + egui-wgpu、eframe不使用）で作る画像ビュー�
 
 TOMLではなく独自の`key = value` + `[section]`形式。実行ファイル隣に2ファイルに分離して保存する。
 
-- `nekoviewer.conf`（`config.rs`、起動時のみ読込）: `[startup]`（use_last_dir/fixed_dir）、`[viewer]`（filter/default_slot）、`[thumbnail]`（filter）、`[grid]`（thumb_size）、`[worker]`（decode_threads）、`[cache]`（storage/cache_total_mb/anim_*）、`[log]`（perf/key/common）
+- `nekoviewer.conf`（`config.rs`、起動時のみ読込）: `[startup]`（use_last_dir/fixed_dir）、`[viewer]`（filter/default_slot。実行中は state の app_default_slot が優先され、`[ウィンドウ位置]` メニューのチェックで変わる）、`[thumbnail]`（filter）、`[grid]`（thumb_size）、`[worker]`（decode_threads）、`[cache]`（storage/cache_total_mb/anim_*）、`[log]`（perf/key/common）
 - `nekoviewer.state`（`gui_config.rs`、実行中に随時上書き保存）: last_dir/window_size/sort_key/sort_ascending/lang/viewer_zoom/fullscreen/thumbbar設定等
 
 ---
@@ -136,6 +137,11 @@ nekoviewer /path/to/dir
 
 # キャッシュ予算の明示指定
 nekoviewer --cache-max-mb 2048
+
+# 起動するフォルダ直下の生成済みサムネを、起動前に破棄する（デバッグ用。再生成の確認に使う）。
+# 位置引数があればその場所（ファイルなら親フォルダ）、無ければ前回の場所が対象（前回のタブが仮想フォルダなら、そのノードの実パス）。直下のみ
+nekoviewer --clear-thumbs
+nekoviewer --clear-thumbs /path/to/some.zip   # 親フォルダのサムネを破棄し、some.zip をビューアーで開く
 
 # 引数なしは use_last_dir → fixed_dir → ホームディレクトリ → ルートの順にフォールバック
 nekoviewer

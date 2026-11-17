@@ -1,4 +1,4 @@
-//! タグ検索の走査エンジン。spread DB のID台帳を全件走査し、有効タグを全て持つ（AND）
+//! タグ検索の走査エンジン。spread DB のID台帳を全件走査し、有効タグに当たる（既定はOR、AND切替可）
 //! ファイルをバックグラウンドで拾って、一定件数ごとのチャンクで送る。
 //!
 //! - 条件が空（有効タグなし）なら何も走査せず、すぐ完了を返す（空表示の仕様）。
@@ -25,22 +25,50 @@ use crate::tag_manager::TAG_MAIN_UNSET_ID;
 /// 1チャンクに詰める最大件数。
 pub const CHUNK_SIZE: usize = 200;
 
-/// 検索条件。有効タグから、実タグの必須集合と「メイン未設定を要求するか」に分けて持つ。
+/// 有効タグの組み合わせ方。既定はOR（どれか1つ持てば一致）、ANDは全部持つファイルだけ一致。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TagMatchMode {
+    #[default]
+    Or,
+    And,
+}
+
+impl TagMatchMode {
+    /// state ファイル用の文字列。
+    pub fn to_state_str(self) -> &'static str {
+        match self {
+            Self::Or => "or",
+            Self::And => "and",
+        }
+    }
+
+    pub fn from_state_str(s: &str) -> Option<Self> {
+        match s.trim() {
+            "or" => Some(Self::Or),
+            "and" => Some(Self::And),
+            _ => None,
+        }
+    }
+}
+
+/// 検索条件。有効タグから、実タグの集合と「メイン未設定を要求するか」に分けて持つ。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TagQuery {
     required: HashSet<u64>,
     want_main_unset: bool,
     main_ids: HashSet<u64>,
+    mode: TagMatchMode,
 }
 
 impl TagQuery {
     /// `enabled`: 有効にしたタグ（未設定の疑似タグ `TAG_MAIN_UNSET_ID` を含みうる）。
     /// `main_ids`: メインカテゴリに属するtier_idの全体（未設定の判定に使う）。
-    pub fn new(enabled: &HashSet<u64>, main_ids: HashSet<u64>) -> Self {
+    pub fn new(enabled: &HashSet<u64>, main_ids: HashSet<u64>, mode: TagMatchMode) -> Self {
         Self {
             required: enabled.iter().copied().filter(|&id| id != TAG_MAIN_UNSET_ID).collect(),
             want_main_unset: enabled.contains(&TAG_MAIN_UNSET_ID),
             main_ids,
+            mode,
         }
     }
 
@@ -48,12 +76,15 @@ impl TagQuery {
         self.required.is_empty() && !self.want_main_unset
     }
 
-    /// ファイルのタグ集合が条件を満たすか（全部AND）。
+    /// ファイルのタグ集合が条件を満たすか。
+    /// AND: 有効タグを全部持ち、（未設定指定なら）メインタグも無い。
+    /// OR: 有効タグのどれか1つを持つ、または（未設定指定で）メインタグが無い。
     pub fn matches(&self, tags: &[u64]) -> bool {
-        if !self.required.iter().all(|id| tags.contains(id)) {
-            return false;
+        let unset_hit = self.want_main_unset && !tags.iter().any(|id| self.main_ids.contains(id));
+        match self.mode {
+            TagMatchMode::And => self.required.iter().all(|id| tags.contains(id)) && (!self.want_main_unset || unset_hit),
+            TagMatchMode::Or => unset_hit || self.required.iter().any(|id| tags.contains(id)),
         }
-        !self.want_main_unset || !tags.iter().any(|id| self.main_ids.contains(id))
     }
 }
 
@@ -164,7 +195,49 @@ mod tests {
 
     // main tier = 1,2 / 属性 tier = 10,11,12
     fn query(enabled: &[u64]) -> TagQuery {
-        TagQuery::new(&set(enabled), set(&[1, 2]))
+        TagQuery::new(&set(enabled), set(&[1, 2]), TagMatchMode::And)
+    }
+
+    fn query_or(enabled: &[u64]) -> TagQuery {
+        TagQuery::new(&set(enabled), set(&[1, 2]), TagMatchMode::Or)
+    }
+
+    #[test]
+    fn or_matches_any_enabled_tag() {
+        let q = query_or(&[10, 11]);
+        assert!(q.matches(&[10]));
+        assert!(q.matches(&[11, 1]));
+        assert!(q.matches(&[10, 11, 12]));
+        assert!(!q.matches(&[12]));
+        assert!(!q.matches(&[]));
+    }
+
+    #[test]
+    fn or_with_main_unset_is_one_more_alternative() {
+        let q = query_or(&[TAG_MAIN_UNSET_ID, 10]);
+        assert!(q.matches(&[]), "メイン無し＝未設定に当たる");
+        assert!(q.matches(&[11]), "メイン無し＝未設定に当たる");
+        assert!(q.matches(&[1, 10]), "メインがあっても属性10に当たる");
+        assert!(!q.matches(&[1, 11]), "メインがあり、属性10も無い");
+        // 未設定だけのORは、ANDと同じ
+        assert!(query_or(&[TAG_MAIN_UNSET_ID]).matches(&[10]));
+        assert!(!query_or(&[TAG_MAIN_UNSET_ID]).matches(&[2]));
+    }
+
+    #[test]
+    fn single_enabled_tag_is_same_in_or_and_and() {
+        for tags in [&[][..], &[10], &[11], &[1, 10]] {
+            assert_eq!(query_or(&[10]).matches(tags), query(&[10]).matches(tags));
+        }
+    }
+
+    #[test]
+    fn match_mode_state_string_roundtrips() {
+        for m in [TagMatchMode::Or, TagMatchMode::And] {
+            assert_eq!(TagMatchMode::from_state_str(m.to_state_str()), Some(m));
+        }
+        assert_eq!(TagMatchMode::from_state_str("xx"), None);
+        assert_eq!(TagMatchMode::default(), TagMatchMode::Or);
     }
 
     #[test]

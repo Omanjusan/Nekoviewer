@@ -16,6 +16,29 @@ use crate::toolbar::{BAR_ITEM_COUNT, DEFAULT_BAR_ORDER, ViewerBarItem, bar_order
 use crate::translate::TranslateConfig;
 use crate::tool_palette::{PaletteState, PaletteSlotContent, SLOT_COUNT, slot_content_to_id, slot_content_from_id};
 
+/// ビューアーの既定ソートキーを state ファイルの値へ変換する。
+pub fn reader_sort_key_to_state(key: crate::types::ReaderSortKey) -> &'static str {
+    match key {
+        crate::types::ReaderSortKey::Name => "name",
+        crate::types::ReaderSortKey::Natural => "natural",
+        crate::types::ReaderSortKey::NaturalLayer => "natural_layer",
+        crate::types::ReaderSortKey::Date => "date",
+        crate::types::ReaderSortKey::Stored => "stored",
+    }
+}
+
+/// state ファイルの値からビューアーの既定ソートキーを復元する。未知の値は None（＝名前に戻る）。
+pub fn reader_sort_key_from_state(s: &str) -> Option<crate::types::ReaderSortKey> {
+    match s.trim() {
+        "name" => Some(crate::types::ReaderSortKey::Name),
+        "natural" => Some(crate::types::ReaderSortKey::Natural),
+        "natural_layer" => Some(crate::types::ReaderSortKey::NaturalLayer),
+        "date" => Some(crate::types::ReaderSortKey::Date),
+        "stored" => Some(crate::types::ReaderSortKey::Stored),
+        _ => None,
+    }
+}
+
 // ── State ファイル（動的状態: 最後のディレクトリ・ウィンドウサイズ）────────────
 
 pub struct SortState {
@@ -32,13 +55,26 @@ impl Default for SortState {
 }
 
 /// アーカイブ内サムネイルバーの配置。ビューアー画面を軸とした表示位置。
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ThumbbarPos {
     Left,
     Right,
     Top,
     Bottom,
     None,
+}
+
+impl ThumbbarPos {
+    /// パレットの切替ボタン用の巡回: OFF→下→左→上→右→OFF。
+    pub fn next_cycle(self) -> Self {
+        match self {
+            ThumbbarPos::None => ThumbbarPos::Bottom,
+            ThumbbarPos::Bottom => ThumbbarPos::Left,
+            ThumbbarPos::Left => ThumbbarPos::Top,
+            ThumbbarPos::Top => ThumbbarPos::Right,
+            ThumbbarPos::Right => ThumbbarPos::None,
+        }
+    }
 }
 
 pub(crate) fn parse_thumbbar_pos(s: &str) -> ThumbbarPos {
@@ -147,7 +183,6 @@ pub struct ViewerConfig {
     /// ページ操作停滞後、サムネバーを自動で消すまでの待機時間(ms)。0 = 常時表示
     pub thumbbar_idle_hide_ms: u64,
     /// true = サムネバーを本画像の前面にオーバーレイ表示（本画像はサムネバー領域を意識せず描画）
-    pub thumbbar_overlap: bool,
     /// 現在地マーカーの色(R)
     pub thumbbar_marker_r: u8,
     /// 現在地マーカーの色(G)
@@ -166,9 +201,22 @@ pub struct ViewerConfig {
     /// false = デコード時のOrientation適用をスキップする（誤ったOrientationタグ対策）。
     /// 永続設定（save_state/load_state対象）。ビューアーのみに効き、サムネイルには影響しない。
     pub exif_orientation_enabled: bool,
+    /// P8: 表示サイズが元画像にほぼ等しい（縮小率0.85以上）ページを、CPUで縮小せず元の大きさのまま
+    /// GPUに任せるか。ON = 縮小の6〜15ms/ページが消える代わりに、縮小の画質がGPUの補間になる。
+    /// 既定ON。永続設定。効くのは「ウィンドウに追従して再デコード」中の通常表示（原寸・虫眼鏡・サムネは対象外）。
+    pub near_unity_skip_enabled: bool,
     /// 画像情報（解像度・ページ数）の右下オーバーレイを表示するか。既定ON。
     /// 永続設定。ツールパレットのトグル「画像情報表示」で切り替える。
     pub image_info_visible: bool,
+    /// ウィンドウモードのメニューバー（slot_bar）を普段は引っ込め、上端ホバーで出すか。既定OFF。
+    /// 永続設定。フルスクリーン専用バーには影響しない。
+    pub menubar_autohide: bool,
+    /// ビューアーで保存済みソート条件が無いアーカイブを開いたときのソートキー。None = 指定なし
+    /// （従来どおり名前・昇順）。永続設定。エクスプローラーのソートメニュー末尾
+    /// 「ビューアーのデフォルト（任意）」で変える（選択中のキーをもう一度押すとNone）。
+    pub default_sort_key: Option<crate::types::ReaderSortKey>,
+    /// 同上の昇順(true)/降順(false)。既定は昇順。キーがNoneの間も向きは覚えておく。
+    pub default_sort_ascending: bool,
     /// アーカイブ末尾の評価オーバーレイ（スコアリング）を出すか。既定ON。
     /// 永続設定。エクスプローラーのメニューバーのボタンで切り替える。OFFでも訪問回数の記録・
     /// サムネの評価帯・score filter・保存済みの評価値は変わらない。
@@ -202,6 +250,15 @@ pub struct ViewerConfig {
     /// 疑似コマ送りモードのON/OFF。非永続・実行時のみ（ツールパレットのマスで切替）。
     /// 虫眼鏡モードの上のサブモードなので、虫眼鏡がOFFの間は常にOFF。
     pub koma_on: bool,
+    /// 虫眼鏡の上のフィット基準軸（contain／幅／高さ）。非永続・ビューアー窓のセッション限り。
+    /// 書庫を切り替えると contain へ戻る。コマモード中は無視される。
+    pub fit_mode: crate::magnifier::FitMode,
+    /// 幅/高さフィットが虫眼鏡モードを立てた（=その前は虫眼鏡がOFFだった）か。全体へ戻すときに虫眼鏡も
+    /// 元のOFFへ戻すための記録。`set_fit_mode` だけが書き換える。非永続。
+    pub fit_entered_magnifier: bool,
+    /// 幅/高さフィット中のホイールを「拡縮」ではなく「スクロール」にするか。非永続・ウィンドウのセッション限り
+    /// （書庫を切り替えても保持する）。フィット中以外・コマモード中は無視され、常に拡縮になる。
+    pub wheel_scroll: bool,
     /// 虫眼鏡モードの設定値（上限倍率・バー幅など）。現状は既定値のみで永続化しない。
     pub magnifier: crate::magnifier::MagnifierConfig,
     /// GPUテクスチャを保持するページ窓のVRAM予算など。非永続（現状は既定値のみ）。
@@ -219,7 +276,6 @@ impl Default for ViewerConfig {
             thumbbar_pos: ThumbbarPos::None,
             thumbbar_thumb_size: 96,
             thumbbar_idle_hide_ms: 3000,
-            thumbbar_overlap: false,
             thumbbar_marker_r: 230,
             thumbbar_marker_g: 169,
             thumbbar_marker_b: 79,
@@ -227,7 +283,11 @@ impl Default for ViewerConfig {
             rotation_carry_over: false,
             rotation_session_angle: 0,
             exif_orientation_enabled: true,
+            near_unity_skip_enabled: true,
             image_info_visible: true,
+            menubar_autohide: false,
+            default_sort_key: None,
+            default_sort_ascending: true,
             rating_overlay_enabled: true,
             bar_order: DEFAULT_BAR_ORDER,
             transition_kind: TransitionKind::HorizontalSlide,
@@ -240,8 +300,35 @@ impl Default for ViewerConfig {
             tool_palette: PaletteState::default(),
             magnifier_on: false,
             koma_on: false,
+            fit_mode: crate::magnifier::FitMode::default(),
+            fit_entered_magnifier: false,
+            wheel_scroll: false,
             magnifier: crate::magnifier::MagnifierConfig::default(),
             texture_window: crate::texture_window::TextureWindowConfig::default(),
+        }
+    }
+}
+
+impl ViewerConfig {
+    /// フィット基準軸を切り替える（ツールバー・ツールパレット共通）。幅/高さフィットは虫眼鏡の上の
+    /// サブモードなので、全体から幅/高さへ入るときに虫眼鏡がOFFならONにし、その事実を記録する。
+    /// 全体へ戻すときは、記録があれば虫眼鏡も元のOFFへ戻す（ダブルクリックなどの通常動作が戻る）。
+    /// 虫眼鏡が元々ONだったときは、全体へ戻してもONのまま。幅⇔高さの切替は虫眼鏡に触れない。
+    pub fn set_fit_mode(&mut self, mode: crate::magnifier::FitMode) {
+        use crate::magnifier::FitMode;
+        let was = self.fit_mode;
+        self.fit_mode = mode;
+        if was == FitMode::Contain && mode != FitMode::Contain {
+            if !self.magnifier_on {
+                self.magnifier_on = true;
+                self.fit_entered_magnifier = true;
+            }
+        } else if was != FitMode::Contain && mode == FitMode::Contain {
+            if self.fit_entered_magnifier {
+                self.magnifier_on = false;
+                self.koma_on = false;
+            }
+            self.fit_entered_magnifier = false;
         }
     }
 }
@@ -343,6 +430,8 @@ pub struct TabPositions {
     pub virtual_node: Option<VirtualPosition>,
     /// タグ検索タブの左ペイン幅(px)。位置ではなくレイアウトなので `use_last_dir` の影響を受けない。
     pub tag_search_left_width: Option<u32>,
+    /// タグ検索タブの有効タグの組み合わせ方（OR/AND）。レイアウトと同じく位置ではない設定。未保存=OR。
+    pub tag_search_mode: Option<crate::tag_search::TagMatchMode>,
 }
 
 impl TabPositions {
@@ -363,6 +452,9 @@ impl TabPositions {
         }
         if let Some(w) = self.tag_search_left_width {
             out.push_str(&format!("tab_tag_search_width={w}\n"));
+        }
+        if let Some(m) = self.tag_search_mode {
+            out.push_str(&format!("tab_tag_search_mode={}\n", m.to_state_str()));
         }
         out
     }
@@ -390,6 +482,8 @@ pub struct AppState {
     /// サムネカード情報帯の「更新日時」表示に使う日付書式。設定ダイアログの
     /// エクスプローラータブで編集し、state には card_date_* の6キーに分割して保存する。
     pub card_date_format: CardDateFormat,
+    /// カード帯のカスタム書式・有効な導線・背景の透過度。state には card_band_* の3キーで保存する。
+    pub card_band: crate::card_band::BandSettings,
     /// 設定ダイアログから編集された AppConfig 上書き値。
     /// None のものは config.rs のハードコード既定値をそのまま使う。一度でもダイアログで
     /// 変更するとこの state 側の値が以後その既定値より優先される（次回起動反映）。
@@ -403,6 +497,7 @@ pub struct AppState {
     pub app_log_perf: Option<bool>,
     pub app_log_key: Option<bool>,
     pub app_log_common: Option<bool>,
+    pub app_log_thumb_refactor: Option<bool>,
     /// その他タブで編集する起動時フォルダ設定。
     pub app_startup_use_last_dir: Option<bool>,
     pub app_startup_fixed_dir: Option<PathBuf>,
@@ -413,14 +508,35 @@ pub struct AppState {
     pub app_unconfirmed_retention_days: Option<u32>,
     /// DBバックアップの世代数（1〜10）。
     pub app_backup_generations: Option<u32>,
+    /// タグマスターの世代数（1〜10）。
+    pub app_tag_master_generations: Option<u32>,
+    /// 一括タグ取得の、1カテゴリあたりの新規要素数の上限。
+    pub app_tag_new_element_limit: Option<u32>,
+    /// 一括タグ取得で新規登録する要素の主表記の言語（`follow` / `japanese` / `english`）。
+    pub app_tag_register_name: Option<String>,
+    /// 手すき時間のサムネ生成（ON/OFF、待ち秒数1〜30、ビューアーを開いている間も続けるか）。
+    pub app_idle_thumb_generation: Option<bool>,
+    pub app_idle_thumb_wait_secs: Option<u32>,
+    pub app_idle_thumb_while_viewer: Option<bool>,
     /// フェーズ4b: decode_threads/default_slotもGUI編集可能にしこちらへ統合。
     pub app_decode_threads: Option<usize>,
     /// 虫眼鏡の拡大縮小の割り当てを知らせ済みか（1度だけ表示するための記録）。
     pub app_magnifier_zoom_notice_shown: Option<bool>,
     /// `max_decode_edge` の既定値底上げ（1920→4000）の確認を済ませたか。
     pub app_max_decode_edge_prompt_answered: Option<bool>,
-    /// 「フォルダ本アクセス」初回警告を「次回から表示しない」済みで確認したか。
-    pub app_folder_book_access_warning_seen: Option<bool>,
+    /// アーカイブ内TXTの画像ページ設定（`TextPageOptions::to_state_str` の形）。
+    pub app_text_page: Option<crate::fs::archive::text_page::TextPageOptions>,
+    /// 一括タグ付けの照合の切替項目（`MatchOptions::to_state_str` の形）。
+    pub app_tag_match: Option<crate::tag_similarity::MatchOptions>,
+    /// 一括タグ付けの判定で学習結果を使うか。
+    pub app_tag_learning_use: Option<bool>,
+    pub app_tag_confirm_default_review: Option<bool>,
+    /// 一括タグ付けの確認窓の冒頭の説明を開いた状態にするか。
+    pub app_tag_confirm_intro_open: Option<bool>,
+    /// 学習の案内を今後表示しない。
+    pub app_tag_learn_intro_hidden: Option<bool>,
+    /// 次回起動時に XWayland で起動するか。
+    pub app_launch_x11: Option<bool>,
     /// 前回起動したときのバージョン。空文字は未記録として None に落とす。
     pub app_last_run_version: Option<String>,
     /// 外側Noneはキー未記載（ハードコード既定値を使う）、内側Noneはユーザーが明示的に選んだ「なし」。
@@ -446,6 +562,8 @@ pub struct AppState {
     pub explorer_list_cols: String,
     /// 似ている画像の「？」を出す類似度(%)のしきい値。空は既定。値はエクスプローラー側で解釈する。
     pub explorer_sim_threshold: String,
+    /// UIベースカラー（ダーク／ライト）。未記載・不明な値はダーク。
+    pub theme_mode: crate::ui_theme::ThemeMode,
 }
 
 impl Default for AppState {
@@ -461,6 +579,7 @@ impl Default for AppState {
             card_info_mode: "off".to_string(),
             card_rating_mode: "off".to_string(),
             card_date_format: CardDateFormat::default(),
+            card_band: crate::card_band::BandSettings::default(),
             app_cache_total_mb: None,
             app_anim_ring_min_frames: None,
             app_anim_ring_max_frames: None,
@@ -470,16 +589,29 @@ impl Default for AppState {
             app_log_perf: None,
             app_log_key: None,
             app_log_common: None,
+            app_log_thumb_refactor: None,
             app_startup_use_last_dir: None,
             app_startup_fixed_dir: None,
             app_thumb_filter: None,
             app_thumb_size: None,
             app_unconfirmed_retention_days: None,
             app_backup_generations: None,
+            app_tag_master_generations: None,
+            app_tag_new_element_limit: None,
+            app_tag_register_name: None,
+            app_idle_thumb_generation: None,
+            app_idle_thumb_wait_secs: None,
+            app_idle_thumb_while_viewer: None,
             app_decode_threads: None,
             app_magnifier_zoom_notice_shown: None,
             app_max_decode_edge_prompt_answered: None,
-            app_folder_book_access_warning_seen: None,
+            app_text_page: None,
+            app_tag_match: None,
+            app_tag_learning_use: None,
+            app_tag_confirm_default_review: None,
+            app_tag_confirm_intro_open: None,
+            app_tag_learn_intro_hidden: None,
+            app_launch_x11: None,
             app_last_run_version: None,
             app_default_slot: None,
             translate_cfg: TranslateConfig::default(),
@@ -492,6 +624,7 @@ impl Default for AppState {
             explorer_view_mode: "card:s".to_string(),
             explorer_list_cols: String::new(),
             explorer_sim_threshold: String::new(),
+            theme_mode: crate::ui_theme::ThemeMode::default(),
         }
     }
 }
@@ -530,6 +663,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut tab_virtual_id: Option<u32> = None;
     let mut tab_virtual_path: Option<PathBuf> = None;
     let mut tab_tag_search_width: Option<u32> = None;
+    let mut tab_tag_search_mode: Option<crate::tag_search::TagMatchMode> = None;
     let mut tree_sort_virtual: Option<crate::tree_sort::TreeSort> = None;
     let mut tree_sort_real: Option<crate::tree_sort::TreeSort> = None;
     let mut window_width: Option<u32> = None;
@@ -550,9 +684,13 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut tag_preview_high_quality: Option<bool> = None;
     let mut card_info_mode: Option<String> = None;
     let mut card_rating_mode: Option<String> = None;
+    let mut card_band_active = String::new();
+    let mut card_band_custom = String::new();
+    let mut card_band_transparency: Option<String> = None;
     let mut explorer_view_mode: Option<String> = None;
     let mut explorer_list_cols: Option<String> = None;
     let mut explorer_sim_threshold: Option<String> = None;
+    let mut theme_mode = crate::ui_theme::ThemeMode::default();
     // カード日付書式の6キー（未記載は CardDateFormat::from_state 側で各既定へフォールバック）
     let mut card_date_mode = String::new();
     let mut card_date_auto_style = String::new();
@@ -570,28 +708,44 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut app_log_perf: Option<bool> = None;
     let mut app_log_key: Option<bool> = None;
     let mut app_log_common: Option<bool> = None;
+    let mut app_log_thumb_refactor: Option<bool> = None;
     let mut app_startup_use_last_dir: Option<bool> = None;
     let mut app_startup_fixed_dir: Option<PathBuf> = None;
     let mut app_thumb_filter: Option<ResizeFilter> = None;
     let mut app_thumb_size: Option<u32> = None;
     let mut app_unconfirmed_retention_days: Option<u32> = None;
     let mut app_backup_generations: Option<u32> = None;
+    let mut app_tag_master_generations: Option<u32> = None;
+    let mut app_tag_new_element_limit: Option<u32> = None;
+    let mut app_tag_register_name: Option<String> = None;
+    let mut app_idle_thumb_generation: Option<bool> = None;
+    let mut app_idle_thumb_wait_secs: Option<u32> = None;
+    let mut app_idle_thumb_while_viewer: Option<bool> = None;
     let mut app_decode_threads: Option<usize> = None;
     let mut app_magnifier_zoom_notice_shown: Option<bool> = None;
     let mut app_max_decode_edge_prompt_answered: Option<bool> = None;
-    let mut app_folder_book_access_warning_seen: Option<bool> = None;
+    let mut app_text_page: Option<crate::fs::archive::text_page::TextPageOptions> = None;
+    let mut app_tag_match: Option<crate::tag_similarity::MatchOptions> = None;
+    let mut app_tag_learning_use: Option<bool> = None;
+    let mut app_tag_confirm_default_review: Option<bool> = None;
+    let mut app_tag_confirm_intro_open: Option<bool> = None;
+    let mut app_tag_learn_intro_hidden: Option<bool> = None;
+    let mut app_launch_x11: Option<bool> = None;
     let mut app_last_run_version: Option<String> = None;
     let mut app_default_slot: Option<Option<usize>> = None;
     let mut thumbbar_pos: Option<ThumbbarPos> = None;
     let mut thumbbar_thumb_size: Option<u32> = None;
     let mut thumbbar_idle_hide_ms: Option<u64> = None;
-    let mut thumbbar_overlap: Option<bool> = None;
     let mut thumbbar_marker_r: Option<u8> = None;
     let mut thumbbar_marker_g: Option<u8> = None;
     let mut thumbbar_marker_b: Option<u8> = None;
     let mut thumbbar_marker_a: Option<u8> = None;
     let mut exif_orientation_enabled: Option<bool> = None;
+    let mut near_unity_skip_enabled: Option<bool> = None;
     let mut image_info_visible: Option<bool> = None;
+    let mut menubar_autohide: Option<bool> = None;
+    let mut viewer_default_sort_key: Option<crate::types::ReaderSortKey> = None;
+    let mut viewer_default_sort_ascending: Option<bool> = None;
     let mut rating_overlay_enabled: Option<bool> = None;
     let mut magnifier_notch_step: Option<crate::magnifier::NotchStep> = None;
     let mut magnifier_detail_ticks: Option<bool> = None;
@@ -625,6 +779,10 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut image_filter_order: Option<[crate::image_filter::FilterStage; crate::image_filter::FILTER_STAGE_COUNT]> = None;
     let mut tool_palette_pos_x: Option<f32> = None;
     let mut tool_palette_pos_y: Option<f32> = None;
+    let mut tool_palette_anchor_h: Option<crate::tool_palette::Align> = None;
+    let mut tool_palette_anchor_v: Option<crate::tool_palette::Align> = None;
+    let mut tool_palette_offset_x: Option<f32> = None;
+    let mut tool_palette_offset_y: Option<f32> = None;
     let mut tool_palette_locked: Option<bool> = None;
     let mut tool_palette_auto_hide_locked: Option<bool> = None;
     let mut tool_palette_opacity_pct: Option<u8> = None;
@@ -660,6 +818,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                         .filter(|s| s.key != crate::tree_sort::TreeSortKey::Registration);
                 }
                 "tab_tag_search_width" => { tab_tag_search_width = v.trim().parse().ok(); }
+                "tab_tag_search_mode" => { tab_tag_search_mode = crate::tag_search::TagMatchMode::from_state_str(v); }
                 "tab_virtual_node" => { tab_virtual_id = v.trim().parse().ok(); }
                 "tab_virtual_path" => {
                     let v = v.trim();
@@ -694,7 +853,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "rating_sort_ascending" => { rating_sort_ascending = v.trim().parse().ok(); }
                 "lang" => {
                     let v = v.trim();
-                    if matches!(v, "ja" | "en" | "cn") {
+                    if matches!(v, "ja" | "en" | "cn" | "jazh") {
                         lang = Some(v.to_string());
                     }
                 }
@@ -705,9 +864,13 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "tag_preview_high_quality" => { tag_preview_high_quality = v.trim().parse().ok(); }
                 "card_info_mode" => { card_info_mode = Some(v.trim().to_string()); }
                 "card_rating_mode" => { card_rating_mode = Some(v.trim().to_string()); }
+                "card_band_active" => { card_band_active = v.trim().to_string(); }
+                "card_band_custom" => { card_band_custom = v.trim().to_string(); }
+                "card_band_transparency" => { card_band_transparency = Some(v.trim().to_string()); }
                 "explorer_view_mode" => { explorer_view_mode = Some(v.trim().to_string()); }
                 "explorer_list_cols" => { explorer_list_cols = Some(v.trim().to_string()); }
                 "explorer_sim_threshold" => { explorer_sim_threshold = Some(v.trim().to_string()); }
+                "theme" => { theme_mode = crate::ui_theme::ThemeMode::from_state_str(v); }
                 "card_date_mode" => { card_date_mode = v.trim().to_string(); }
                 "card_date_auto_style" => { card_date_auto_style = v.trim().to_string(); }
                 "card_date_order" => { card_date_order = v.trim().to_string(); }
@@ -730,6 +893,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "app_log_perf" => { app_log_perf = v.trim().parse().ok(); }
                 "app_log_key" => { app_log_key = v.trim().parse().ok(); }
                 "app_log_common" => { app_log_common = v.trim().parse().ok(); }
+                "app_log_thumb_refactor" => { app_log_thumb_refactor = v.trim().parse().ok(); }
                 "app_startup_use_last_dir" => { app_startup_use_last_dir = v.trim().parse().ok(); }
                 "app_startup_fixed_dir" => {
                     let v = v.trim();
@@ -742,10 +906,22 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "app_thumb_size" => { app_thumb_size = v.trim().parse().ok(); }
                 "app_unconfirmed_retention_days" => { app_unconfirmed_retention_days = v.trim().parse().ok(); }
                 "app_backup_generations" => { app_backup_generations = v.trim().parse().ok(); }
+                "app_tag_master_generations" => { app_tag_master_generations = v.trim().parse().ok(); }
+                "app_tag_new_element_limit" => { app_tag_new_element_limit = v.trim().parse().ok(); }
+                "app_tag_register_name" => { app_tag_register_name = Some(v.trim().to_string()); }
+                "app_idle_thumb_generation" => { app_idle_thumb_generation = v.trim().parse().ok(); }
+                "app_idle_thumb_wait_secs" => { app_idle_thumb_wait_secs = v.trim().parse().ok(); }
+                "app_idle_thumb_while_viewer" => { app_idle_thumb_while_viewer = v.trim().parse().ok(); }
                 "app_decode_threads" => { app_decode_threads = v.trim().parse().ok(); }
                 "app_magnifier_zoom_notice_shown" => { app_magnifier_zoom_notice_shown = v.trim().parse().ok(); }
                 "app_max_decode_edge_prompt_answered" => { app_max_decode_edge_prompt_answered = v.trim().parse().ok(); }
-                "app_folder_book_access_warning_seen" => { app_folder_book_access_warning_seen = v.trim().parse().ok(); }
+                "app_text_page" => { app_text_page = crate::fs::archive::text_page::TextPageOptions::from_state_str(v); }
+                "app_tag_match" => { app_tag_match = crate::tag_similarity::MatchOptions::from_state_str(v); }
+                "app_tag_learning_use" => { app_tag_learning_use = v.parse::<bool>().ok(); }
+                "app_tag_confirm_default_review" => { app_tag_confirm_default_review = v.parse::<bool>().ok(); }
+                "app_tag_confirm_intro_open" => { app_tag_confirm_intro_open = v.parse::<bool>().ok(); }
+                "app_tag_learn_intro_hidden" => { app_tag_learn_intro_hidden = v.parse::<bool>().ok(); }
+                "app_launch_x11" => { app_launch_x11 = v.trim().parse().ok(); }
                 "app_last_run_version" => { app_last_run_version = Some(v.trim().to_string()).filter(|s| !s.is_empty()); }
                 "app_default_slot" => {
                     app_default_slot = Some(match v.trim() {
@@ -759,13 +935,18 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "thumbbar_pos" => { thumbbar_pos = Some(parse_thumbbar_pos(v.trim())); }
                 "thumbbar_thumb_size" => { thumbbar_thumb_size = v.trim().parse().ok(); }
                 "thumbbar_idle_hide_ms" => { thumbbar_idle_hide_ms = v.trim().parse().ok(); }
-                "thumbbar_overlap" => { thumbbar_overlap = v.trim().parse().ok(); }
+                // 旧設定「重ねて表示」。サムネバーはオーバーレイ表示に一本化したため読み捨てる。
+                "thumbbar_overlap" => {}
                 "thumbbar_marker_r" => { thumbbar_marker_r = v.trim().parse().ok(); }
                 "thumbbar_marker_g" => { thumbbar_marker_g = v.trim().parse().ok(); }
                 "thumbbar_marker_b" => { thumbbar_marker_b = v.trim().parse().ok(); }
                 "thumbbar_marker_a" => { thumbbar_marker_a = v.trim().parse().ok(); }
                 "exif_orientation_enabled" => { exif_orientation_enabled = v.trim().parse().ok(); }
+                "near_unity_skip_enabled" => { near_unity_skip_enabled = v.trim().parse().ok(); }
                 "image_info_visible" => { image_info_visible = v.trim().parse().ok(); }
+                "menubar_autohide" => { menubar_autohide = v.trim().parse().ok(); }
+                "viewer_default_sort_key" => { viewer_default_sort_key = reader_sort_key_from_state(v); }
+                "viewer_default_sort_ascending" => { viewer_default_sort_ascending = v.trim().parse().ok(); }
                 "rating_overlay_enabled" => { rating_overlay_enabled = v.trim().parse().ok(); }
                 "magnifier_notch_step" => { magnifier_notch_step = crate::magnifier::NotchStep::from_state_str(v); }
                 "magnifier_detail_ticks" => { magnifier_detail_ticks = v.trim().parse().ok(); }
@@ -840,6 +1021,10 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "image_filter_sharpness_enabled" => { image_filter_sharpness_enabled = v.trim().parse().ok(); }
                 "tool_palette_pos_x" => { tool_palette_pos_x = v.trim().parse().ok(); }
                 "tool_palette_pos_y" => { tool_palette_pos_y = v.trim().parse().ok(); }
+                "tool_palette_anchor_h" => { tool_palette_anchor_h = crate::tool_palette::Align::from_id(v); }
+                "tool_palette_anchor_v" => { tool_palette_anchor_v = crate::tool_palette::Align::from_id(v); }
+                "tool_palette_offset_x" => { tool_palette_offset_x = v.trim().parse().ok(); }
+                "tool_palette_offset_y" => { tool_palette_offset_y = v.trim().parse().ok(); }
                 "tool_palette_locked" => { tool_palette_locked = v.trim().parse().ok(); }
                 "tool_palette_auto_hide_locked" => { tool_palette_auto_hide_locked = v.trim().parse().ok(); }
                 "tool_palette_opacity_pct" => {
@@ -921,7 +1106,6 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
             thumbbar_pos: thumbbar_pos.unwrap_or(ThumbbarPos::None),
             thumbbar_thumb_size: thumbbar_thumb_size.unwrap_or(96),
             thumbbar_idle_hide_ms: thumbbar_idle_hide_ms.unwrap_or(3000),
-            thumbbar_overlap: thumbbar_overlap.unwrap_or(false),
             thumbbar_marker_r: thumbbar_marker_r.unwrap_or(230),
             thumbbar_marker_g: thumbbar_marker_g.unwrap_or(169),
             thumbbar_marker_b: thumbbar_marker_b.unwrap_or(79),
@@ -929,7 +1113,11 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
             rotation_carry_over: false,
             rotation_session_angle: 0,
             exif_orientation_enabled: exif_orientation_enabled.unwrap_or(true),
+            near_unity_skip_enabled: near_unity_skip_enabled.unwrap_or(true),
             image_info_visible: image_info_visible.unwrap_or(true),
+            menubar_autohide: menubar_autohide.unwrap_or(false),
+            default_sort_key: viewer_default_sort_key,
+            default_sort_ascending: viewer_default_sort_ascending.unwrap_or(true),
             rating_overlay_enabled: rating_overlay_enabled.unwrap_or(true),
             bar_order: viewer_bar_order.unwrap_or(DEFAULT_BAR_ORDER),
             transition_kind: transition_kind.unwrap_or(TransitionKind::HorizontalSlide),
@@ -952,7 +1140,15 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
             tool_palette: {
                 let default = PaletteState::default();
                 PaletteState {
-                    pos: (tool_palette_pos_x.unwrap_or(default.pos.0), tool_palette_pos_y.unwrap_or(default.pos.1)),
+                    // 旧形式（絶対座標 pos_x/y）は「左上寄せ＋その距離」として読む＝見た目は従来と同一。
+                    anchor: (
+                        tool_palette_anchor_h.unwrap_or(default.anchor.0),
+                        tool_palette_anchor_v.unwrap_or(default.anchor.1),
+                    ),
+                    offset: (
+                        tool_palette_offset_x.or(tool_palette_pos_x).unwrap_or(default.offset.0),
+                        tool_palette_offset_y.or(tool_palette_pos_y).unwrap_or(default.offset.1),
+                    ),
                     locked: tool_palette_locked.unwrap_or(default.locked),
                     auto_hide_locked: tool_palette_auto_hide_locked.unwrap_or(default.auto_hide_locked),
                     opacity_pct: tool_palette_opacity_pct.unwrap_or(default.opacity_pct),
@@ -966,6 +1162,9 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
             },
             magnifier_on: false,
             koma_on: false,
+            fit_mode: crate::magnifier::FitMode::default(),
+            fit_entered_magnifier: false,
+            wheel_scroll: false,
             magnifier: {
                 // 不正値は捨てて既定値。永続化するのはノッチ倍率・目盛りの詳細/簡易・コマ送りの基準倍率だけ。
                 let mut m = crate::magnifier::MagnifierConfig::default();
@@ -984,6 +1183,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
         show_hidden: show_hidden.unwrap_or(false),
         card_info_mode: card_info_mode.unwrap_or_else(|| "off".to_string()),
         card_rating_mode: card_rating_mode.unwrap_or_else(|| "off".to_string()),
+        card_band: crate::card_band::BandSettings::from_state(&card_band_active, &card_band_custom, card_band_transparency.as_deref()),
         card_date_format: CardDateFormat::from_state(
             &card_date_mode,
             &card_date_auto_style,
@@ -1001,16 +1201,29 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
         app_log_perf,
         app_log_key,
         app_log_common,
+        app_log_thumb_refactor,
         app_startup_use_last_dir,
         app_startup_fixed_dir,
         app_thumb_filter,
         app_thumb_size,
         app_unconfirmed_retention_days,
         app_backup_generations,
+        app_tag_master_generations,
+        app_tag_new_element_limit,
+        app_tag_register_name,
+        app_idle_thumb_generation,
+        app_idle_thumb_wait_secs,
+        app_idle_thumb_while_viewer,
         app_decode_threads,
         app_magnifier_zoom_notice_shown,
         app_max_decode_edge_prompt_answered,
-        app_folder_book_access_warning_seen,
+        app_text_page,
+        app_tag_match,
+        app_tag_learning_use,
+        app_tag_confirm_default_review,
+        app_tag_confirm_intro_open,
+        app_tag_learn_intro_hidden,
+        app_launch_x11,
         app_last_run_version,
         app_default_slot,
         translate_cfg: TranslateConfig {
@@ -1029,6 +1242,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 _ => None,
             },
             tag_search_left_width: tab_tag_search_width,
+            tag_search_mode: tab_tag_search_mode,
         },
         tree_sorts: crate::tree_sort::TreeSorts { virtual_tree: tree_sort_virtual, real_tree: tree_sort_real },
         tag_panel_open: tag_panel_open.unwrap_or(false),
@@ -1039,6 +1253,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
         explorer_view_mode: explorer_view_mode.unwrap_or_else(|| "card:s".to_string()),
         explorer_list_cols: explorer_list_cols.unwrap_or_default(),
         explorer_sim_threshold: explorer_sim_threshold.unwrap_or_default(),
+        theme_mode,
     })
 }
 
@@ -1061,7 +1276,7 @@ fn magnifier_state_lines(m: &crate::magnifier::MagnifierConfig) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: &CardDateFormat, app_cfg: &AppConfig, translate_cfg: &TranslateConfig, tab_positions: &TabPositions, tree_sorts: &crate::tree_sort::TreeSorts, tag_panel_open: bool, tag_preview_high_quality: bool, explorer_view_mode: &str, explorer_list_cols: &str, explorer_sim_threshold: &str) {
+pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots: &[Option<WindowSlot>; 4], sort_state: &SortState, lang: &str, viewer_cfg: &ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: &CardDateFormat, card_band: &crate::card_band::BandSettings, app_cfg: &AppConfig, translate_cfg: &TranslateConfig, tab_positions: &TabPositions, tree_sorts: &crate::tree_sort::TreeSorts, tag_panel_open: bool, tag_preview_high_quality: bool, explorer_view_mode: &str, explorer_list_cols: &str, explorer_sim_threshold: &str, theme_mode: crate::ui_theme::ThemeMode) {
     let _ = std::fs::create_dir_all(root);
     let (path, bak, tmp) = (state_path(root), state_bak_path(root), state_tmp_path(root));
 
@@ -1073,6 +1288,7 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         sort_state.rating.state_key(), sort_state.rating.ascending, tag_panel_open, tag_preview_high_quality,
     );
     content.push_str(&format!("explorer_view_mode={explorer_view_mode}\nexplorer_list_cols={explorer_list_cols}\nexplorer_sim_threshold={explorer_sim_threshold}\n"));
+    content.push_str(&format!("theme={}\n", theme_mode.as_state_str()));
     // フォルダ系タブ（お気に入り・検索・仮想フォルダ）の最後の位置（Some のものだけ）
     content.push_str(&tab_positions.state_lines());
     // ツリーの並び条件（Some のものだけ）
@@ -1083,10 +1299,15 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         card_date_format.mode_str(), card_date_format.auto_style_str(), card_date_format.order_str(),
         card_date_format.sep_str(), card_date_format.year_str(), card_date_format.month_str(),
     ));
+    // カード帯: 有効な導線 / カスタム書式（要素ID[:寄せ]のカンマ区切り）/ 背景の透過度(%)
     content.push_str(&format!(
-        "thumbbar_pos={}\nthumbbar_thumb_size={}\nthumbbar_idle_hide_ms={}\nthumbbar_overlap={}\nthumbbar_marker_r={}\nthumbbar_marker_g={}\nthumbbar_marker_b={}\nthumbbar_marker_a={}\n",
+        "card_band_active={}\ncard_band_custom={}\ncard_band_transparency={}\n",
+        card_band.active.as_state_str(), crate::card_band::to_state_str(&card_band.items), card_band.transparency_pct,
+    ));
+    content.push_str(&format!(
+        "thumbbar_pos={}\nthumbbar_thumb_size={}\nthumbbar_idle_hide_ms={}\nthumbbar_marker_r={}\nthumbbar_marker_g={}\nthumbbar_marker_b={}\nthumbbar_marker_a={}\n",
         thumbbar_pos_to_str(viewer_cfg.thumbbar_pos), viewer_cfg.thumbbar_thumb_size, viewer_cfg.thumbbar_idle_hide_ms,
-        viewer_cfg.thumbbar_overlap, viewer_cfg.thumbbar_marker_r, viewer_cfg.thumbbar_marker_g,
+        viewer_cfg.thumbbar_marker_r, viewer_cfg.thumbbar_marker_g,
         viewer_cfg.thumbbar_marker_b, viewer_cfg.thumbbar_marker_a,
     ));
     content.push_str(&format!(
@@ -1094,8 +1315,21 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         viewer_cfg.exif_orientation_enabled,
     ));
     content.push_str(&format!(
+        "near_unity_skip_enabled={}\n",
+        viewer_cfg.near_unity_skip_enabled,
+    ));
+    content.push_str(&format!(
         "image_info_visible={}\n",
         viewer_cfg.image_info_visible,
+    ));
+    content.push_str(&format!(
+        "menubar_autohide={}\n",
+        viewer_cfg.menubar_autohide,
+    ));
+    content.push_str(&format!(
+        "viewer_default_sort_key={}\nviewer_default_sort_ascending={}\n",
+        viewer_cfg.default_sort_key.map_or("off", reader_sort_key_to_state),
+        viewer_cfg.default_sort_ascending,
     ));
     content.push_str(&format!(
         "rating_overlay_enabled={}\n",
@@ -1138,9 +1372,11 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         viewer_cfg.image_filter.sharpness_enabled,
     ));
     content.push_str(&format!(
-        "tool_palette_pos_x={}\ntool_palette_pos_y={}\ntool_palette_locked={}\ntool_palette_auto_hide_locked={}\ntool_palette_opacity_pct={}\ntool_palette_visible={}\ntool_palette_slot_size_idx={}\ntool_palette_visible_rows={}\ntool_palette_row_edit_locked={}\ntool_palette_slots={}\n",
-        viewer_cfg.tool_palette.pos.0,
-        viewer_cfg.tool_palette.pos.1,
+        "tool_palette_anchor_h={}\ntool_palette_anchor_v={}\ntool_palette_offset_x={}\ntool_palette_offset_y={}\ntool_palette_locked={}\ntool_palette_auto_hide_locked={}\ntool_palette_opacity_pct={}\ntool_palette_visible={}\ntool_palette_slot_size_idx={}\ntool_palette_visible_rows={}\ntool_palette_row_edit_locked={}\ntool_palette_slots={}\n",
+        viewer_cfg.tool_palette.anchor.0.to_id(),
+        viewer_cfg.tool_palette.anchor.1.to_id(),
+        viewer_cfg.tool_palette.offset.0,
+        viewer_cfg.tool_palette.offset.1,
         viewer_cfg.tool_palette.locked,
         viewer_cfg.tool_palette.auto_hide_locked,
         viewer_cfg.tool_palette.opacity_pct,
@@ -1170,8 +1406,8 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
     // デバッグタブが編集するログ設定。現在有効な値（グローバルなconfig::log()）をそのまま書き戻す。
     let log_cfg = crate::config::log();
     content.push_str(&format!(
-        "app_log_perf={}\napp_log_key={}\napp_log_common={}\n",
-        log_cfg.perf, log_cfg.key, log_cfg.common,
+        "app_log_perf={}\napp_log_key={}\napp_log_common={}\napp_log_thumb_refactor={}\n",
+        log_cfg.perf, log_cfg.key, log_cfg.common, log_cfg.thumb_refactor,
     ));
     // その他タブが編集する起動時フォルダ設定。
     content.push_str(&format!(
@@ -1189,14 +1425,28 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         app_cfg.unconfirmed_retention_days,
     ));
     content.push_str(&format!("app_backup_generations={}\n", app_cfg.backup_generations));
+    content.push_str(&format!("app_tag_master_generations={}\n", app_cfg.tag_master_generations));
+    content.push_str(&format!("app_tag_new_element_limit={}\n", app_cfg.tag_new_element_limit));
+    content.push_str(&format!("app_tag_register_name={}\n", app_cfg.tag_register_name.as_key()));
+    content.push_str(&format!(
+        "app_idle_thumb_generation={}\napp_idle_thumb_wait_secs={}\napp_idle_thumb_while_viewer={}\n",
+        app_cfg.idle_thumb_generation, app_cfg.idle_thumb_wait_secs, app_cfg.idle_thumb_while_viewer,
+    ));
     // フェーズ4b: decode_threads/default_slotもここへ統合。
     let default_slot_str = match app_cfg.default_slot {
         Some(0) => "5", Some(1) => "6", Some(2) => "7", Some(3) => "8", _ => "",
     };
     content.push_str(&format!(
-        "app_decode_threads={}\napp_default_slot={}\napp_magnifier_zoom_notice_shown={}\napp_max_decode_edge_prompt_answered={}\napp_folder_book_access_warning_seen={}\n",
-        app_cfg.decode_threads, default_slot_str, app_cfg.magnifier_zoom_notice_shown, app_cfg.max_decode_edge_prompt_answered, app_cfg.folder_book_access_warning_seen,
+        "app_decode_threads={}\napp_default_slot={}\napp_magnifier_zoom_notice_shown={}\napp_max_decode_edge_prompt_answered={}\n",
+        app_cfg.decode_threads, default_slot_str, app_cfg.magnifier_zoom_notice_shown, app_cfg.max_decode_edge_prompt_answered,
     ));
+    content.push_str(&format!("app_text_page={}\n", app_cfg.text_page.to_state_str()));
+    content.push_str(&format!("app_tag_match={}\n", app_cfg.tag_match.to_state_str()));
+    content.push_str(&format!("app_tag_learning_use={}\n", app_cfg.tag_learning_use));
+    content.push_str(&format!("app_tag_confirm_default_review={}\n", app_cfg.tag_confirm_default_review));
+    content.push_str(&format!("app_tag_confirm_intro_open={}\n", app_cfg.tag_confirm_intro_open));
+    content.push_str(&format!("app_tag_learn_intro_hidden={}\n", app_cfg.tag_learn_intro_hidden));
+    content.push_str(&format!("app_launch_x11={}\n", app_cfg.launch_x11));
     if !app_cfg.last_run_version.is_empty() {
         content.push_str(&format!("app_last_run_version={}\n", app_cfg.last_run_version));
     }
@@ -1222,6 +1472,27 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn thumbbar_pos_cycle_goes_off_bottom_left_top_right_off() {
+        let mut p = ThumbbarPos::None;
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            p = p.next_cycle();
+            seen.push(thumbbar_pos_to_str(p));
+        }
+        assert_eq!(seen, ["bottom", "left", "top", "right", "none"]);
+    }
+
+    #[test]
+    fn thumbbar_pos_state_labels_per_language() {
+        use crate::i18n::Lang;
+        assert_eq!(Lang::English.tool_palette_thumbbar_state(ThumbbarPos::Bottom), "BOTTOM");
+        assert_eq!(Lang::Japanese.tool_palette_thumbbar_state(ThumbbarPos::Left), "左");
+        assert_eq!(Lang::Chinese.tool_palette_thumbbar_state(ThumbbarPos::Top), "上");
+        assert_eq!(Lang::Japanese.tool_palette_thumbbar_state(ThumbbarPos::None), "OFF");
+        assert_eq!(Lang::English.tool_palette_thumbbar_state(ThumbbarPos::None), "OFF");
+    }
 
     /// テスト専用の一時ディレクトリに content を state として書き、パースして返す。
     fn parse_state_text(tag: &str, content: &str) -> AppState {
@@ -1256,13 +1527,73 @@ mod tests {
     }
 
     #[test]
-    fn folder_book_access_warning_seen_flag_parses_and_defaults_to_unset() {
-        let parsed = parse_state_text("fba_set", "app_folder_book_access_warning_seen=true\n");
-        assert_eq!(parsed.app_folder_book_access_warning_seen, Some(true));
-        let parsed = parse_state_text("fba_bad", "app_folder_book_access_warning_seen=yes\n");
-        assert_eq!(parsed.app_folder_book_access_warning_seen, None);
-        let parsed = parse_state_text("fba_none", "lang=ja\n");
-        assert_eq!(parsed.app_folder_book_access_warning_seen, None);
+    fn launch_x11_flag_parses_and_defaults_to_unset() {
+        assert_eq!(parse_state_text("lx_on", "app_launch_x11=true\n").app_launch_x11, Some(true));
+        assert_eq!(parse_state_text("lx_off", "app_launch_x11=false\n").app_launch_x11, Some(false));
+        assert_eq!(parse_state_text("lx_bad", "app_launch_x11=yes\n").app_launch_x11, None);
+        assert_eq!(parse_state_text("lx_none", "").app_launch_x11, None);
+    }
+
+    #[test]
+    fn tag_learn_intro_hidden_parses_and_ignores_bad_values() {
+        assert_eq!(parse_state_text("ti_on", "app_tag_learn_intro_hidden=true\n").app_tag_learn_intro_hidden, Some(true));
+        assert_eq!(parse_state_text("ti_bad", "app_tag_learn_intro_hidden=x\n").app_tag_learn_intro_hidden, None);
+    }
+
+    #[test]
+    fn lang_accepts_the_bilingual_test_display_and_ignores_unknown() {
+        assert_eq!(parse_state_text("lang_jazh", "lang=jazh\n").lang, "jazh");
+        assert_eq!(parse_state_text("lang_cn", "lang=cn\n").lang, "cn");
+        assert_eq!(parse_state_text("lang_bad", "lang=fr\n").lang, "ja");
+    }
+
+    #[test]
+    fn tag_confirm_intro_open_parses_and_ignores_bad_values() {
+        assert_eq!(parse_state_text("tci_off", "app_tag_confirm_intro_open=false\n").app_tag_confirm_intro_open, Some(false));
+        assert_eq!(parse_state_text("tci_on", "app_tag_confirm_intro_open=true\n").app_tag_confirm_intro_open, Some(true));
+        assert_eq!(parse_state_text("tci_bad", "app_tag_confirm_intro_open=maybe\n").app_tag_confirm_intro_open, None);
+        assert_eq!(parse_state_text("tci_none", "lang=ja\n").app_tag_confirm_intro_open, None);
+    }
+
+    #[test]
+    fn tag_confirm_default_review_parses_and_ignores_bad_values() {
+        assert_eq!(parse_state_text("tcd_off", "app_tag_confirm_default_review=false\n").app_tag_confirm_default_review, Some(false));
+        assert_eq!(parse_state_text("tcd_on", "app_tag_confirm_default_review=true\n").app_tag_confirm_default_review, Some(true));
+        assert_eq!(parse_state_text("tcd_bad", "app_tag_confirm_default_review=maybe\n").app_tag_confirm_default_review, None);
+        assert_eq!(parse_state_text("tcd_none", "lang=ja\n").app_tag_confirm_default_review, None);
+    }
+
+    #[test]
+    fn tag_learning_use_parses_and_ignores_bad_values() {
+        assert_eq!(parse_state_text("tl_off", "app_tag_learning_use=false\n").app_tag_learning_use, Some(false));
+        assert_eq!(parse_state_text("tl_on", "app_tag_learning_use=true\n").app_tag_learning_use, Some(true));
+        assert_eq!(parse_state_text("tl_bad", "app_tag_learning_use=maybe\n").app_tag_learning_use, None);
+        assert_eq!(parse_state_text("tl_none", "lang=ja\n").app_tag_learning_use, None);
+    }
+
+    #[test]
+    fn tag_match_option_parses_and_ignores_bad_values() {
+        let parsed = parse_state_text("tm_set", "app_tag_match=0,1,0,1,0,90\n");
+        let o = parsed.app_tag_match.unwrap();
+        assert_eq!((o.width, o.space, o.hyphen_underscore, o.symbols, o.romaji, o.threshold), (false, true, false, true, false, 90));
+        assert_eq!(parse_state_text("tm_bad", "app_tag_match=junk\n").app_tag_match, None);
+        assert_eq!(parse_state_text("tm_none", "lang=ja\n").app_tag_match, None);
+    }
+
+    #[test]
+    fn text_page_option_parses_and_ignores_bad_values() {
+        let parsed = parse_state_text("tp_set", "app_text_page=0,5000,1,2048,1\n");
+        let o = parsed.app_text_page.unwrap();
+        assert_eq!((o.enabled, o.height_limit, o.split, o.read_limit, o.count_in_pages), (false, 5000, true, 2048 * 1024, true));
+        assert_eq!(parse_state_text("tp_bad", "app_text_page=junk\n").app_text_page, None);
+        assert_eq!(parse_state_text("tp_none", "lang=ja\n").app_text_page, None);
+    }
+
+    #[test]
+    fn retired_folder_book_access_warning_key_is_ignored() {
+        // 初回警告の廃止で消したキー。古い state に残っていても、読み飛ばして他の項目は読める。
+        let parsed = parse_state_text("fba_old", "app_folder_book_access_warning_seen=true\napp_text_page=junk\n");
+        assert_eq!(parsed.app_text_page, None);
     }
 
     #[test]
@@ -1273,6 +1604,20 @@ mod tests {
         assert_eq!(parsed.app_last_run_version, None);
         let parsed = parse_state_text("lrv_none", "lang=ja\n");
         assert_eq!(parsed.app_last_run_version, None);
+    }
+
+    #[test]
+    fn menubar_autohide_parses_and_defaults_to_off() {
+        assert!(!ViewerConfig::default().menubar_autohide);
+        let parsed = parse_state_text("mbh_on", "menubar_autohide=true\n");
+        assert!(parsed.viewer_cfg.menubar_autohide);
+        let parsed = parse_state_text("mbh_off", "menubar_autohide=false\n");
+        assert!(!parsed.viewer_cfg.menubar_autohide);
+        // 不正値・キーなし（旧state）は既定のOFF。
+        let parsed = parse_state_text("mbh_bad", "menubar_autohide=maybe\n");
+        assert!(!parsed.viewer_cfg.menubar_autohide);
+        let parsed = parse_state_text("mbh_none", "lang=ja\n");
+        assert!(!parsed.viewer_cfg.menubar_autohide);
     }
 
     #[test]
@@ -1326,6 +1671,16 @@ mod tests {
     }
 
     #[test]
+    fn near_unity_skip_defaults_on_and_parses_off_and_bad_value() {
+        // キーなし → 既定ON（P8: 効果を試すため既定ON）
+        assert!(parse_state_text("nus_none", "lang=ja\n").viewer_cfg.near_unity_skip_enabled);
+        assert!(!parse_state_text("nus_off", "near_unity_skip_enabled=false\n").viewer_cfg.near_unity_skip_enabled);
+        assert!(parse_state_text("nus_on", "near_unity_skip_enabled=true\n").viewer_cfg.near_unity_skip_enabled);
+        // 不正値は既定（ON）へ
+        assert!(parse_state_text("nus_bad", "near_unity_skip_enabled=maybe\n").viewer_cfg.near_unity_skip_enabled);
+    }
+
+    #[test]
     fn koma_shrink_keys_round_clamp_and_fall_back() {
         let parsed = parse_state_text("shrink_round", "magnifier_koma_shrink_x_pct=7\nmagnifier_koma_shrink_y_pct=999\n");
         assert_eq!(parsed.viewer_cfg.magnifier.koma_shrink_x_pct(), 8, "刻み(2%)へ丸める");
@@ -1366,6 +1721,17 @@ mod tests {
     }
 
     #[test]
+    fn tag_search_mode_roundtrips_and_bad_value_is_dropped() {
+        use crate::tag_search::TagMatchMode;
+        let tp = TabPositions { tag_search_mode: Some(TagMatchMode::And), ..Default::default() };
+        assert_eq!(tp.state_lines(), "tab_tag_search_mode=and\n");
+        assert_eq!(parse_state_text("m_and", &tp.state_lines()).tab_positions.tag_search_mode, Some(TagMatchMode::And));
+        assert_eq!(parse_state_text("m_or", "tab_tag_search_mode=or\n").tab_positions.tag_search_mode, Some(TagMatchMode::Or));
+        assert_eq!(parse_state_text("m_bad", "tab_tag_search_mode=xx\n").tab_positions.tag_search_mode, None);
+        assert_eq!(parse_state_text("m_none", "last_dir=/x\n").tab_positions.tag_search_mode, None);
+    }
+
+    #[test]
     fn tab_positions_roundtrip_through_state_text() {
         let tp = TabPositions {
             active: Some(SavedTab::VirtualFolders),
@@ -1373,6 +1739,7 @@ mod tests {
             search_dir: Some(PathBuf::from("/data/search base")),
             virtual_node: Some(VirtualPosition { id: 12, path: PathBuf::from("/data/manga") }),
             tag_search_left_width: Some(320),
+            tag_search_mode: Some(crate::tag_search::TagMatchMode::And),
         };
         let parsed = parse_state_text("roundtrip", &format!("last_dir=/real\n{}", tp.state_lines()));
         assert_eq!(parsed.tab_positions, tp);
@@ -1470,6 +1837,71 @@ mod tests {
     }
 
     #[test]
+    fn viewer_default_sort_round_trips_and_falls_back() {
+        use crate::types::ReaderSortKey;
+        let d = ViewerConfig::default();
+        assert_eq!((d.default_sort_key, d.default_sort_ascending), (None, true));
+        let parsed = parse_state_text(
+            "vds_ok",
+            "viewer_default_sort_key=natural\nviewer_default_sort_ascending=false\n",
+        );
+        assert_eq!(parsed.viewer_cfg.default_sort_key, Some(ReaderSortKey::Natural));
+        assert!(!parsed.viewer_cfg.default_sort_ascending);
+        // off・未知の値・欠落は「指定なし」、向きが壊れていれば昇順
+        for (tag, text) in [
+            ("vds_off", "viewer_default_sort_key=off\n"),
+            ("vds_bad", "viewer_default_sort_key=bogus\nviewer_default_sort_ascending=zzz\n"),
+            ("vds_none", "app_thumb_size=256\n"),
+        ] {
+            let p = parse_state_text(tag, text);
+            assert_eq!(p.viewer_cfg.default_sort_key, None, "{tag}");
+            assert!(p.viewer_cfg.default_sort_ascending, "{tag}");
+        }
+        for k in [ReaderSortKey::Name, ReaderSortKey::Natural, ReaderSortKey::NaturalLayer, ReaderSortKey::Date, ReaderSortKey::Stored] {
+            assert_eq!(reader_sort_key_from_state(reader_sort_key_to_state(k)), Some(k));
+        }
+    }
+
+    #[test]
+    fn idle_thumb_keys_parse_and_are_optional() {
+        let parsed = parse_state_text(
+            "idle_thumb",
+            "app_idle_thumb_generation=false\napp_idle_thumb_wait_secs=12\napp_idle_thumb_while_viewer=true\n",
+        );
+        assert_eq!(parsed.app_idle_thumb_generation, Some(false));
+        assert_eq!(parsed.app_idle_thumb_wait_secs, Some(12));
+        assert_eq!(parsed.app_idle_thumb_while_viewer, Some(true));
+        let missing = parse_state_text("idle_thumb_missing", "app_thumb_size=256\n");
+        assert_eq!(
+            (missing.app_idle_thumb_generation, missing.app_idle_thumb_wait_secs, missing.app_idle_thumb_while_viewer),
+            (None, None, None)
+        );
+        let bad = parse_state_text("idle_thumb_bad", "app_idle_thumb_wait_secs=abc\napp_idle_thumb_generation=maybe\n");
+        assert_eq!((bad.app_idle_thumb_wait_secs, bad.app_idle_thumb_generation), (None, None));
+        assert_eq!(crate::config::IDLE_THUMB_WAIT_DEFAULT, 1);
+        assert!(crate::config::IDLE_THUMB_WHILE_VIEWER_DEFAULT, "ビューアーを開いている間も続けるのが既定");
+        assert_eq!((crate::config::IDLE_THUMB_WAIT_MIN, crate::config::IDLE_THUMB_WAIT_MAX), (1, 30));
+    }
+
+    #[test]
+    fn tag_master_generations_key_parses_and_is_optional() {
+        let parsed = parse_state_text("tag_master_gens", "app_tag_master_generations=7\n");
+        assert_eq!(parsed.app_tag_master_generations, Some(7));
+        let missing = parse_state_text("tag_master_gens_missing", "app_backup_generations=5\n");
+        assert_eq!(missing.app_tag_master_generations, None);
+        assert_eq!(crate::config::TAG_MASTER_GENERATIONS_DEFAULT, 5);
+        let limit = parse_state_text("tag_new_limit", "app_tag_new_element_limit=8000\n");
+        assert_eq!(limit.app_tag_new_element_limit, Some(8000));
+        assert_eq!(parse_state_text("tag_new_limit_missing", "").app_tag_new_element_limit, None);
+        let name = parse_state_text("tag_register_name", "app_tag_register_name=english\n");
+        assert_eq!(name.app_tag_register_name.as_deref().and_then(crate::config::TagRegisterName::from_key), Some(crate::config::TagRegisterName::English));
+        assert_eq!(parse_state_text("tag_register_name_missing", "").app_tag_register_name, None);
+        assert_eq!(crate::config::TagRegisterName::from_key("bogus"), None);
+        assert_eq!(crate::config::TAG_NEW_ELEMENT_LIMIT_DEFAULT, 5000);
+        assert_eq!((crate::config::TAG_MASTER_GENERATIONS_MIN, crate::config::TAG_MASTER_GENERATIONS_MAX), (1, 10));
+    }
+
+    #[test]
     fn backup_generations_key_parses_and_is_optional() {
         let parsed = parse_state_text("backup_gens", "app_backup_generations=5\n");
         assert_eq!(parsed.app_backup_generations, Some(5));
@@ -1515,6 +1947,29 @@ mod tests {
         std::fs::write(state_path(&root), "last_dir=/tmp/x\nlang=ja\nrating_overlay_enabled=bogus\n").unwrap();
         let parsed = parse_state_file(&state_path(&root)).expect("state file parses");
         assert!(parsed.viewer_cfg.rating_overlay_enabled);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn card_band_keys_parse_and_default_when_missing_or_broken() {
+        use crate::card_band::{Active, BandSettings, DEFAULT_TRANSPARENCY_PCT};
+        let root = std::env::temp_dir()
+            .join(format!("nekoviewer_state_card_band_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&root);
+        std::fs::write(
+            state_path(&root),
+            "last_dir=/tmp/x\nlang=ja\ncard_band_active=custom\ncard_band_custom=title:l,nl,future:r,date:r\ncard_band_transparency=70\n",
+        ).unwrap();
+        let parsed = parse_state_file(&state_path(&root)).expect("state file parses");
+        assert_eq!(parsed.card_band.active, Active::Custom);
+        assert_eq!(parsed.card_band.items.len(), 3, "未知の要素は読み捨て");
+        assert_eq!(parsed.card_band.transparency_pct, 70);
+
+        // 旧state（キー無し）は従来方式・既定の透過度
+        std::fs::write(state_path(&root), "last_dir=/tmp/x\nlang=ja\n").unwrap();
+        let parsed = parse_state_file(&state_path(&root)).expect("state file parses");
+        assert_eq!(parsed.card_band, BandSettings::default());
+        assert_eq!(parsed.card_band.transparency_pct, DEFAULT_TRANSPARENCY_PCT);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1579,6 +2034,26 @@ mod tests {
         std::fs::write(state_path(&root), "last_dir=/tmp/x\nlang=ja\n").unwrap();
         let parsed = parse_state_file(&state_path(&root)).expect("state file parses");
         assert_eq!(parsed.explorer_sim_threshold, "");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn theme_key_parses_and_defaults_to_dark() {
+        use crate::ui_theme::ThemeMode;
+        let root = std::env::temp_dir()
+            .join(format!("nekoviewer_state_theme_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&root);
+        std::fs::write(state_path(&root), "last_dir=/tmp/x\nlang=ja\ntheme=light\n").unwrap();
+        assert_eq!(parse_state_file(&state_path(&root)).expect("parses").theme_mode, ThemeMode::Light);
+
+        std::fs::write(state_path(&root), "last_dir=/tmp/x\nlang=ja\ntheme=dark\n").unwrap();
+        assert_eq!(parse_state_file(&state_path(&root)).expect("parses").theme_mode, ThemeMode::Dark);
+
+        // 旧stateにキーがなければ・値が不正ならダーク
+        std::fs::write(state_path(&root), "last_dir=/tmp/x\nlang=ja\n").unwrap();
+        assert_eq!(parse_state_file(&state_path(&root)).expect("parses").theme_mode, ThemeMode::Dark);
+        std::fs::write(state_path(&root), "last_dir=/tmp/x\nlang=ja\ntheme=system\n").unwrap();
+        assert_eq!(parse_state_file(&state_path(&root)).expect("parses").theme_mode, ThemeMode::Dark);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1672,7 +2147,9 @@ mod tests {
 
         let parsed = parse_state_file(&state_path(&root)).expect("state file parses");
         let tp = parsed.viewer_cfg.tool_palette;
-        assert_eq!(tp.pos, (120.5, 64.0));
+        // 旧形式の絶対座標は、左上寄せ＋その距離として読まれる。
+        assert_eq!(tp.anchor, (crate::tool_palette::Align::Start, crate::tool_palette::Align::Start));
+        assert_eq!(tp.offset, (120.5, 64.0));
         assert!(tp.locked);
         assert_eq!(tp.opacity_pct, 40);
         assert!(!tp.visible);
@@ -1685,6 +2162,27 @@ mod tests {
         // auto_hide_locked未指定時はデフォルト(true=常時表示)にフォールバックする。
         assert!(tp.auto_hide_locked);
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tool_palette_anchor_keys_parse_and_override_legacy_pos() {
+        use crate::tool_palette::Align;
+        let root = std::env::temp_dir()
+            .join(format!("nekoviewer_state_tool_palette_anchor_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&root);
+        std::fs::write(
+            state_path(&root),
+            "last_dir=/tmp/x\nlang=ja\n\
+             tool_palette_pos_x=1\ntool_palette_pos_y=2\n\
+             tool_palette_anchor_h=end\ntool_palette_anchor_v=center\n\
+             tool_palette_offset_x=24.5\ntool_palette_offset_y=-8\n",
+        )
+        .unwrap();
+        let parsed = parse_state_file(&state_path(&root)).expect("state file parses");
+        let tp = parsed.viewer_cfg.tool_palette;
+        assert_eq!(tp.anchor, (Align::End, Align::Center));
+        assert_eq!(tp.offset, (24.5, -8.0));
         let _ = std::fs::remove_dir_all(&root);
     }
 

@@ -9,8 +9,22 @@ use crate::view_reader::ViewerState;
 use super::*;
 use super::scan::spawn_summary_worker;
 
+/// アニメ表示中にも「直後の1ページ」だけ先読みしてよい、デコードスレッド数の下限。
+/// 再生パイプライン（1フレーム ≒ デコード12〜15ms＋縮小7〜9ms）に対し、別スレッドで先読みの
+/// デコードを1本走らせても再生に影響しない余裕があるか、の目安（実測は32スレッド機。
+/// `decode_threads` の既定はコア数の半分なので、4以上＝8コア相当）。足りない環境では従来どおり先読みを止める。
+const MIN_DECODE_THREADS_FOR_ANIMATION_PREFETCH: usize = 4;
+
+/// アニメ表示中に、直後の1ページの先読みを許すか。
+fn animation_next_page_prefetch_allowed(decode_threads: usize) -> bool {
+    decode_threads >= MIN_DECODE_THREADS_FOR_ANIMATION_PREFETCH
+}
+
 /// 通常表示では「可視 → 前方近順 → 後方近順」、可視アニメ中は可視ページだけを返す。
 /// アニメのフレーム処理と無関係なページ先読みを、投入前の集合構築段階で除外する。
+/// ただし `animation_next_page`（スレッドに余裕がある環境）なら、アニメ中も直後の1ページだけ残す。
+/// アニメのページ送りごとに、次のページのデコード待ち（約50ms）が出ないようにするため。
+/// 残さないと、先読みの途中だったジョブが「不要」として取り消され、完走した結果も捨てられる。
 fn ordered_page_indices(
     visible_positions: &[usize],
     visible_lo: usize,
@@ -18,11 +32,14 @@ fn ordered_page_indices(
     start: usize,
     end: usize,
     visible_animation_active: bool,
+    animation_next_page: bool,
 ) -> Vec<usize> {
     let mut ordered = visible_positions.to_vec();
     if !visible_animation_active {
         ordered.extend((visible_hi + 1)..end);
         ordered.extend((start..visible_lo).rev());
+    } else if animation_next_page && visible_hi + 1 < end {
+        ordered.push(visible_hi + 1);
     }
     ordered
 }
@@ -52,6 +69,7 @@ impl NekoviewApp {
     pub(super) fn poll_resize_redecode(&mut self, ctx: &egui::Context) {
         self.poll_exif_toggle();
         self.poll_image_filter_change();
+        self.poll_near_unity_skip_change();
         self.poll_tool_palette_visible_change();
         self.poll_magnifier_toggle();
         let (redecode_on, debounce_ms, seq) = {
@@ -66,14 +84,16 @@ impl NekoviewApp {
             // 放置されると、一度でも「ウィンドウ追従」+ビューアー等倍ズームを使った後は
             // 「原寸」に戻してもガードレールが永続的に外れたままになるバグがあったため、
             // ここで毎フレーム復元する（実際に変化した時だけ再デコードを発火）。
-            let edge = {
+            // 虫眼鏡の幅/高さフィット中は、溢れる軸をテクスチャ上限まで広げる（フィット基準軸の変化も
+            // ここで毎フレーム拾われ、目標が変わったときだけ再デコードされる）。
+            let fit_mode = Self::effective_fit_mode(&self.viewer_cfg.lock().unwrap());
+            let guardrail = {
                 let viewer = self.viewer.lock().unwrap();
-                match viewer.as_ref() {
-                    Some(v) => v.actual_decode_edge(self.config.max_decode_edge),
-                    None => self.config.max_decode_edge,
-                }
+                Some(match viewer.as_ref() {
+                    Some(v) => v.guardrail_decode_target(self.config.max_decode_edge, fit_mode),
+                    None => (self.config.max_decode_edge, self.config.max_decode_edge),
+                })
             };
-            let guardrail = Some((edge, edge));
             if self.decode_target != guardrail {
                 self.decode_target = guardrail;
                 self.begin_lazy_decode_generation();
@@ -102,15 +122,15 @@ impl NekoviewApp {
     /// 再デコードさせる。既存アニメは表示世代に依存しない単一インスタンスとして保持し、
     /// ここでは作り直さない（表示サイズの更新は後続フェーズで既存pipelineへ通知する）。
     fn fire_resize_redecode(&mut self, seq: u64) {
-        let (zoom_actual, magnifier_on) = {
+        let (zoom_actual, magnifier_on, fit_mode) = {
             let cfg = self.viewer_cfg.lock().unwrap();
-            (cfg.zoom_actual, cfg.magnifier_on)
+            (cfg.zoom_actual, cfg.magnifier_on, Self::effective_fit_mode(&cfg))
         };
         let max_decode_edge = self.config.max_decode_edge;
         let target = {
             let viewer = self.viewer.lock().unwrap();
             match viewer.as_ref() {
-                Some(v) => v.current_decode_target(zoom_actual, max_decode_edge, magnifier_on),
+                Some(v) => v.current_decode_target(zoom_actual, max_decode_edge, magnifier_on, fit_mode),
                 None => return,
             }
         };
@@ -124,18 +144,25 @@ impl NekoviewApp {
         );
     }
 
+    /// デコード目標に使うフィット基準軸。虫眼鏡がOFFのとき、またはコマモード中は全体として扱う。
+    fn effective_fit_mode(cfg: &crate::gui_config::ViewerConfig) -> crate::magnifier::FitMode {
+        if cfg.magnifier_on && !cfg.koma_on { cfg.fit_mode } else { crate::magnifier::FitMode::Contain }
+    }
+
     /// 虫眼鏡モードのON/OFFを検知したら、デバウンスせず即座に再デコードを発火する
     /// （ONで原寸デコードへ、OFFで表示サイズのデコードへ戻す）。「原寸」設定では常に上限まで
     /// デコード済みなので、切替に伴う再デコードは不要（毎フレームのガードレール復元に任せる）。
     fn poll_magnifier_toggle(&mut self) {
-        let (now, redecode_on, seq) = {
+        let (now, fit_now, redecode_on, seq) = {
             let cfg = self.viewer_cfg.lock().unwrap();
-            (cfg.magnifier_on, cfg.redecode_on_resize, cfg.redecode_trigger_seq)
+            (cfg.magnifier_on, Self::effective_fit_mode(&cfg), cfg.redecode_on_resize, cfg.redecode_trigger_seq)
         };
-        if now == self.magnifier_on_last_seen {
+        // ON/OFFに加え、虫眼鏡中のフィット基準軸（全体/幅/高さ）が変わってもデコード目標が変わるので再発火する。
+        if now == self.magnifier_on_last_seen && fit_now == self.fit_mode_last_seen {
             return;
         }
         self.magnifier_on_last_seen = now;
+        self.fit_mode_last_seen = fit_now;
         if redecode_on {
             self.resize_redecode_deadline = None;
             self.fire_resize_redecode(seq);
@@ -219,6 +246,7 @@ impl NekoviewApp {
             let cfg = self.viewer_cfg.lock().unwrap();
             (cfg.exif_orientation_enabled, cfg.image_filter)
         };
+        let near_unity_skip = self.near_unity_skip_policy();
         for (visible_order, (orig_i, entry_name, _)) in pages.iter().enumerate() {
             let key = (path.clone(), *orig_i);
             self.pending_loads.lock().unwrap().insert(key);
@@ -232,6 +260,7 @@ impl NekoviewApp {
                     target_size: target,
                     exif_enabled,
                     image_filter,
+                    near_unity_skip,
                     generation: self.decode_generation,
                 },
                 PagePriorityClass::Visible,
@@ -294,8 +323,7 @@ impl NekoviewApp {
         if cfg.redecode_on_resize && !cfg.zoom_actual {
             self.decode_target = if cfg.magnifier_on {
                 // 虫眼鏡ON中に開いたビューアーは、最初から原寸デコードにする。
-                let edge = crate::view_reader::clamp_decode_edge(self.config.max_decode_edge, 8192);
-                Some((edge, edge))
+                Some(crate::view_reader::magnifier_decode_target(self.config.max_decode_edge, 8192, Self::effective_fit_mode(&cfg)))
             } else {
                 Some((physical_size.0.max(1), physical_size.1.max(1)))
             };
@@ -365,6 +393,36 @@ impl NekoviewApp {
         if now != self.image_filter_last_seen {
             self.image_filter_last_seen = now;
             self.redecode_after_image_filter_change();
+        }
+    }
+
+    /// P8: 等倍に近い縮小のスキップ条件。設定がONで、かつ通常表示（基準解像度が「ウィンドウ追従」で、
+    /// 原寸ズーム・虫眼鏡のどちらでもない）のときだけ Some。原寸・虫眼鏡の目標は上限幅の正方形で
+    /// 「ウィンドウに合わせた縮小」ではないため対象外にする。元画像がテクスチャ上限を超えるときは必ず縮小する。
+    fn near_unity_skip_policy(&self) -> Option<crate::cache::NearUnitySkip> {
+        let (enabled, follow_window, zoom_actual, magnifier_on) = {
+            let cfg = self.viewer_cfg.lock().unwrap();
+            (cfg.near_unity_skip_enabled, cfg.redecode_on_resize, cfg.zoom_actual, cfg.magnifier_on)
+        };
+        if !enabled || !follow_window || zoom_actual || magnifier_on {
+            return None;
+        }
+        let max_side = self.viewer.lock().unwrap().as_ref().map_or(8192, |v| v.max_texture_side()).min(u32::MAX as usize) as u32;
+        Some(crate::cache::NearUnitySkip { min_scale: crate::cache::NEAR_UNITY_SKIP_SCALE, max_side })
+    }
+
+    /// P8の設定（GUIのON/OFF）が変わったら、開いているアーカイブの静止画を新条件で再デコードする。
+    /// 画像フィルター変更と同じ即時発火・静止画のみ（アニメは触らない）。
+    fn poll_near_unity_skip_change(&mut self) {
+        let now = self.viewer_cfg.lock().unwrap().near_unity_skip_enabled;
+        if now != self.near_unity_skip_last_seen {
+            self.near_unity_skip_last_seen = now;
+            let Some(path) = self.viewer.lock().unwrap().as_ref().map(|v| v.archive_path().clone()) else { return };
+            self.page_cache.lock().unwrap().remove_static_pages_for_path(&path);
+            self.begin_new_decode_generation();
+            if let Some(v) = self.viewer.lock().unwrap().as_mut() {
+                v.invalidate_static_pages();
+            }
         }
     }
 
@@ -464,19 +522,43 @@ impl NekoviewApp {
         self.poll_tree_autofocus();
         self.poll_search();
         self.poll_tag_search();
+        self.poll_tag_scan();
+        self.poll_tag_apply();
+        self.poll_tag_trial();
         self.poll_identity_results();
         self.poll_marker_probe();
         self.poll_thumb_hash();
+        self.poll_sim_cross();
         self.apply_pending_similar_entry();
         self.poll_marker_compare();
         self.poll_similar_focus();
 
         // サムネイルワーカーからの結果を受信してGPUテクスチャへアップロード
-        let was_pending = !self.thumb_pending.is_empty();
+        // 手すき生成の保留は数えない（1件ごとにハッシュ・サマリーの更新が走るのを避ける）。
+        let was_pending = self.normal_thumb_pending() > 0;
         let thumb_results: Vec<ThumbResult> =
             std::iter::from_fn(|| self.thumb_res_rx.try_recv().ok()).collect();
+        // 台帳由来の結果（検索・タグ検索）の表示中に「実体が無い」と分かったファイル（表示中の一覧から外す）。
+        let mut missing_in_search: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
         for result in thumb_results {
             if result.session_id != self.thumb_session.load(std::sync::atomic::Ordering::Acquire) {
+                continue;
+            }
+            // 検索結果・タグ検索の結果（台帳全件）には、消したがまだ台帳に「確認済」で残っているファイルが混ざる。
+            // 実体が無いと分かったものは、赤Xを付けずに一覧から外す（DBは触らない）。
+            // ネットワークマウント配下は、接続不調でstatに失敗しただけの可能性があるので外さない（従来どおり）。
+            if result.missing
+                && !result.is_tag_preview
+                && self.in_ledger_result_view()
+                && self.network_mount_root_cached(&result.path).is_none()
+            {
+                if result.stage == ThumbResultStage::Complete {
+                    self.thumb_pending.remove(&result.path);
+                    self.idle_thumb_completed(&result.path);
+                }
+                if self.archives.contains(&result.path) {
+                    missing_in_search.insert(result.path);
+                }
                 continue;
             }
             if result.is_tag_preview {
@@ -503,7 +585,9 @@ impl NekoviewApp {
                 continue;
             }
             if result.stage == ThumbResultStage::Complete {
+                self.trace_thumb_done(&result.path);
                 self.thumb_pending.remove(&result.path);
+                self.idle_thumb_completed(&result.path);
             }
             match result.rgba {
                 Some(rgba) => {
@@ -514,6 +598,10 @@ impl NekoviewApp {
                     {
                         let name = result.path.display().to_string();
                         let tex = upload_texture(ctx, &name, &rgba);
+                        // 新形式（現設定の完成品）が届いたら、旧形式の印を外す。旧画像のプレビューでは外さない。
+                        if result.stage == ThumbResultStage::Complete {
+                            self.thumb_stale_textures.remove(&result.path);
+                        }
                         self.thumbnails.insert(result.path, tex);
                     }
                 }
@@ -525,12 +613,29 @@ impl NekoviewApp {
                 }
             }
         }
+        if !missing_in_search.is_empty() {
+            self.drop_missing_from_search_view(&missing_in_search);
+        }
+        self.pump_perf_fixture_all_thumbs();
         self.pump_thumbnail_queue(ctx);
+        self.pump_idle_thumbnails(ctx);
         // pending が空になった瞬間に最終カウントを更新する
-        let just_finished = was_pending && self.thumb_pending.is_empty();
+        let idle_finished = self.take_idle_thumb_report();
+        let just_finished = (was_pending && self.normal_thumb_pending() == 0) || idle_finished;
         if just_finished {
+            self.trace_thumb_summary();
             // 後から生成されたサムネのハッシュを拾う。
-            self.request_thumb_hash();
+            // 計測: 待ちのキューも空になった時が「サムネ生成の完了」。この完了を先に記録してから依頼する
+            // （dHash側が「サムネ完了後の依頼」と判定できるように）。サムネのみモードでは依頼自体が抑止される。
+            let thumb_only = crate::perf_fixture::is_thumb_only();
+            // 未送信の本当の集合は thumb_queued（送信で外れる）。キュー本体には、優先キュー経由で送った後の
+            // 古い要素が残りうる（通常は先読みの窓の絞り込みで捨てられる）ので、空かどうかの判定には使わない。
+            if self.thumb_queued.is_empty() && self.perf_fixture_all_thumbs_sent() {
+                crate::perf_fixture::stage_done(crate::perf_fixture::Stage::Thumb);
+            }
+            if !thumb_only {
+                self.request_thumb_hash();
+            }
         }
 
         // cd_summary バックグラウンド計算の結果をポーリング
@@ -580,6 +685,15 @@ impl NekoviewApp {
             std::iter::from_fn(|| self.file_cache_res_rx.try_recv().ok()).collect();
         let cur_viewer_path = self.viewer.lock().unwrap().as_ref().map(|v| v.archive_path().clone());
         for (path, entry) in file_results {
+            if let Some(tr) = self.open_trace.as_ref().filter(|t| t.path == path) {
+                crate::log_perf!(
+                    "[perf/open] {} FileCache到着 viewer開始から={} クリックから={:.1}ms 取得={}",
+                    super::open_progress::trace_name(&path),
+                    tr.t_viewer.map_or("-".to_string(), |t| format!("{:.1}ms", t.elapsed().as_secs_f64() * 1000.0)),
+                    tr.t_click.elapsed().as_secs_f64() * 1000.0,
+                    if entry.is_some() { "あり" } else { "なし(予算超過/失敗)" },
+                );
+            }
             self.file_cache_pending.remove(&path);
             if let Some(entry) = entry {
                 let current = cur_viewer_path.clone().unwrap_or_else(|| path.clone());
@@ -651,6 +765,18 @@ impl NekoviewApp {
                 page_index: result.index,
                 generation: result.generation,
             };
+            if let Some(tr) = self.open_trace.as_mut().filter(|t| t.path == result.archive_path && t.pages_logged < 3) {
+                tr.pages_logged += 1;
+                crate::log_perf!(
+                    "[perf/open] {} ページ到着 index={} 表示中={} 結果={} viewer開始から={} クリックから={:.1}ms",
+                    super::open_progress::trace_name(&result.archive_path),
+                    result.index,
+                    result.index == cur_idx,
+                    if matches!(result.outcome, DecodeJobOutcome::Ready(_)) { "OK" } else { "失敗/取消" },
+                    tr.t_viewer.map_or("-".to_string(), |t| format!("{:.1}ms", t.elapsed().as_secs_f64() * 1000.0)),
+                    tr.t_click.elapsed().as_secs_f64() * 1000.0,
+                );
+            }
             match result.outcome {
                 DecodeJobOutcome::Ready(content) => {
                     self.failed_loads.remove(&failed_key);
@@ -703,9 +829,11 @@ impl NekoviewApp {
                 })
             },
         );
-        // アニメ中は新しいAhead/Behindを開始させない。静止画またはビューアー終了時は
+        // アニメ中は、新しいAhead/Behindを開始させない。ただしスレッドに余裕がある環境では、
+        // 直後の1ページだけは先読みする（投機実行1本）。静止画またはビューアー終了時は
         // 通常の1並列へ必ず戻し、状態の戻し忘れを作らない。
-        self.req_tx.set_max_speculative_running(if visible_animation_active { 0 } else { 1 });
+        let animation_next_page = animation_next_page_prefetch_allowed(self.config.resolved_decode_threads());
+        self.req_tx.set_max_speculative_running(if visible_animation_active && !animation_next_page { 0 } else { 1 });
 
         let mut desired_job_keys = HashSet::new();
         let mut desired_pending_keys = HashSet::new();
@@ -722,6 +850,7 @@ impl NekoviewApp {
                 let cfg = self.viewer_cfg.lock().unwrap();
                 (cfg.exif_orientation_enabled, cfg.image_filter)
             };
+            let near_unity_skip = self.near_unity_skip_policy();
             let requested_generation = self.preparing_decode_generation
                 .unwrap_or(self.active_decode_generation);
             // submit直後にワーカーが起床できるため、投入順自体も優先順に揃える。
@@ -732,6 +861,7 @@ impl NekoviewApp {
                 start,
                 end,
                 visible_animation_active,
+                animation_next_page,
             );
             for i in ordered_indices {
                 let orig_i = entries[i].original_index;
@@ -776,6 +906,7 @@ impl NekoviewApp {
                                 target_size: self.decode_target,
                                 exif_enabled,
                                 image_filter,
+                                near_unity_skip,
                                 generation: requested_generation,
                             },
                             class,
@@ -807,12 +938,17 @@ impl NekoviewApp {
 
 #[cfg(test)]
 mod animation_prefetch_tests {
-    use super::ordered_page_indices;
+    use super::{animation_next_page_prefetch_allowed, ordered_page_indices};
 
     #[test]
     fn static_page_keeps_visible_ahead_behind_order() {
         assert_eq!(
-            ordered_page_indices(&[5], 5, 5, 2, 9, false),
+            ordered_page_indices(&[5], 5, 5, 2, 9, false, false),
+            vec![5, 6, 7, 8, 4, 3, 2],
+        );
+        // 静止画では、アニメ用の指定は結果に影響しない
+        assert_eq!(
+            ordered_page_indices(&[5], 5, 5, 2, 9, false, true),
             vec![5, 6, 7, 8, 4, 3, 2],
         );
     }
@@ -820,7 +956,7 @@ mod animation_prefetch_tests {
     #[test]
     fn visible_animation_excludes_all_nonvisible_page_prefetch() {
         assert_eq!(
-            ordered_page_indices(&[5], 5, 5, 2, 9, true),
+            ordered_page_indices(&[5], 5, 5, 2, 9, true, false),
             vec![5],
         );
     }
@@ -828,9 +964,31 @@ mod animation_prefetch_tests {
     #[test]
     fn spread_with_animation_keeps_both_visible_pages() {
         assert_eq!(
-            ordered_page_indices(&[5, 6], 5, 6, 2, 10, true),
+            ordered_page_indices(&[5, 6], 5, 6, 2, 10, true, false),
             vec![5, 6],
         );
+    }
+
+    #[test]
+    fn visible_animation_with_headroom_keeps_only_the_next_page() {
+        // 直後の1ページだけ（前方2ページ目以降・後方は含めない）
+        assert_eq!(ordered_page_indices(&[5], 5, 5, 2, 9, true, true), vec![5, 6]);
+        // 見開きは、表示中の2ページの次
+        assert_eq!(ordered_page_indices(&[5, 6], 5, 6, 2, 10, true, true), vec![5, 6, 7]);
+    }
+
+    #[test]
+    fn next_page_is_dropped_at_the_end_of_the_archive() {
+        // 最終ページ（窓の終端）の次は無い
+        assert_eq!(ordered_page_indices(&[8], 8, 8, 3, 9, true, true), vec![8]);
+    }
+
+    #[test]
+    fn animation_prefetch_needs_enough_decode_threads() {
+        assert!(!animation_next_page_prefetch_allowed(1));
+        assert!(!animation_next_page_prefetch_allowed(3));
+        assert!(animation_next_page_prefetch_allowed(4));
+        assert!(animation_next_page_prefetch_allowed(16));
     }
 }
 

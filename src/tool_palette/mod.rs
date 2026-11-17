@@ -57,13 +57,75 @@ pub enum PaletteSlotContent {
 /// 座標変化のたびにディスク書き込みが走るのを防ぐ（image_filterの即時セーブと同じ考え方）。
 pub const PERSIST_DEBOUNCE_MS: u64 = 500;
 
+/// パレットの軸ごとの寄せ先（ビューアー窓を3×3に分けたときの、左/中央/右・上/中央/下）。
+/// ユーザーには見せない内部状態で、ドラッグを離した位置から自動で決まる。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Align {
+    Start,
+    Center,
+    End,
+}
+
+impl Align {
+    /// 寄せ先から見た offset を、窓内の左上座標（1軸分）へ変換する。
+    /// offset は「窓の寄せ先ラインからパレットの同じ寄せ先ラインまでの距離」で、内側向きが正。
+    pub fn resolve(self, vp_min: f32, vp_max: f32, size: f32, offset: f32) -> f32 {
+        match self {
+            Align::Start => vp_min + offset,
+            Align::Center => (vp_min + vp_max) / 2.0 + offset - size / 2.0,
+            Align::End => vp_max - offset - size,
+        }
+    }
+
+    /// `resolve` の逆変換。左上座標（1軸分）から offset を求める。
+    pub fn offset_for(self, vp_min: f32, vp_max: f32, size: f32, min: f32) -> f32 {
+        match self {
+            Align::Start => min - vp_min,
+            Align::Center => min + size / 2.0 - (vp_min + vp_max) / 2.0,
+            Align::End => vp_max - min - size,
+        }
+    }
+
+    /// パレット中心が窓の3分割のどこにあるかで寄せ先を決める。
+    pub fn nearest(vp_min: f32, vp_max: f32, size: f32, min: f32) -> Align {
+        let third = (vp_max - vp_min) / 3.0;
+        let center = min + size / 2.0 - vp_min;
+        if center < third {
+            Align::Start
+        } else if center > third * 2.0 {
+            Align::End
+        } else {
+            Align::Center
+        }
+    }
+
+    pub fn to_id(self) -> &'static str {
+        match self {
+            Align::Start => "start",
+            Align::Center => "center",
+            Align::End => "end",
+        }
+    }
+
+    pub fn from_id(s: &str) -> Option<Align> {
+        match s.trim() {
+            "start" => Some(Align::Start),
+            "center" => Some(Align::Center),
+            "end" => Some(Align::End),
+            _ => None,
+        }
+    }
+}
+
 /// ツールパレット本体の状態。カスタム名称(String)を持つためCopyは実装できない
 /// （以前はCopyだった。ViewerConfig側もCloneのみに変更済み）。フレーム毎の変更検知は
 /// 値コピーではなくclone()で行う。
 #[derive(Clone, PartialEq, Debug)]
 pub struct PaletteState {
-    /// パレット左上のスクリーン座標
-    pub pos: (f32, f32),
+    /// 位置の寄せ先（横, 縦）。窓の大きさが変わっても、この寄せ先を基準に追従する。
+    pub anchor: (Align, Align),
+    /// 寄せ先ラインからの距離（横, 縦）。内側向きが正（`Align::resolve` 参照）。
+    pub offset: (f32, f32),
     /// true = ドラッグ移動を禁止
     pub locked: bool,
     /// true = 自動ハイドを禁止（常時 (100-透過度)% で表示し続ける）。
@@ -119,6 +181,37 @@ impl PaletteState {
         true
     }
 
+    /// 窓 `viewport` 内での左上座標（クランプ前）。
+    pub fn top_left(&self, viewport: egui::Rect, size: egui::Vec2) -> egui::Pos2 {
+        egui::pos2(
+            self.anchor.0.resolve(viewport.min.x, viewport.max.x, size.x, self.offset.0),
+            self.anchor.1.resolve(viewport.min.y, viewport.max.y, size.y, self.offset.1),
+        )
+    }
+
+    /// 寄せ先は今のまま、左上座標から offset を求め直す（ドラッグ中に使う）。
+    pub fn set_top_left_keep_anchor(&mut self, viewport: egui::Rect, size: egui::Vec2, min: egui::Pos2) {
+        self.offset = (
+            self.anchor.0.offset_for(viewport.min.x, viewport.max.x, size.x, min.x),
+            self.anchor.1.offset_for(viewport.min.y, viewport.max.y, size.y, min.y),
+        );
+    }
+
+    /// 寄せ先を左上座標の位置から決め直して、offset も求め直す（ドラッグを離したときに使う）。
+    pub fn reanchor_at(&mut self, viewport: egui::Rect, size: egui::Vec2, min: egui::Pos2) {
+        self.anchor = (
+            Align::nearest(viewport.min.x, viewport.max.x, size.x, min.x),
+            Align::nearest(viewport.min.y, viewport.max.y, size.y, min.y),
+        );
+        self.set_top_left_keep_anchor(viewport, size, min);
+    }
+
+    /// 左上寄せ＋窓左上からの距離で置く（旧形式の座標の読み込み・テスト用）。
+    pub fn set_top_left_offset(&mut self, x: f32, y: f32) {
+        self.anchor = (Align::Start, Align::Start);
+        self.offset = (x, y);
+    }
+
     /// 行を1行減らす（最下段を非表示にするだけで、そのマス内容は破棄しない）。
     /// 下限到達・ロック中は何もせずfalseを返す。
     pub fn remove_row(&mut self) -> bool {
@@ -133,7 +226,8 @@ impl PaletteState {
 impl Default for PaletteState {
     fn default() -> Self {
         Self {
-            pos: (32.0, 32.0),
+            anchor: (Align::Start, Align::Start),
+            offset: (32.0, 32.0),
             locked: false,
             auto_hide_locked: true,
             opacity_pct: OPACITY_CEILING_PCT,
@@ -276,5 +370,37 @@ mod tests {
         assert!(st.add_row());
         assert_eq!(st.visible_rows, 3);
         assert_eq!(st.slots[10], PaletteSlotContent::Action(ActionKind::NextPage));
+    }
+}
+
+#[cfg(test)]
+mod anchor_tests {
+    use super::*;
+
+    #[test]
+    fn align_resolve_and_offset_for_are_inverse() {
+        for a in [Align::Start, Align::Center, Align::End] {
+            let off = a.offset_for(10.0, 1010.0, 300.0, 250.0);
+            assert!((a.resolve(10.0, 1010.0, 300.0, off) - 250.0).abs() < 1e-3);
+        }
+    }
+
+    #[test]
+    fn align_nearest_uses_thirds_of_viewport() {
+        assert_eq!(Align::nearest(0.0, 900.0, 100.0, 0.0), Align::Start);
+        assert_eq!(Align::nearest(0.0, 900.0, 100.0, 400.0), Align::Center);
+        assert_eq!(Align::nearest(0.0, 900.0, 100.0, 800.0), Align::End);
+    }
+
+    #[test]
+    fn end_anchor_keeps_distance_from_far_edge() {
+        let mut st = PaletteState::default();
+        let size = egui::vec2(200.0, 100.0);
+        let small = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        st.reanchor_at(small, size, egui::pos2(580.0, 480.0));
+        assert_eq!(st.anchor, (Align::End, Align::End));
+        let big = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1200.0));
+        let p = st.top_left(big, size);
+        assert_eq!((p.x, p.y), (1380.0, 1080.0));
     }
 }

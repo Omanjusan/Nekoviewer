@@ -26,13 +26,16 @@ impl NekoviewApp {
             return;
         }
         if self.focused_pane == FocusPane::SearchForm {
-            let next = if shift_tab { self.search_form_focus.prev() } else { self.search_form_focus.next() };
+            let mode = self.search_form.mode;
+            let next = if shift_tab { self.search_form_focus.prev(mode) } else { self.search_form_focus.next(mode) };
             if let Some(next) = next {
                 self.search_form_focus = next;
                 self.search_form_focus_request = true;
                 return;
             }
-            self.focused_pane = if shift_tab { FocusPane::FolderTabBar } else if self.search_history.is_empty() { FocusPane::TreeTab } else { FocusPane::SearchHistory };
+            // 新モードではツリー/ドライブが無いので、履歴の次はグリッド。
+            let after_form = if self.search_tree_hidden() { FocusPane::Grid } else { FocusPane::TreeTab };
+            self.focused_pane = if shift_tab { FocusPane::FolderTabBar } else if self.visible_search_history().is_empty() { after_form } else { FocusPane::SearchHistory };
             self.surrender_native_focus(ctx);
             self.on_focus_pane_changed();
             return;
@@ -42,11 +45,15 @@ impl NekoviewApp {
         } else {
             self.focused_pane.next(self.folder_pane_tab, self.virtual_real_pane_open())
         };
-        if self.focused_pane == FocusPane::SearchHistory && self.search_history.is_empty() {
-            self.focused_pane = if shift_tab { FocusPane::SearchForm } else { FocusPane::TreeTab };
+        // 新モードのツリー/ドライブは隠れているので、巡回では飛ばす（進む=グリッドへ、戻る=履歴へ）。
+        if self.search_tree_hidden() && matches!(self.focused_pane, FocusPane::TreeTab | FocusPane::Drives) {
+            self.focused_pane = if shift_tab { FocusPane::SearchHistory } else { FocusPane::Grid };
+        }
+        if self.focused_pane == FocusPane::SearchHistory && self.visible_search_history().is_empty() {
+            self.focused_pane = if shift_tab { FocusPane::SearchForm } else if self.search_tree_hidden() { FocusPane::Grid } else { FocusPane::TreeTab };
         }
         if self.focused_pane == FocusPane::SearchForm {
-            self.search_form_focus = if shift_tab { SearchFormFocus::Clear } else { SearchFormFocus::NamePattern };
+            self.search_form_focus = if shift_tab { SearchFormFocus::Clear } else { self.search_form.mode.first_field() };
             self.search_form_focus_request = true;
         }
         // 検索条件フォームのテキスト欄は lock_focus(true) にしているため、Tabで
@@ -91,9 +98,11 @@ impl NekoviewApp {
             FocusPane::SearchForm => {}
             FocusPane::VirtualTab => self.reset_virtual_cursor(),
             FocusPane::SearchHistory => {
-                let valid = self.search_selected.is_some_and(|i| i < self.search_history.len());
+                // 選択は、いまのモードの行の中だけで有効（別のモードの行は一覧に出ていない）。
+                let visible = self.visible_search_history();
+                let valid = self.search_selected.is_some_and(|i| visible.contains(&i));
                 if !valid {
-                    self.search_selected = if self.search_history.is_empty() { None } else { Some(0) };
+                    self.search_selected = visible.first().copied();
                 }
             }
             FocusPane::Drives => {
@@ -116,16 +125,19 @@ impl NekoviewApp {
     }
 
     fn handle_search_history_keys(&mut self, ctx: &egui::Context) {
-        if self.search_history.is_empty() { return; }
+        // 一覧に出ている（いまのモードの）行だけを上下に動く。
+        let visible = self.visible_search_history();
+        if visible.is_empty() { return; }
         let km = &self.config.keymap;
         let (up, down, enter) = ctx.input(|i| (
             km.explorer_binding(ExplorerAction::NavUp).key_pressed(i),
             km.explorer_binding(ExplorerAction::NavDown).key_pressed(i),
             km.explorer_binding(ExplorerAction::Confirm).key_pressed(i),
         ));
-        let mut idx = self.search_selected.unwrap_or(0).min(self.search_history.len() - 1);
-        if up && idx > 0 { idx -= 1; }
-        if down && idx + 1 < self.search_history.len() { idx += 1; }
+        let mut pos = self.search_selected.and_then(|i| visible.iter().position(|&v| v == i)).unwrap_or(0);
+        if up && pos > 0 { pos -= 1; }
+        if down && pos + 1 < visible.len() { pos += 1; }
+        let idx = visible[pos];
         self.search_selected = Some(idx);
         if enter { self.select_search_history(idx); }
     }
@@ -337,24 +349,57 @@ impl NekoviewApp {
     /// MenuBarにフォーカスがある間の操作。左右=次の有効ボタンへ移動（無効ボタンは飛ばす）、
     /// Enter=クリック相当を発火。
     fn handle_menu_bar_keys(&mut self, ctx: &egui::Context) {
+        // ソート展開メニュー内にカーソルがあるときは、そちらが全キーを受ける
+        if self.sort_menu_cursor.is_some() {
+            self.handle_sort_menu_keys(ctx);
+            return;
+        }
+        // 便利機能メニュー内にカーソルがあるときも同様
+        if self.convenience_menu_cursor.is_some() {
+            self.handle_convenience_menu_keys(ctx);
+            return;
+        }
         let km = &self.config.keymap;
-        let (key_left, key_right, key_enter) = ctx.input(|i| (
+        let (key_left, key_right, key_enter, key_down) = ctx.input(|i| (
             km.explorer_binding(ExplorerAction::NavLeft).key_pressed(i),
             km.explorer_binding(ExplorerAction::NavRight).key_pressed(i),
             km.explorer_binding(ExplorerAction::Confirm).key_pressed(i),
+            km.explorer_binding(ExplorerAction::NavDown).key_pressed(i),
         ));
-        if !(key_left || key_right || key_enter) {
+        if !(key_left || key_right || key_enter || key_down) {
+            return;
+        }
+        // ソートボタン上（メニューが閉じている、またはマウスで開いた直後）で↓を押すと、
+        // 展開して最上位の項目へカーソルを置く
+        if key_down {
+            match MENU_BAR_ORDER.get(self.menu_cursor) {
+                Some(&MenuBarButton::Sort) => self.open_sort_menu_by_keyboard(),
+                Some(&MenuBarButton::Convenience) => self.open_convenience_menu_by_keyboard(),
+                _ => {}
+            }
             return;
         }
         let items = self.menu_bar_items();
+        let before = self.menu_cursor;
         if key_left {
-            if let Some(new_pos) = (0..self.menu_cursor).rev().find(|&i| items[i].1) {
-                self.menu_cursor = new_pos;
-            }
+            self.step_menu_cursor(false);
         }
         if key_right {
-            if let Some(new_pos) = (self.menu_cursor + 1..items.len()).find(|&i| items[i].1) {
-                self.menu_cursor = new_pos;
+            self.step_menu_cursor(true);
+        }
+        if self.menu_cursor != before {
+            // ソートボタンに着いたら自動展開して最上位の項目へ。外れたら縮小する。
+            match MENU_BAR_ORDER.get(self.menu_cursor) {
+                Some(&MenuBarButton::Sort) => self.open_sort_menu_by_keyboard(),
+                Some(&MenuBarButton::Convenience) => self.open_convenience_menu_by_keyboard(),
+                _ => {}
+            }
+            // 外れたほうのメニューは縮小する
+            if MENU_BAR_ORDER.get(self.menu_cursor) != Some(&MenuBarButton::Sort) && self.sort_menu_open {
+                self.close_sort_menu();
+            }
+            if MENU_BAR_ORDER.get(self.menu_cursor) != Some(&MenuBarButton::Convenience) && self.convenience_menu_open {
+                self.close_convenience_menu();
             }
         }
         if key_enter {

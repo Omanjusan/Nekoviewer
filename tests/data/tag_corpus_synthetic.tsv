@@ -1,0 +1,54 @@
+# タグ自動取得 合成サンプルコーパス（架空の名前のみ・コミット対象）。形式は src/tag_corpus.rs の冒頭を参照。
+# 実ライブラリのファイル名は test/tag_corpus/ 以下（gitignore 済み）に置く。
+# ---- 標準形: (イベント)[グループ(作者)]題名[言語] ----
+(C105) [Hawk Bit (Kouji)] Sample Story One [日本語].zip	event=C105	group=Hawk Bit	author=Kouji	language=日本語
+(C104) [Moon Garden (Tsuki Mori)] Sample Story Two [English].cbz	event=C104	group=Moon Garden	author=Tsuki Mori	language=English
+(C103) [Blue Harbor (Umi Kaze)] Sample Story Three.zip	event=C103	group=Blue Harbor	author=Umi Kaze
+[Circle A (Writer A)] Book A [English].cbz	group=Circle A	author=Writer A	language=English
+[Circle B (Writer B)] Book B [DL版].zip	group=Circle B	author=Writer B	ignore=DL版
+[Circle C (Writer C)] Book C.tar.gz	group=Circle C	author=Writer C
+[Circle D (Writer D)] Book D.7z	group=Circle D	author=Writer D
+[Red Fox (Aka Kitsune)] Fox Tale [Korean].zip	group=Red Fox	author=Aka Kitsune	language=Korean
+[Silver Leaf (Gin Ha)] Leaf Days [Chinese].cbz	group=Silver Leaf	author=Gin Ha	language=Chinese
+[ホークビット (こうじ)] 日本語の本 [日本語].zip	group=ホークビット	author=こうじ	language=日本語
+[月の庭 (森 月)] 夜の話.zip	group=月の庭	author=森 月
+[青い港 (海風)] 港の朝 [無修正].zip	group=青い港	author=海風	ignore=無修正
+(例大祭15) [東の宴 (春野 花)] 宴の夜 [日本語].zip	event=例大祭15	group=東の宴	author=春野 花	language=日本語
+(COMIC1☆22) [Pine Tree (Matsu Ki)] Pine Book.zip	event=COMIC1☆22	group=Pine Tree	author=Matsu Ki
+(コミティア150) [白い猫 (しろ ねこ)] 猫の日々.zip	event=コミティア150	group=白い猫	author=しろ ねこ
+(C102) [Gray Wolf (Haiiro Ookami)] Wolf Song [英語].zip	event=C102	group=Gray Wolf	author=Haiiro Ookami	language=英語
+［Hawk Bit（Kouji）］全角括弧の本.zip	group=Hawk Bit	author=Kouji
+(C101) ［Moon Garden（Tsuki Mori）］全角括弧と題名 [日本語].zip	event=C101	group=Moon Garden	author=Tsuki Mori	language=日本語
+[ﾎｰｸﾋﾞｯﾄ (ｺｳｼﾞ)] 半角カナの本.zip	group=ﾎｰｸﾋﾞｯﾄ	author=ｺｳｼﾞ
+[hawk-bit (koji)] Third Book.zip	group=hawk-bit	author=koji
+# ---- 単独括弧 [X]（作者かサークルか文面からは決まらない）----
+[Kouji] Solo Book.zip	author=Kouji	!hard
+[Tsuki Mori] Solo Book 2.zip	author=Tsuki Mori	!hard
+[Hawk Bit] Circle Only Book.zip	group=Hawk Bit	!hard
+[Blue Harbor] Circle Only Book 2 [English].zip	group=Blue Harbor	language=English	!hard
+(C100) [Aka Kitsune] Solo With Event.zip	event=C100	author=Aka Kitsune	!hard
+(C99) [Red Fox] Circle With Event.zip	event=C99	group=Red Fox	!hard
+# ---- 括弧の向きが逆（外=作者・内=グループ）----
+[Kouji (Hawk Bit)] Swapped Pair.zip	author=Kouji	group=Hawk Bit	!hard
+[Tsuki Mori (Moon Garden)] Swapped Pair 2 [English].cbz	author=Tsuki Mori	group=Moon Garden	language=English	!hard
+(C98) [Umi Kaze (Blue Harbor)] Swapped With Event.zip	event=C98	author=Umi Kaze	group=Blue Harbor	!hard
+[海風 (青い港)] 逆向きの本.zip	author=海風	group=青い港	!hard
+# ---- イベントでない丸括弧・イベント風の角括弧 ----
+(成年コミック) [Kouji] Genre Prefix.zip	ignore=成年コミック	author=Kouji	!hard
+(同人誌) [Moon Garden (Tsuki Mori)] Genre Prefix 2.zip	ignore=同人誌	group=Moon Garden	author=Tsuki Mori	!hard
+(一般コミック) [Gin Ha] Genre Prefix 3.cbz	ignore=一般コミック	author=Gin Ha	!hard
+[C105] [Kouji] Event In Square.zip	event=C105	author=Kouji	!hard
+[C104] [Moon Garden (Tsuki Mori)] Event In Square 2.zip	event=C104	group=Moon Garden	author=Tsuki Mori	!hard
+# ---- 複数作者・作者表記が特殊 ----
+[Hawk Bit (Kouji, Tsuki Mori)] Two Authors.zip	group=Hawk Bit	author=Kouji	author=Tsuki Mori	!hard
+[Blue Harbor (Umi Kaze x Aka Kitsune)] Two Authors 2.zip	group=Blue Harbor	author=Umi Kaze	author=Aka Kitsune	!hard
+# ---- 作者・サークル情報が無い／括弧が題名側 ----
+Plain Title No Brackets.zip
+Vol.01 Numbered Title.zip
+Title With Trailing Author [Kouji].zip	author=Kouji	!hard
+Title (Sub Title) Rest.zip
+renamed_archive.zip
+[English] Only Language Bracket.zip	language=English	!hard
+Mixed Title [DL版] [English].zip	ignore=DL版	language=English
+Mixed Title 2 [無修正] [日本語].zip	ignore=無修正	language=日本語
+(C97) Event And Title Only.zip	event=C97

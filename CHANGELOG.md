@@ -2,6 +2,51 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.12.0] - 2026-11-18
+
+### Added
+
+- Bulk tag info retrieval for the current folder. Scans the whole folder and builds candidates for author, group, event, performer, character, parody source, attribute and year/month from info.txt, ComicInfo.xml, meta.json and file names. Candidates are reviewed in confirmation windows before being applied. Supports matching against existing elements, alias bundling (`A|B|C`) and moving elements to another category
+- A "trial" step before the above is applied to the database. You can confirm or discard it; discarding restores the state before the operation
+- Learning for automatic tag retrieval. A labeling window, a viewer for the learned data, and a "Use learning results" setting
+- (Experimental) Tag extraction rule definitions. A fill-in-the-blank rule editor window, a record of automatically assigned tags, and re-assignment of the previous run
+- Tag master generations and rollback. "Dangerous settings" (clear all tags, recovery points). A new "DB" tab in the settings
+- "🏷 Tag management" entry menu
+- Main tag search. Author/group search, similarity search, and display of the retrieval status
+- Search tab overhaul. Switch between the new mode (all registered ledger entries) and the old mode (specified base folder), search history, and a notes button
+- Tag search tab: OR/AND switch, list of active tags, and a filter. Left-clicking a tag chip jumps to tag search
+- "Page count" and "Details" columns in the list. The details window shows ComicInfo.xml, meta.json and attached text files
+- Public rating column in the list (Rating in info.txt). Move via the "Real" and "Virtual" column icons
+- Customizable card band. A stack of 9 element types and alignment settings. Merged into a single "Band Setting" button
+- Rating UI in the viewer bar (★ 3.5 [-][+]). Rate from the middle of an archive. This UI is not shown for single image files
+- Viewer: auto-hiding menu bar and title band
+- Viewer: fit width / fit height (magnifier mode)
+- Page jump within archives. Click the thumbnail bar or the entry list to jump
+- Toolbox position set by a 9-way anchor plus offset. The anchor is detected automatically from the placement
+- "Window position" menu. Expand, record and delete are combined into one menu. Auto-restore can also be turned ON/OFF
+- Sort condition menu. Default viewer sort and "Reset to undefined". Added "Stored order" and natural-number sort for sorting inside archives
+- Light/dark theme switch
+- Language switch (日本語 / English / 中文). The toggle button moved from the GUI settings to the menu bar. The tag-related UI is also localized
+- Thumbnail generation while idle. Progresses automatically when the explorer has had no operation for a while
+- Startup backend management setting
+
+### Improved
+
+- Faster automatic tag extraction
+- Faster archive opening. A shortcut that reads only the central directory is now used
+- Faster thumbnail display in the enclave list
+- Faster still-image decoding. Reworked downscaling, skipping the downscale for near-unity scales (can be turned ON/OFF in the settings), and a dedicated path for grayscale images
+- On multi-core environments, the next page is prefetched even while an animation is displayed
+- Faster thumbnail generation and ID resolution pipeline
+
+### Fixed
+
+- Fixed dark text appearing on a dark background in the light theme
+- Fixed the conventional band remaining visible when the custom band is enabled but has no elements
+- Fixed the "✕" in the confirmation window being displayed as a tofu box
+- Fixed overflow caused by the needs-review mark in the confirmation window
+- Fixed search results being reset when returning to the Search tab
+
 ## [1.11.0] - 2026-10-30
 
 ### Added

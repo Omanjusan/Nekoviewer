@@ -27,12 +27,26 @@ pub fn draw_confirm_dialog(
     spec: ConfirmDialogSpec,
     body: impl FnOnce(&mut egui::Ui),
 ) -> ConfirmOutcome {
+    draw_confirm_dialog_at(ctx, spec, None, body)
+}
+
+/// `draw_confirm_dialog` の、中央の位置を指定できる版。`center` が Some のときは、その点を窓の中心にする
+/// （エクスプローラー部の中央など）。None なら画面中央。
+pub fn draw_confirm_dialog_at(
+    ctx: &egui::Context,
+    spec: ConfirmDialogSpec,
+    center: Option<egui::Pos2>,
+    body: impl FnOnce(&mut egui::Ui),
+) -> ConfirmOutcome {
     let mut outcome = ConfirmOutcome::None;
     let mut window = egui::Window::new(spec.title)
         .id(egui::Id::new(spec.id_salt))
         .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0));
+        .resizable(false);
+    window = match center {
+        Some(c) => window.pivot(egui::Align2::CENTER_CENTER).fixed_pos(c),
+        None => window.anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0)),
+    };
     if spec.foreground {
         window = window.order(egui::Order::Foreground);
     }

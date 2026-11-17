@@ -1,4 +1,4 @@
-//! お気に入りタブの右クリック「移動先を指定して元ファイルを検索」「お気に入り設定から外す」。
+//! お気に入りタブの右クリック「移動先を指定して再紐付け」「お気に入り設定から外す」。
 //!
 //! 再紐付けの本体は `identity_relink::relink`（FP照合は別スレッド）。ここはゴースト判定・フォルダ選択
 //! （アプリ内ツリーピッカー）・確認・結果の通知を受け持つ。「外す」は `favorites::remove_favorite`。
@@ -178,7 +178,6 @@ impl NekoviewApp {
                         return;
                     }
                     TreeAction::AddToVirtual(_)
-                    | TreeAction::OpenInSearch(_)
                     | TreeAction::SortSetting
                     | TreeAction::None => {}
                 }

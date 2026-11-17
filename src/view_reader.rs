@@ -16,6 +16,14 @@ use crate::rotation::{self, RotationState};
 use crate::toolbar::{BarGroup, ViewerBarItem};
 use crate::keymap::{Keymap, ReaderAction, MouseAction, MouseCombo};
 
+/// 自動ハイドのメニューバーが、ホバーを外れてから引っ込むまでの待機(秒)。
+const MENUBAR_HIDE_WAIT_SEC: f64 = 1.0;
+/// 自動ハイドのメニューバーの保持域の余白(px)。バー高にこれを足した範囲は、ポインタが乗っている間バーが残る。
+/// ツールボックスをバーの下へ押し下げるときの隙間にも同じ値を使う（保持域の外に出して、掴めるようにする）。
+const MENUBAR_KEEP_MARGIN: f32 = 10.0;
+/// 仮想タイトル帯が、ホバーを外れてから隠れるまでの待機(秒)。
+const TITLE_BAND_HIDE_WAIT_SEC: f64 = 3.0;
+
 const SCROLL_THRESHOLD: f32 = 50.0;
 /// アニメ専用パイプラインへ一度に許可するデコード先行幅。
 /// UIが可視アニメをtickしている間だけ、到達のたびに次の範囲を追加する。
@@ -32,6 +40,21 @@ const MAX_TEXTURE_SIDE_FALLBACK: usize = 8192;
 pub(crate) fn clamp_decode_edge(edge: u32, max_texture_side: usize) -> u32 {
     edge.min(max_texture_side.min(u32::MAX as usize) as u32).max(1)
 }
+/// 虫眼鏡中のデコード目標（縦横比を保って収める箱）。通常は1辺 `max_decode_edge` の正方形（長辺がその値まで）。
+/// 幅フィットは溢れる縦を、高さフィットは溢れる横を、GPUテクスチャの1辺上限まで広げる。
+/// 長辺基準のままだと、縦長のウェブトゥーン（例 800x20000）が幅 160px まで縮められてぼやけるため。
+/// 上限（約8192px）を超える超長尺は、それでも縮む（タイル分割はしない方針）。
+pub(crate) fn magnifier_decode_target(max_decode_edge: u32, max_texture_side: usize, fit_mode: crate::magnifier::FitMode) -> (u32, u32) {
+    use crate::magnifier::FitMode;
+    let edge = clamp_decode_edge(max_decode_edge, max_texture_side);
+    let long = clamp_decode_edge(u32::MAX, max_texture_side);
+    match fit_mode {
+        FitMode::Contain => (edge, edge),
+        FitMode::Width => (edge, long),
+        FitMode::Height => (long, edge),
+    }
+}
+
 /// サムネイルバー: 現在ページを中心にこの枚数分だけ先取り要求する（暫定固定値）。
 /// フェーズ2で実際の可視範囲ベースに置き換え予定。
 const THUMBBAR_ENQUEUE_WINDOW: i32 = 40;
@@ -201,6 +224,9 @@ struct FrameInput {
     /// 虫眼鏡の拡大縮小の割り当て（既定 Shift+ホイール）のホイール量（ノッチ単位・正=上回し）。
     /// モードのON/OFFに関わらず拾う。
     zoom_wheel_notches: f32,
+    /// 幅/高さフィットのホイールスクロール量（points・正=上回し）。ページ送りと同じ割り当てのホイールを
+    /// 画像のスクロールへ回すときだけ、`scroll_delta` から移される（それ以外は 0）。
+    wheel_scroll_px: f32,
     // ポインタ
     hover_pos: Option<egui::Pos2>,
     middle_clicked: bool,
@@ -310,6 +336,7 @@ impl FrameInput {
                 shift_scroll_delta: file_mouse.map(wheel_amount).unwrap_or(0.0),
                 wheel_notches:      page_mouse.map(wheel_notches_of).unwrap_or(0.0),
                 zoom_wheel_notches: zoom_mouse.map(wheel_notches_of).unwrap_or(0.0),
+                wheel_scroll_px:    0.0,
                 hover_pos:          i.pointer.hover_pos(),
                 middle_clicked,
                 primary_clicked:    i.pointer.button_clicked(egui::PointerButton::Primary),
@@ -345,6 +372,58 @@ fn wheel_event_amount(i: &egui::InputState, include_x: bool, line: f32, point: f
     }).sum()
 }
 
+/// ソート条件メニューの選択肢ボタン。未選択でも薄いグレー背景と枠を付けてボタンと分かるようにし、
+/// 選択中は `selected_fill` で塗る。エクスプローラー側のソートメニューと共用。
+pub(crate) fn sort_choice_button(
+    ui: &mut egui::Ui,
+    selected: bool,
+    text: impl Into<String>,
+    selected_fill: egui::Color32,
+) -> egui::Response {
+    let dark = ui.visuals().dark_mode;
+    let (fill, border, text_color) = if selected {
+        (selected_fill, selected_fill, egui::Color32::WHITE)
+    } else if dark {
+        (egui::Color32::from_gray(64), egui::Color32::from_gray(100), ui.visuals().text_color())
+    } else {
+        (egui::Color32::from_gray(222), egui::Color32::from_gray(180), ui.visuals().text_color())
+    };
+    ui.add(
+        egui::Button::new(egui::RichText::new(sort_label_plain(&text.into()).to_string()).color(text_color))
+            .fill(fill)
+            .stroke(egui::Stroke::new(1.0, border)),
+    )
+}
+
+/// 昇順/降順の矢印グリフ。豆腐チェック（glyph_audit）の対象。
+pub(crate) const SORT_ASC_ARROW: &str = "↑";
+pub(crate) const SORT_DESC_ARROW: &str = "↓";
+
+/// `[昇順]` 形式のi18nラベルから角括弧を外す。ソートメニューでは文字だけで表示する。
+pub(crate) fn sort_label_plain(s: &str) -> &str {
+    s.trim_matches(['[', ']'])
+}
+
+/// 昇順/降順の切り替えボタン。キー選択（グレー塗り）と同列に見えないよう、
+/// 塗りなし＋青系の枠線＋矢印付きで描く。
+pub(crate) fn sort_order_button(ui: &mut egui::Ui, ascending: bool) -> egui::Response {
+    let t = i18n::t();
+    let (arrow, word) = if ascending { (SORT_ASC_ARROW, t.sort_asc()) } else { (SORT_DESC_ARROW, t.sort_desc()) };
+    let accent = if ui.visuals().dark_mode {
+        egui::Color32::from_rgb(110, 160, 235)
+    } else {
+        egui::Color32::from_rgb(30, 100, 200)
+    };
+    ui.add(
+        egui::Button::new(egui::RichText::new(format!("{arrow} {}", sort_label_plain(word))).color(accent))
+            .fill(egui::Color32::TRANSPARENT)
+            .stroke(egui::Stroke::new(1.5, accent)),
+    )
+}
+
+/// 選択中のソート選択肢の塗り色（ビューアー側・エクスプローラー基本キー側）。
+pub(crate) const SORT_CHOICE_SELECTED: egui::Color32 = egui::Color32::from_rgb(30, 100, 200);
+
 /// 自然数ソート比較: 数字列は数値として比較、それ以外は文字列として比較
 fn nat_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     let mut ai = a.chars().peekable();
@@ -369,6 +448,37 @@ fn nat_cmp(a: &str, b: &str) -> std::cmp::Ordering {
             }
         }
     }
+}
+
+/// ファイル名末尾（拡張子の直前）の半角 ` (n)` を層番号として切り出す。
+/// 戻り値は (層番号, 層表記を除いた名前)。無印は層0。` (n)` の前の空白は1つまで取り除く。
+/// 括弧しかない名前（`(2).jpg`）や数字以外の括弧（`(a)`）は層なし扱い。
+pub(crate) fn split_layer(name: &str) -> (u64, String) {
+    let (stem, ext) = match name.rfind('.') {
+        Some(i) if i > 0 => name.split_at(i),
+        _ => (name, ""),
+    };
+    if let Some(inner) = stem.strip_suffix(')') {
+        if let Some(open) = inner.rfind('(') {
+            let digits = &inner[open + 1..];
+            let before = &inner[..open];
+            if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) && !before.trim_end().is_empty() {
+                let before = before.strip_suffix(' ').unwrap_or(before);
+                let layer = digits.parse::<u64>().unwrap_or(u64::MAX);
+                return (layer, format!("{before}{ext}"));
+            }
+        }
+    }
+    (0, name.to_string())
+}
+
+/// 層番号優先の自然順比較: 層番号 → 層表記を除いた名前の自然順 → 元の名前の自然順（決定性のため）。
+fn nat_layer_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let (la, ba) = split_layer(a);
+    let (lb, bb) = split_layer(b);
+    la.cmp(&lb)
+        .then_with(|| nat_cmp(&ba, &bb))
+        .then_with(|| nat_cmp(a, b))
 }
 
 fn eat_digits(iter: &mut std::iter::Peekable<std::str::Chars<'_>>) -> u64 {
@@ -499,6 +609,15 @@ pub struct ViewerState {
     default_slot_applied: bool,
     /// ツールパレットのスロット循環ボタン用: 直前に適用したスロット番号（0..3）。None = 未定義
     palette_slot_cycle_index: Option<usize>,
+    /// 「ウィンドウ位置」メニューで記録済みスロットへの上書き確認待ちの番号（0..3）
+    window_pos_overwrite_pending: Option<usize>,
+    /// 「開いたとき自動展開」チェックの変更を app 側へ渡すための待ち（外側 Some = 変更あり）
+    pending_default_slot_change: Option<Option<usize>>,
+    /// 「次回起動時の XWayland / Wayland」チェックの変更を app 側へ渡すための待ち
+    pending_launch_x11_change: Option<bool>,
+    /// 自動テスト用の制御口から届いたスロット操作コマンド（test-control feature のみ）
+    #[cfg(feature = "test-control")]
+    test_cmds: std::collections::VecDeque<crate::test_control::Cmd>,
     /// スロット保存後に app 側へ永続化を要求するフラグ
     /// 前フレームの outer_rect 左上座標（保存用、1フレーム遅れ許容）
     outer_pos: Option<egui::Pos2>,
@@ -510,8 +629,21 @@ pub struct ViewerState {
     /// 左エントリリストを最後に現在地へスクロールした spread_lo。
     /// 非表示中は更新せず、再表示時またはページ変更時だけ現在行を中央へ寄せる。
     entry_list_scrolled_lo: Option<i32>,
+    /// 直近フレームで出ていたエントリリスト本体の矩形（出ていなければ None）。
+    /// リスト上のホイールをページ送りへ渡さない（リストのスクロール専用にする）判定に使う。
+    entry_list_rect: Option<egui::Rect>,
+    /// このフレームでエントリリストが開いたばかりか（表示開始の初期位置は即時、以降のページ変更は滑らかに追従）。
+    entry_list_just_opened: bool,
+    /// リスト上で押したマウスボタンを押しっぱなしか（スワイプ中にポインターがリスト外へ出ても隠さないため）。
+    entry_list_press_in: bool,
     /// フルスクリーン時ソートバーの表示状態（上端ホバーで on/off）
     fs_sort_bar_visible: bool,
+    /// 仮想タイトル帯を隠す時刻（`FrameInput::time` 基準）。None = まだ初回フレームを迎えていない。
+    title_band_hide_at: Option<f64>,
+    /// 自動ハイド時のオーバーレイ・メニューバーの表示状態と、引っ込める時刻・直近の高さ。
+    menubar_visible: bool,
+    menubar_hide_at: Option<f64>,
+    menubar_overlay_h: f32,
     /// フルスクリーン時ソートバー右端のクローズボタンが押された（process_misc_input で消費）
     fs_close_clicked: bool,
     sort_key: ViewerSortKey,
@@ -546,7 +678,7 @@ pub struct ViewerState {
     /// thumbbar_missing_indices が毎フレーム同じエントリを再要求し、
     /// デコードワーカーが失敗デコードを永久に繰り返す（破損画像等への保険）。
     thumb_failed: HashSet<usize>,
-    /// サムネイルバー自動非表示用: 直近のページ操作(ナビゲーション入力)時刻。
+    /// サムネイルバー自動非表示用: ポインターが最後にバー上にあった（または表示を強制した）時刻。バーを出てからの待機時間の起点。
     thumbbar_last_activity: Instant,
     /// サムネイルバーを最後にセンタリングした spread_lo。ページが実際に変わった
     /// フレームでだけ scroll_to_rect を呼ぶための重複防止フラグ（毎フレーム呼ぶと
@@ -602,6 +734,8 @@ pub struct ViewerState {
     /// TODO項目B: 現在ページの手動回転状態。rotation_carry_over が true の間は
     /// この値ではなく ViewerConfig::rotation_session_angle を使う（呼び出し側判断）。
     rotation: RotationState,
+    /// ページ送りの待ち時間の計測（perf ログ専用。挙動には影響しない）。
+    flip_tracker: crate::flip_wait::FlipTracker,
     /// TODO項目D相当のダミーフラグ。D本体（設定UI・永続化）は未実装のため常時true固定
     /// （EXIF自動回転は既にデコード時にピクセルへ焼き込み済みのため、Bの範囲では
     /// このフラグを実際の分岐には使わない）。
@@ -646,6 +780,10 @@ pub struct ViewerState {
     magnifier_key: Option<crate::magnifier::MagnifierKey>,
     /// フィット表示のまま（窓サイズ変更にフィット倍率で追従する）か。
     magnifier_at_fit: bool,
+    /// いま虫眼鏡が使っているフィット基準軸（コマモード中は contain）。バー側の停止点・目盛りが参照する。
+    magnifier_fit_mode: crate::magnifier::FitMode,
+    /// `cfg.fit_mode` を最後に整合させた書庫。書庫が変わったら contain へ戻す。
+    fit_mode_archive: Option<PathBuf>,
     /// このフレームで ScrollArea へ scroll_offset を押し込む必要があるか（拡縮・作り直し・追従した）。
     magnifier_offset_dirty: bool,
     /// `magnifier_view` に反映済みのテクスチャ寸法。原寸デコードへの差し替えで寸法が変わったとき、
@@ -654,7 +792,8 @@ pub struct ViewerState {
     /// スライダーバーを最後に操作・ホバーした時刻（自動ハイドの起点）。None = 作り直し直後で、
     /// 次の描画でその時刻を起点にする（モードON直後・ページ送り直後は必ず見える）。
     magnifier_bar_active_at: Option<f64>,
-    /// ノッチ倍率／目盛りの詳細・簡易を切り替えた。次の `ViewerOutput` で保存を促して下ろす。
+    /// ノッチ倍率／目盛りの詳細・簡易、またはサムネバー配置（パレットの切替ボタン）を変えた。
+    /// 次の `ViewerOutput` で保存を促して下ろす（`magnifier_settings_changed` 経由で永続化）。
     magnifier_settings_dirty: bool,
     /// 前フレームまでにコマモードがONだったか（ONの立ち上がり検出用。基準倍率の取り込みに使う）。
     koma_was_on: bool,
@@ -681,6 +820,26 @@ pub struct ViewerState {
     /// draw_central_panel（パレット実行）は process_navigation より先に走るため、
     /// 一旦ここへ保持し process_navigation の戻り値へ合流させる。
     palette_nav_request: Option<ViewerNav>,
+    /// サムネバー／左エントリリストのクリックで要求された、任意ページ（実ページ番号 0始まり）へのジャンプ。
+    /// 描画側（draw_thumbbar_contents / draw_entry_list）は process_navigation より先に走るため、
+    /// 一旦ここへ保持し process_navigation 内で `jump_to_page` に渡す。
+    jump_page_request: Option<i32>,
+    /// サムネバーをオーバーレイ表示するとき、パレットが実際に描かれている矩形（なければ None）。
+    /// オーバーレイはパレットより後に登録されるため、重なり部分ではパレットを最上位として扱い、
+    /// サムネバー側のクリック・ドラッグ・ホイールを受け付けないために使う。
+    thumbbar_palette_block: Option<egui::Rect>,
+    /// サムネバーが今出ているか（ポインター侵入で出て、バーを出てから待機時間後に消える）。
+    thumbbar_visible: bool,
+    /// 直近フレームで出ていたサムネバーの矩形（出ていなければ None）。エントリリストなど、
+    /// サムネバーより先に処理される側が「バー上では開かない」を判定するのに使う。
+    thumbbar_shown_rect: Option<egui::Rect>,
+    /// バー上で押したマウスボタンを押しっぱなしか（スワイプ中にポインターがバー外へ出ても消さないため）。
+    thumbbar_press_in_bar: bool,
+    /// 上配置のサムネバーが優先する矩形（出ていればバー、隠れていれば発火域）。この上ではメニューバー・
+    /// ファイル名バーを新規に出さない。前フレームの値を使う（メニュー側の判定がバー判定より先に走るため）。
+    thumbbar_menu_guard: Option<egui::Rect>,
+    /// 直近フレームでファイル名バー（仮想タイトル帯）が出ていたか。上配置のバーの押し下げ量に使う。
+    title_band_shown: bool,
 }
 
 impl ViewerState {
@@ -771,19 +930,27 @@ impl ViewerState {
     /// それ以外は直近の描画領域サイズ(物理px)を上限にする。
     /// （旧実装は zoom_actual 時に None=無制限を返しており、"原寸時に許容する最大長辺幅"
     /// 設定が「ウィンドウ追従」ON時には効かないままになる抜け穴があったため統一した）
-    pub fn current_decode_target(&self, zoom_actual: bool, max_decode_edge: u32, magnifier_on: bool) -> Option<(u32, u32)> {
+    pub fn current_decode_target(&self, zoom_actual: bool, max_decode_edge: u32, magnifier_on: bool, fit_mode: crate::magnifier::FitMode) -> Option<(u32, u32)> {
         if zoom_actual {
             let edge = self.actual_decode_edge(max_decode_edge);
             Some((edge, edge))
         } else if magnifier_on {
             // 虫眼鏡: 単ページ・見開きとも、見開きの2倍は掛けず、1ページを max_decode_edge までデコードする。
-            let edge = clamp_decode_edge(max_decode_edge, self.max_texture_side);
-            Some((edge, edge))
+            Some(magnifier_decode_target(max_decode_edge, self.max_texture_side, fit_mode))
         } else {
             let (w, h) = self.content_px;
             Some((clamp_decode_edge(w, self.max_texture_side), clamp_decode_edge(h, self.max_texture_side)))
         }
     }
+
+    /// 基準解像度が「原寸」のときの常時デコード目標（ガードレール）。通常は1辺 `actual_decode_edge` の正方形で、
+    /// 虫眼鏡の幅/高さフィット中は溢れる軸をテクスチャ上限まで広げる（縦長・横長がぼやけないように）。
+    pub fn guardrail_decode_target(&self, max_decode_edge: u32, fit_mode: crate::magnifier::FitMode) -> (u32, u32) {
+        magnifier_decode_target(self.actual_decode_edge(max_decode_edge), self.max_texture_side, fit_mode)
+    }
+
+    /// GPU テクスチャの1辺の上限（P8: これを超える元画像は縮小をスキップしない）。
+    pub fn max_texture_side(&self) -> usize { self.max_texture_side }
 
     /// 「原寸」のデコード長辺上限。見開き中は2倍にし、GPUテクスチャの1辺上限で頭打ちにする。
     pub fn actual_decode_edge(&self, max_decode_edge: u32) -> u32 {
@@ -852,6 +1019,7 @@ impl ViewerState {
                 display_name: e.display_name,
                 date_key: e.date_key,
                 original_index: i,
+                stored_index: e.stored_index,
             })
             .collect();
         Self {
@@ -874,11 +1042,23 @@ impl ViewerState {
             default_slot,
             default_slot_applied: false,
             palette_slot_cycle_index: None,
+            window_pos_overwrite_pending: None,
+            pending_default_slot_change: None,
+            pending_launch_x11_change: None,
+            #[cfg(feature = "test-control")]
+            test_cmds: std::collections::VecDeque::new(),
             outer_pos: None,
             entry_list_visible: false,
             edge_turn_hover: None,
             entry_list_scrolled_lo: None,
+            entry_list_rect: None,
+            entry_list_just_opened: false,
+            entry_list_press_in: false,
             fs_sort_bar_visible: false,
+            title_band_hide_at: None,
+            menubar_visible: false,
+            menubar_hide_at: None,
+            menubar_overlay_h: 0.0,
             fs_close_clicked: false,
             sort_key: ViewerSortKey::Name,
             sort_ascending: true,
@@ -917,6 +1097,7 @@ impl ViewerState {
             translate_toggle_enabled: false,
             pending_toggle_translate_window: false,
             rotation: RotationState::new(),
+            flip_tracker: Default::default(),
             exif_enabled: true,
             slideshow_active: false,
             slideshow_last_advance: Instant::now(),
@@ -933,6 +1114,8 @@ impl ViewerState {
             magnifier_view: None,
             magnifier_key: None,
             magnifier_at_fit: true,
+            magnifier_fit_mode: crate::magnifier::FitMode::Contain,
+            fit_mode_archive: None,
             magnifier_offset_dirty: false,
             magnifier_ref_len: 0.0,
             magnifier_bar_active_at: None,
@@ -946,6 +1129,13 @@ impl ViewerState {
             magnifier_cursor: None,
             max_texture_side: MAX_TEXTURE_SIDE_FALLBACK,
             palette_nav_request: None,
+            jump_page_request: None,
+            thumbbar_palette_block: None,
+            thumbbar_visible: false,
+            thumbbar_shown_rect: None,
+            thumbbar_press_in_bar: false,
+            thumbbar_menu_guard: None,
+            title_band_shown: false,
         }
     }
 
@@ -961,6 +1151,7 @@ impl ViewerState {
             display_name: name,
             date_key: 0,
             original_index: 0,
+            stored_index: 0,
         }];
         Self {
             archive_path: path,
@@ -982,11 +1173,23 @@ impl ViewerState {
             default_slot,
             default_slot_applied: false,
             palette_slot_cycle_index: None,
+            window_pos_overwrite_pending: None,
+            pending_default_slot_change: None,
+            pending_launch_x11_change: None,
+            #[cfg(feature = "test-control")]
+            test_cmds: std::collections::VecDeque::new(),
             outer_pos: None,
             entry_list_visible: false,
             edge_turn_hover: None,
             entry_list_scrolled_lo: None,
+            entry_list_rect: None,
+            entry_list_just_opened: false,
+            entry_list_press_in: false,
             fs_sort_bar_visible: false,
+            title_band_hide_at: None,
+            menubar_visible: false,
+            menubar_hide_at: None,
+            menubar_overlay_h: 0.0,
             fs_close_clicked: false,
             sort_key: ViewerSortKey::Name,
             sort_ascending: true,
@@ -1025,6 +1228,7 @@ impl ViewerState {
             translate_toggle_enabled: false,
             pending_toggle_translate_window: false,
             rotation: RotationState::new(),
+            flip_tracker: Default::default(),
             exif_enabled: true,
             slideshow_active: false,
             slideshow_last_advance: Instant::now(),
@@ -1041,6 +1245,8 @@ impl ViewerState {
             magnifier_view: None,
             magnifier_key: None,
             magnifier_at_fit: true,
+            magnifier_fit_mode: crate::magnifier::FitMode::Contain,
+            fit_mode_archive: None,
             magnifier_offset_dirty: false,
             magnifier_ref_len: 0.0,
             magnifier_bar_active_at: None,
@@ -1054,6 +1260,13 @@ impl ViewerState {
             magnifier_cursor: None,
             max_texture_side: MAX_TEXTURE_SIDE_FALLBACK,
             palette_nav_request: None,
+            jump_page_request: None,
+            thumbbar_palette_block: None,
+            thumbbar_visible: false,
+            thumbbar_shown_rect: None,
+            thumbbar_press_in_bar: false,
+            thumbbar_menu_guard: None,
+            title_band_shown: false,
         }
     }
 
@@ -1382,6 +1595,10 @@ impl ViewerState {
         if self.is_raw_file || self.current_sort_snapshot() == (key, ascending) {
             return;
         }
+        // 格納順が使えないもの（フォルダ等）は名前順のまま開く。保存値・既定設定は触らない。
+        if key == ViewerSortKey::Stored && !self.stored_sort_available() {
+            return;
+        }
         self.sort_key = key;
         self.sort_ascending = ascending;
         self.sort_entries();
@@ -1402,8 +1619,13 @@ impl ViewerState {
 
     /// 保存ONで、現在値が保存済み値から変わっている場合だけtrue。
     pub fn sort_save_changed(&self) -> bool {
-        self.saved_sort
-            .is_some_and(|saved| saved != self.current_sort_snapshot())
+        self.saved_sort.is_some_and(|saved| {
+            // 格納順が使えないものでは名前順で開くため、保存値との差を「変更あり」と数えない
+            if saved.0 == ViewerSortKey::Stored && !self.stored_sort_available() {
+                return false;
+            }
+            saved != self.current_sort_snapshot()
+        })
     }
 
     /// 保存を解除する。現在のソート条件とページ位置は変更しない。
@@ -1588,9 +1810,28 @@ impl ViewerState {
         (get(lo), get(lo + 1))
     }
 
+    /// 「格納順」ソートが使えるか。フォルダ（仮想本）は列挙順がFS依存、単一画像は1枚のみで、
+    /// どちらも「格納順」の概念が無いため使えない（ボタンはグレーアウト）。
+    pub fn stored_sort_available(&self) -> bool {
+        !self.is_raw_file && !self.is_virtual_book
+    }
+
     fn sort_entries(&mut self) {
         let asc = self.sort_ascending;
         match self.sort_key {
+            ViewerSortKey::Stored if !self.stored_sort_available() => {
+                // 使えない状況で保存値・既定値が来ても名前順に読み替える（保存値自体は書き換えない）
+                self.entries.sort_by(|a, b| {
+                    let c = a.display_name.cmp(&b.display_name);
+                    if asc { c } else { c.reverse() }
+                });
+            }
+            ViewerSortKey::Stored => {
+                self.entries.sort_by(|a, b| {
+                    let c = a.stored_index.cmp(&b.stored_index);
+                    if asc { c } else { c.reverse() }
+                });
+            }
             ViewerSortKey::Name => {
                 self.entries.sort_by(|a, b| {
                     let c = a.display_name.cmp(&b.display_name);
@@ -1600,6 +1841,12 @@ impl ViewerState {
             ViewerSortKey::Natural => {
                 self.entries.sort_by(|a, b| {
                     let c = nat_cmp(&a.display_name, &b.display_name);
+                    if asc { c } else { c.reverse() }
+                });
+            }
+            ViewerSortKey::NaturalLayer => {
+                self.entries.sort_by(|a, b| {
+                    let c = nat_layer_cmp(&a.display_name, &b.display_name);
                     if asc { c } else { c.reverse() }
                 });
             }
@@ -1770,7 +2017,7 @@ impl ViewerState {
         let ctx = ui.ctx().clone();
         let viewer_style = ui.style().clone();
         if !self.open || self.entries.is_empty() {
-            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, spread_save_action: None, sort_save_action: None, thumbnail_save_action: None, bookmark_save_action: None, rating_save_action: None, favorite_add_requested: false, toggle_translate_window: false, tool_palette_changed: false, magnifier_settings_changed: false, palette_key_assign: None };
+            return ViewerOutput { nav: ViewerNav::None, close_requested: !self.open, save_slots: None, default_slot_change: None, launch_x11_change: None, spread_save_action: None, sort_save_action: None, thumbnail_save_action: None, bookmark_save_action: None, rating_save_action: None, favorite_add_requested: false, toggle_translate_window: false, tool_palette_changed: false, magnifier_settings_changed: false, palette_key_assign: None };
         }
 
         // ── フレーム入力を一括収集（ctx.input はこの1回のみ）────────────────
@@ -1878,19 +2125,6 @@ impl ViewerState {
         let shift_scroll_delta = input.shift_scroll_delta;
         let scroll_delta = scroll_delta_raw;
 
-        // サムネイルバー自動非表示用: ページ送りに関わる入力があった時刻を記録する。
-        // key_left/key_right（←→）はファイル切替専用でこのビューア内のページ送りではなく、
-        // 端（先頭/末尾ファイル）で移動先が無い場合は何も動かずトーストが出るだけ。その場合は
-        // ここで無条件にタイマーを更新すると「何も動いていないのにバーだけ反応する」矛盾が
-        // 起きるため対象から外す。移動が成功した場合は新規 ViewerState 生成時に
-        // thumbbar_last_activity が Instant::now() で初期化されるため、そちらで表示される。
-        if key_up || key_down || key_space
-            || shift_nav_up || shift_nav_down || input.key_home || input.key_end
-            || scroll_delta != 0.0 || shift_scroll_delta != 0.0
-        {
-            self.thumbbar_last_activity = Instant::now();
-        }
-
         if key_left || key_right || key_up || key_down || key_space || esc || zoom_key || fs_key
             || mode1 || mode2 || mode3 || shift4 || shift5
             || shift_nav_up || shift_nav_down || input.key_home || input.key_end
@@ -1922,25 +2156,14 @@ impl ViewerState {
         // 豆腐になるため。実ファイル名は右クリック「ファイル詳細」で確認できる）。
         ctx.send_viewport_cmd(egui::ViewportCommand::Title("Nekoviewer - Imageview".to_owned()));
 
-        let save_slots = self.draw_top_bar(ui, &ctx, &input, &viewer_style, cfg);
+        let save_slots = self.draw_top_bar(ui, &ctx, &input, &viewer_style, cfg, keymap);
 
-        // ── 左エントリリスト ──────────────────────────────────────────────────
-        self.draw_entry_list(ui, &ctx, &viewer_style, input.hover_pos, input.viewport_rect);
+        // 左エントリリストは本画像の前面にオーバーレイ表示する（領域を確保しない＝画像は縮まない）。
+        // 表示判定・描画は draw_central_panel 内（サムネバーと同様、パレットより先に描く）。
 
         // ── アーカイブ内サムネイルバー ────────────────────────────────────────
+        // 表示の可否・矩形は draw_central_panel 内（ポインター侵入トリガー）で決めて描く。
         // 単一ファイル/1ファイル格納アーカイブでは常に非表示（設定に関わらず）。
-        // idle_hide_ms > 0 のとき、ページ操作停滞がその時間を超えたら自動的に隠す(0=常時表示)。
-        let idle_ms = cfg.thumbbar_idle_hide_ms;
-        let idle_elapsed_ms = self.thumbbar_last_activity.elapsed().as_millis() as u64;
-        let auto_hidden = idle_ms > 0 && idle_elapsed_ms >= idle_ms;
-        if idle_ms > 0 && !auto_hidden {
-            // 残り時間ちょうどで再描画させ、入力が無くても自動的に隠れるようにする。
-            ctx.request_repaint_after(Duration::from_millis((idle_ms - idle_elapsed_ms).max(1)));
-        }
-        let show_thumbbar = cfg.thumbbar_pos != ThumbbarPos::None && total > 1 && !auto_hidden;
-        if show_thumbbar && !cfg.thumbbar_overlap {
-            self.draw_thumbbar_panel(ui, cfg, cfg.thumbbar_pos);
-        }
         let viewport_before_central = ui.max_rect();
 
         // ── 既定動作（ホイールの拡大割り当て・既定 Shift+ホイール）での虫眼鏡モード入場 ─────
@@ -1952,6 +2175,8 @@ impl ViewerState {
             && !self.tool_palette_menu_open
             && input.hover_pos.is_some_and(|p| {
                 viewport_before_central.contains(p)
+                    && !self.thumbbar_shown_rect.is_some_and(|r| r.contains(p))
+                    && !self.entry_list_rect.is_some_and(|r| r.contains(p))
                     && !self.tool_palette_rect(viewport_before_central).is_some_and(|r| r.contains(p))
             })
         {
@@ -1961,6 +2186,16 @@ impl ViewerState {
         // コマモードは虫眼鏡の上のサブモード。虫眼鏡がOFFの間（終了ボタン・トグル・入場前）は常にOFF。
         if !cfg.magnifier_on {
             cfg.koma_on = false;
+            // 幅/高さフィットも虫眼鏡の上のサブモード。虫眼鏡が切れたら全体へ戻す（終了ボタン・トグル）。
+            cfg.fit_mode = crate::magnifier::FitMode::Contain;
+            cfg.fit_entered_magnifier = false;
+        }
+
+        // 幅/高さフィットは書庫単位のセッション状態。書庫が変わったら contain へ戻す（ページ送りでは維持）。
+        // 虫眼鏡に入る前の設定も消さないよう、虫眼鏡の有無によらず毎フレームここで整合させる。
+        if self.fit_mode_archive.as_deref() != Some(self.archive_path.as_path()) {
+            cfg.set_fit_mode(crate::magnifier::FitMode::Contain);
+            self.fit_mode_archive = Some(self.archive_path.clone());
         }
 
         let rotation_angle = self.manual_rotation_angle(cfg);
@@ -1971,10 +2206,18 @@ impl ViewerState {
             } else {
                 tex_lo.is_some()
             };
+        // 幅/高さフィット中でスクロール指定のときは、ページ送りと同じ割り当てのホイールを画像のスクロールへ回す
+        // （拡縮は専用の割り当て=既定Shift+ホイールだけが担う）。それ以外は従来どおりホイール=拡縮。
+        let wheel_scrolls = magnifier_active && Self::wheel_scroll_effective(cfg);
         if magnifier_active {
-            // ホイールはページ送りではなく拡縮へ回す。専用の拡大縮小の割り当てぶんも足す。
+            // ホイールはページ送りではなく拡縮（またはスクロール）へ回す。専用の拡大縮小の割り当てぶんも足す。
+            if wheel_scrolls {
+                input.wheel_scroll_px = input.scroll_delta;
+                input.wheel_notches = input.zoom_wheel_notches;
+            } else {
+                input.wheel_notches += input.zoom_wheel_notches;
+            }
             input.scroll_delta = 0.0;
-            input.wheel_notches += input.zoom_wheel_notches;
         } else {
             input.wheel_notches = 0.0;
         }
@@ -1995,23 +2238,19 @@ impl ViewerState {
             page_animated,
         };
         let tool_palette_before = self.tool_palette.clone();
-        let (double_clicked, single_clicked) = self.draw_central_panel(ui, &frame, &input, is_spread, step, total, cfg, keymap);
+        let (double_clicked, _single_clicked) = self.draw_central_panel(ui, &frame, &input, is_spread, step, total, cfg, keymap);
         if self.tool_palette != tool_palette_before {
             self.tool_palette_last_changed = Some(Instant::now());
         }
         let tool_palette_changed = self.poll_tool_palette_debounce(cfg, &ctx);
 
-        // メイン画像シングルクリックでサムネバーの自動非表示タイマーを早送りし、即座に隠す。
-        // idle_hide_ms == 0（常時表示設定）のときは早送り対象のタイマー自体が存在しないため何もしない。
-        if single_clicked && idle_ms > 0 {
-            self.thumbbar_last_activity = Instant::now() - Duration::from_millis(idle_ms);
-            ctx.request_repaint();
+        // サムネバー・エントリリスト上のホイールは、それぞれの表示位置を動かす専用（ScrollArea が処理する）。
+        // ページ送り・ファイル送りへは渡さない（ページ送りはその外でのみ）。
+        let wheel_over = |r: Option<egui::Rect>| r.zip(input.hover_pos).is_some_and(|(r, p)| r.contains(p));
+        if wheel_over(self.thumbbar_shown_rect) || wheel_over(self.entry_list_rect) {
+            input.scroll_delta = 0.0;
+            input.shift_scroll_delta = 0.0;
         }
-
-        if show_thumbbar && cfg.thumbbar_overlap {
-            self.draw_thumbbar_overlay(ui, cfg, cfg.thumbbar_pos, viewport_before_central);
-        }
-
         let nav = self.process_navigation(&input, is_spread, step, total, frame.magnifier && cfg.koma_on);
         if std::mem::take(&mut self.koma_moved) {
             ctx.request_repaint();
@@ -2031,7 +2270,7 @@ impl ViewerState {
         self.maybe_open_file_detail_dialog();
         self.draw_file_detail_dialog(&ctx);
         let palette_key_assign = self.draw_tool_palette_key_assign(&ctx, keymap);
-        ViewerOutput { nav, close_requested: close_self, save_slots, spread_save_action, sort_save_action, thumbnail_save_action, bookmark_save_action, rating_save_action, favorite_add_requested, toggle_translate_window, tool_palette_changed, magnifier_settings_changed: std::mem::take(&mut self.magnifier_settings_dirty), palette_key_assign }
+        ViewerOutput { nav, close_requested: close_self, save_slots, default_slot_change: self.pending_default_slot_change.take(), launch_x11_change: self.pending_launch_x11_change.take(), spread_save_action, sort_save_action, thumbnail_save_action, bookmark_save_action, rating_save_action, favorite_add_requested, toggle_translate_window, tool_palette_changed, magnifier_settings_changed: std::mem::take(&mut self.magnifier_settings_dirty), palette_key_assign }
     }
 
     /// ツールパレットの変更確定処理。image_filterのpoll_image_filter_debounceと同じ考え方で、
@@ -2060,13 +2299,10 @@ impl ViewerState {
     }
 
     /// ウィンドウ位置・サイズスロットを実際にウィンドウへ適用する共通処理。
-    /// 画面外に出ないよう `clamp_slot_position_inner` で補正してから送る。
+    /// 画面外に出ないよう、全モニターを見て `clamp_slot_position` で補正してから送る。
     fn apply_window_slot(ctx: &egui::Context, slot: WindowSlot, monitor_size: Option<egui::Vec2>) -> (i32, i32) {
-        let (cx, cy) = if let Some(m) = monitor_size {
-            Self::clamp_slot_position_inner(slot.x, slot.y, slot.w, slot.h, m)
-        } else {
-            (slot.x, slot.y)
-        };
+        let monitors = Self::slot_monitors(ctx, monitor_size);
+        let (cx, cy) = crate::monitor_geom::clamp_slot_position(slot.x, slot.y, slot.w, slot.h, &monitors);
         ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(
             egui::pos2(cx as f32, cy as f32),
         ));
@@ -2074,6 +2310,20 @@ impl ViewerState {
             egui::vec2(slot.w as f32, slot.h as f32),
         ));
         (cx, cy)
+    }
+
+    /// スロットの補正・番号逆算に使うモニター一覧。取得できないときは、いまいるモニターを
+    /// 原点に置いた1枚として扱う（旧実装と同じ挙動）。それも無ければ空（補正しない）。
+    /// 一部の X サーバーが返す極小のダミーモニター（1x1 等）は、補正が全部の窓を押し潰すので無視する。
+    fn slot_monitors(ctx: &egui::Context, monitor_size: Option<egui::Vec2>) -> Vec<crate::monitor_geom::MonitorRect> {
+        let v = crate::winit_app::monitor_rects(ctx);
+        if !v.is_empty() {
+            return v;
+        }
+        monitor_size
+            .filter(|m| m.x >= 200.0 && m.y >= 200.0)
+            .map(|m| vec![crate::monitor_geom::MonitorRect { x: 0, y: 0, w: m.x as u32, h: m.y as u32 }])
+            .unwrap_or_default()
     }
 
     /// ビューアーを開いた直後（初回フレーム）に conf 既定スロットを一度だけ適用する。
@@ -2161,8 +2411,12 @@ impl ViewerState {
         input: &FrameInput,
         style: &egui::Style,
         cfg: &mut ViewerConfig,
+        keymap: &Keymap,
     ) -> Option<[Option<WindowSlot>; 4]> {
         let mut save_slots = None;
+
+        #[cfg(feature = "test-control")]
+        self.run_test_cmds(ctx, input, &mut save_slots);
 
         // ── スロット適用（F5〜F8）────────────────────────────────────────────
         if let Some(idx) = input.slot_apply {
@@ -2174,34 +2428,46 @@ impl ViewerState {
         }
 
         // ── メニューバー（フルスクリーン時は非表示）────────────────────────────
+        // 自動ハイドOFF: 従来どおり常時表示のパネル。ON: 画像の上に重ねるオーバーレイで、
+        // 上端ホバーで出て、外れて MENUBAR_HIDE_WAIT_SEC 後に引っ込む。
         if !cfg.fullscreen {
-            egui::Panel::top("slot_bar")
-                .frame(egui::Frame::side_top_panel(style))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        self.draw_bar_items(ui, cfg);
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            for i in (0..4usize).rev() {
-                                let label = i18n::t().slot_label(i + 5);
-                                let has_slot = self.slots[i].is_some();
-                                if ui.selectable_label(has_slot, &label).clicked() {
-                                    if let (Some(pos), Some(inner)) = (self.outer_pos, input.inner_rect) {
-                                        self.slots[i] = Some(WindowSlot {
-                                            x: pos.x as i32,
-                                            y: pos.y as i32,
-                                            w: inner.width() as u32,
-                                            h: inner.height() as u32,
-                                        });
-                                        save_slots = Some(self.slots);
-                                        log_key!("[slot] save slot{} → pos=({},{}) size={}x{}",
-                                            i + 1, pos.x as i32, pos.y as i32,
-                                            inner.width() as u32, inner.height() as u32);
-                                    }
-                                }
-                            }
-                        });
+            if cfg.menubar_autohide {
+                self.draw_overlay_menubar(ctx, input, style, cfg, keymap, &mut save_slots);
+            } else {
+                self.menubar_overlay_h = 0.0;
+                egui::Panel::top("slot_bar")
+                    .frame(egui::Frame::side_top_panel(style))
+                    .show(ui, |ui| {
+                        self.draw_menubar_row(ui, ctx, input, cfg, keymap, &mut save_slots);
                     });
-                });
+            }
+        } else {
+            self.menubar_overlay_h = 0.0;
+        }
+
+        // ── ウィンドウ位置の上書き確認 ──────────────────────────────────────
+        if let Some(idx) = self.window_pos_overwrite_pending {
+            let t = i18n::t();
+            let key = keymap.apply_slot_key_label(idx).unwrap_or_else(|| t.window_pos_key_none().to_owned());
+            let outcome = crate::confirm_dialog::draw_confirm_dialog(
+                ctx,
+                crate::confirm_dialog::ConfirmDialogSpec {
+                    id_salt: "window_pos_overwrite_confirm_window",
+                    title: t.window_pos_overwrite_title(),
+                    ok_label: t.window_pos_overwrite_ok(),
+                    cancel_label: t.favorite_dialog_cancel(),
+                    foreground: true,
+                },
+                |ui| { ui.label(t.window_pos_overwrite_body(&key)); },
+            );
+            match outcome {
+                crate::confirm_dialog::ConfirmOutcome::Ok => {
+                    self.window_pos_overwrite_pending = None;
+                    self.record_window_slot(idx, input, &mut save_slots);
+                }
+                crate::confirm_dialog::ConfirmOutcome::Cancel => self.window_pos_overwrite_pending = None,
+                crate::confirm_dialog::ConfirmOutcome::None => {}
+            }
         }
 
         // ── フルスクリーン時ソートバー（上端ホバーでポップアップ）────────────
@@ -2238,6 +2504,238 @@ impl ViewerState {
         }
 
         save_slots
+    }
+
+    /// 現在のビューアー位置・サイズをスロット idx（0..3）へ記録する。位置が未取得の間は何もしない。
+    fn record_window_slot(&mut self, idx: usize, input: &FrameInput, save_slots: &mut Option<[Option<WindowSlot>; 4]>) {
+        let (Some(pos), Some(inner)) = (self.outer_pos, input.inner_rect) else { return };
+        self.slots[idx] = Some(WindowSlot {
+            x: pos.x as i32,
+            y: pos.y as i32,
+            w: inner.width() as u32,
+            h: inner.height() as u32,
+        });
+        *save_slots = Some(self.slots);
+        log_key!("[slot] save slot{} → pos=({},{}) size={}x{}",
+            idx + 1, pos.x as i32, pos.y as i32,
+            inner.width() as u32, inner.height() as u32);
+    }
+
+    /// スロット idx（0..3）の記録を消す。自動展開の指定は外さない（空のまま残り、展開はno-op）。
+    fn delete_window_slot(&mut self, idx: usize, save_slots: &mut Option<[Option<WindowSlot>; 4]>) {
+        self.slots[idx] = None;
+        *save_slots = Some(self.slots);
+        log_key!("[slot] delete slot{}", idx + 1);
+    }
+
+    /// 「開いたとき自動展開」のスロットを変える（None = なし）。app 側への永続化は出力経由。
+    fn set_auto_apply_slot(&mut self, next: Option<usize>) {
+        self.default_slot = next;
+        self.pending_default_slot_change = Some(next);
+    }
+
+    /// 自動テスト用: 溜めたコマンドを、メニュー操作と同じ関数経由で実行する。
+    #[cfg(feature = "test-control")]
+    fn run_test_cmds(&mut self, ctx: &egui::Context, input: &FrameInput, save_slots: &mut Option<[Option<WindowSlot>; 4]>) {
+        use crate::test_control::Cmd;
+        while let Some(cmd) = self.test_cmds.pop_front() {
+            match cmd {
+                Cmd::Apply(i) => self.apply_window_slot_and_toast(ctx, i),
+                Cmd::Record(i) => self.record_window_slot(i, input, save_slots),
+                Cmd::Delete(i) => self.delete_window_slot(i, save_slots),
+                Cmd::Auto(v) => self.set_auto_apply_slot(v),
+                Cmd::LaunchX11(v) => self.set_launch_x11(v),
+                Cmd::Move { .. } | Cmd::Recover | Cmd::Close | Cmd::Dump => {}
+            }
+        }
+    }
+
+    #[cfg(feature = "test-control")]
+    pub fn test_push_cmd(&mut self, cmd: crate::test_control::Cmd) {
+        self.test_cmds.push_back(cmd);
+    }
+
+    #[cfg(feature = "test-control")]
+    pub fn test_cmds_idle(&self) -> bool {
+        self.test_cmds.is_empty()
+    }
+
+    /// メニュー最上段の、起動バックエンド（Wayland / XWayland）の案内と「次回起動時」のチェック。
+    /// Wayland セッションでだけ出す。チェックは状態ではなく「次回に今のモードを変えたい」意思
+    /// （[`crate::display_backend`]）。
+    /// メニューバー1行分の中身（左: ツールバー項目 / 右端から: 自動ハイドトグル → ウィンドウ位置）。
+    fn draw_menubar_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        input: &FrameInput,
+        cfg: &mut ViewerConfig,
+        keymap: &Keymap,
+        save_slots: &mut Option<[Option<WindowSlot>; 4]>,
+    ) {
+        ui.horizontal(|ui| {
+            self.draw_bar_items(ui, cfg);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let lang = i18n::t();
+                // right_to_left の最初の要素が最右端になる。
+                if ui
+                    .selectable_label(cfg.menubar_autohide, lang.menubar_autohide_label())
+                    .on_hover_text(lang.menubar_autohide_hint())
+                    .clicked()
+                {
+                    cfg.menubar_autohide = !cfg.menubar_autohide;
+                    ctx.request_repaint();
+                }
+                // 記録・削除は押しても閉じない（表示を更新するだけ）。展開は自分で ui.close() する。
+                let config = egui::containers::menu::MenuConfig::new()
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+                egui::containers::menu::MenuButton::new(lang.window_pos_menu_label())
+                    .config(config)
+                    .ui(ui, |ui| self.draw_window_pos_menu(ui, ctx, input, keymap, save_slots));
+            });
+        });
+    }
+
+    /// 自動ハイドON時のオーバーレイ・メニューバー。表示状態と待機時間もここで更新する。
+    #[allow(clippy::too_many_arguments)]
+    fn draw_overlay_menubar(
+        &mut self,
+        ctx: &egui::Context,
+        input: &FrameInput,
+        style: &egui::Style,
+        cfg: &mut ViewerConfig,
+        keymap: &Keymap,
+        save_slots: &mut Option<[Option<WindowSlot>; 4]>,
+    ) {
+        const TRIGGER_H: f32 = 40.0;
+        const KEEP_MARGIN: f32 = MENUBAR_KEEP_MARGIN;
+        let vp = input.viewport_rect;
+        let bar_h = self.menubar_overlay_h;
+
+        // ポップアップ(ウィンドウ位置メニュー等)や上書き確認の表示中は、ポインタが外れても引っ込めない。
+        let engaged = egui::Popup::is_any_open(ctx) || self.window_pos_overwrite_pending.is_some();
+        // 表示中の保持域は出現域(TRIGGER_H)より狭くしない。狭いと、その差の帯にポインタを置いたまま
+        // 「出る→保持域外で待機切れ→引っ込む→出る」を繰り返してちらつく。
+        let keep_h = if self.menubar_visible { (bar_h + KEEP_MARGIN).max(TRIGGER_H) } else { TRIGGER_H };
+        // 上配置のサムネバーが優先する範囲では、メニューバーを新規に出さない（出ている間の保持には影響しない）。
+        let blocked_by_thumbbar = |p: egui::Pos2| !self.menubar_visible && self.thumbbar_menu_guard.is_some_and(|g| g.contains(p));
+        let hovering = input.hover_pos.is_some_and(|p| vp.contains(p) && p.y < vp.min.y + keep_h && !blocked_by_thumbbar(p));
+        if hovering || (engaged && self.menubar_visible) {
+            self.menubar_hide_at = Some(input.time + MENUBAR_HIDE_WAIT_SEC);
+            self.menubar_visible = true;
+        } else if self.menubar_visible && self.menubar_hide_at.is_none_or(|t| input.time >= t) {
+            self.menubar_visible = false;
+            self.menubar_hide_at = None;
+            ctx.request_repaint();
+        }
+        if !self.menubar_visible {
+            self.menubar_overlay_h = 0.0;
+            return;
+        }
+        // 巻き込み: バーが見えている間はタイトル帯も出し続け、バーが引っ込んだ時点から通常の待機に入る。
+        self.title_band_hide_at = Some(input.time + TITLE_BAND_HIDE_WAIT_SEC);
+        ctx.request_repaint_after(Duration::from_millis(100));
+
+        let area = egui::Area::new(egui::Id::new("menubar_overlay"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(vp.min)
+            .constrain(false)
+            .show(ctx, |ui| {
+                ui.set_width(vp.width());
+                egui::Frame::side_top_panel(style).show(ui, |ui| {
+                    ui.set_width(vp.width() - 2.0 * ui.spacing().window_margin.leftf());
+                    self.draw_menubar_row(ui, ctx, input, cfg, keymap, save_slots);
+                });
+            });
+        self.menubar_overlay_h = area.response.rect.height();
+    }
+
+    fn draw_backend_notice(&mut self, ui: &mut egui::Ui) {
+        use crate::display_backend::{self as backend, Mode};
+        let mode = backend::mode();
+        if mode == Mode::NotWayland {
+            return;
+        }
+        let t = i18n::t();
+        ui.scope(|ui| {
+            ui.set_max_width(420.0);
+            let next_label = match mode {
+                Mode::XWayland => {
+                    ui.label(t.backend_xwayland_running());
+                    ui.weak(t.backend_xwayland_hint());
+                    t.backend_next_wayland()
+                }
+                _ => {
+                    ui.colored_label(ui.visuals().warn_fg_color, t.backend_wayland_warning());
+                    t.backend_next_xwayland()
+                }
+            };
+            if backend::x11_unavailable() {
+                ui.colored_label(ui.visuals().error_fg_color, t.backend_xwayland_unavailable());
+            }
+            let mut pending = backend::switch_pending();
+            if ui.checkbox(&mut pending, next_label).changed() {
+                self.set_launch_x11(backend::next_launch_for_pending(mode, pending));
+            }
+            ui.separator();
+        });
+    }
+
+    /// 「次回起動時に XWayland で起動する」を変える。app 側への永続化は出力経由。
+    fn set_launch_x11(&mut self, next: bool) {
+        crate::display_backend::set_next_launch_x11(next);
+        self.pending_launch_x11_change = Some(next);
+    }
+
+    /// 「ウィンドウ位置」メニューの中身。1行=キー名・展開・記録内容・記録。
+    fn draw_window_pos_menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        input: &FrameInput,
+        keymap: &Keymap,
+        save_slots: &mut Option<[Option<WindowSlot>; 4]>,
+    ) {
+        let t = i18n::t();
+        self.draw_backend_notice(ui);
+        let monitors = Self::slot_monitors(ctx, input.monitor_size);
+        egui::Grid::new("window_pos_menu_grid").num_columns(6).show(ui, |ui| {
+            for i in 0..4usize {
+                let key = keymap.apply_slot_key_label(i).unwrap_or_else(|| t.window_pos_key_none().to_owned());
+                let slot = self.slots[i];
+                ui.label(key);
+                if ui.add_enabled(slot.is_some(), egui::Button::new(t.window_pos_apply())).clicked() {
+                    self.apply_window_slot_and_toast(ctx, i);
+                    ui.close();
+                }
+                match slot {
+                    Some(s) => {
+                        let mon = crate::monitor_geom::monitor_index_for_slot(s.x, s.y, s.w, s.h, &monitors).map(|i| i + 1);
+                        ui.label(t.window_pos_entry(mon, s.x, s.y, s.w, s.h));
+                    }
+                    None => { ui.weak(t.window_pos_empty()); }
+                }
+                if ui.button(t.window_pos_record()).clicked() {
+                    if slot.is_some() {
+                        self.window_pos_overwrite_pending = Some(i);
+                    } else {
+                        self.record_window_slot(i, input, save_slots);
+                    }
+                }
+                // 削除は確認なし。自動展開に指定中でもチェックは外さない（空のまま残り、展開はno-op）。
+                if ui.add_enabled(slot.is_some(), egui::Button::new(t.window_pos_delete())).clicked() {
+                    self.delete_window_slot(i, save_slots);
+                }
+                let mut auto = self.default_slot == Some(i);
+                if ui.checkbox(&mut auto, t.window_pos_auto_apply())
+                    .on_hover_text(t.window_pos_auto_apply_hint())
+                    .changed()
+                {
+                    self.set_auto_apply_slot(if auto { Some(i) } else { None });
+                }
+                ui.end_row();
+            }
+        });
     }
 
     /// フルスクリーン時ソートバーのクローズボタン。
@@ -2322,12 +2820,63 @@ impl ViewerState {
             self.jump_to_last_page(is_spread, step, total_i);
         }
 
+        // サムネバー／左エントリリストのクリックによる任意ページへのジャンプ。
+        if let Some(page) = self.jump_page_request.take() {
+            self.jump_to_page(page, is_spread, total_i);
+        }
+
         // ツールパレットのファイル送りボタン（draw_central_panelで本関数より先に実行済み）の要求を合流。
         if let Some(req) = self.palette_nav_request.take() {
             nav = req;
         }
 
         nav
+    }
+
+    /// 実ページ `page`（0始まり）を含む表示位置を求める。戻り値は `(spread_base, force_virtual_left)`。
+    /// - 単ページ: `spread_base = page`、offset は 0 に戻す。
+    /// - 見開き: offset(-1/0/+1)は維持し、`page` を含む見開き（lo は offset と偶奇が一致）へ着地する。
+    ///   offset=+1 で先頭ページ(0)が対象のときは lo=-1 となり +1 では表現できないため、仮想左（-1）へ倒す。
+    fn jump_target(page: i32, offset: i32, is_spread: bool, total: i32) -> (i32, bool) {
+        let page = page.clamp(0, (total - 1).max(0));
+        if !is_spread {
+            return (page, false);
+        }
+        let lo = if (page - offset).rem_euclid(2) == 0 { page } else { page - 1 };
+        if lo < 0 {
+            // lo == -1: 先頭仮想ページ付き（offset=-1）。spread_base は 0。
+            return (0, true);
+        }
+        (lo - offset, false)
+    }
+
+    /// サムネバーの配置を次の状態へ進める（OFF→下→左→上→右→OFF）。設定は永続化する。
+    /// 押した瞬間にその配置先へ実際に出し、自動非表示のタイマーもその時点から始める
+    /// （自動非表示で消えていても、操作時刻を更新することで再び見える）。
+    fn cycle_thumbbar_pos(&mut self, ctx: &egui::Context, cfg: &mut ViewerConfig) {
+        cfg.thumbbar_pos = cfg.thumbbar_pos.next_cycle();
+        // 押した瞬間にその配置先へ表示し、非表示タイマーもここから数え直す（ポインターがバー外ならそのまま待機時間で消える）。
+        self.thumbbar_visible = true;
+        self.thumbbar_last_activity = Instant::now();
+        // 新しい配置先でも現在ページが中央に来るよう、センタリング済み記録を捨てる。
+        self.thumbbar_scrolled_lo = None;
+        self.magnifier_settings_dirty = true;
+        ctx.request_repaint();
+    }
+
+    /// 任意の実ページへ絶対ジャンプ（サムネバー／エントリリストのクリック用）。
+    /// 見開きは `page` を含む見開きに着地し、ページずれ(offset)は維持する。
+    fn jump_to_page(&mut self, page: i32, is_spread: bool, total_i: i32) {
+        self.scroll_acc = 0.0;
+        self.shift_scroll_acc = 0.0;
+        let (base, force_left) = Self::jump_target(page, self.offset.value(), is_spread, total_i);
+        if !is_spread {
+            self.offset.reset();
+        } else if force_left {
+            self.offset.force_virtual_left();
+        }
+        self.spread_base = base;
+        self.offset.update_virtual_right(is_spread && self.spread_lo() + 1 >= total_i);
     }
 
     /// アーカイブ内先頭ページへ絶対ジャンプ。通常のページ送りを限界まで行った状態と
@@ -2446,9 +2995,29 @@ impl ViewerState {
         let size = self.tool_palette_grid_size();
         let max_x = (viewport.max.x - size.x).max(viewport.min.x);
         let max_y = (viewport.max.y - size.y).max(viewport.min.y);
-        let min_x = self.tool_palette.pos.0.clamp(viewport.min.x, max_x);
-        let min_y = self.tool_palette.pos.1.clamp(viewport.min.y, max_y);
+        let raw = self.tool_palette.top_left(viewport, size);
+        let min_x = raw.x.clamp(viewport.min.x, max_x);
+        let min_y = raw.y.clamp(viewport.min.y, max_y);
         Some(egui::Rect::from_min_size(egui::pos2(min_x, min_y), size))
+    }
+
+    /// 自動ハイドのメニューバーが出ていて、ツールボックスの上端がバーに重なっているときだけ、
+    /// ツールボックスをバーの下へ押し下げる（寄せ先は保ったまま offset を求め直すので、位置は保存される）。
+    /// バーが出ていない間・重なっていない間は何もしない。バーはヘッダー（ドラッグの掴み場所）を覆い、
+    /// しかも上端40pxに触れるだけで出てくるため、重なったまま放置するとツールボックスを掴めなくなる。
+    fn push_palette_below_overlay_menubar(&mut self, viewport: egui::Rect) {
+        let bar_h = self.menubar_overlay_h;
+        if bar_h <= 0.0 {
+            return;
+        }
+        let Some(rect) = self.tool_palette_rect(viewport) else {
+            return;
+        };
+        if rect.min.y >= viewport.min.y + bar_h {
+            return;
+        }
+        let target = egui::pos2(rect.min.x, viewport.min.y + bar_h + MENUBAR_KEEP_MARGIN);
+        self.tool_palette.set_top_left_keep_anchor(viewport, rect.size(), target);
     }
 
     /// ツールパレットのオーバーレイ本体を描画する。子Ui＋Painter直描き方式
@@ -2459,6 +3028,8 @@ impl ViewerState {
         ui.painter().rect_filled(rect, 6.0, egui::Color32::from_black_alpha(bg_alpha));
 
         let mut child = ui.new_child(egui::UiBuilder::new().id_salt("tool_palette_child").max_rect(rect));
+        // 背景は画像上の固定の暗色。ライト時も文字が読めるよう、中身はダークの見た目に固定する。
+        crate::ui_theme::force_dark_visuals(&mut child);
 
         // パレット全体を覆う土台のinteract。マス間・ヘッダー余白などどの個別ウィジェットにも
         // 拾われない隙間のクリック／右クリックが背面（画像側の全面クリック領域）へ抜けて
@@ -2491,7 +3062,12 @@ impl ViewerState {
             if drag_resp.dragged() {
                 // 加算基準は生値ではなく表示中（クランプ済み）の左上。クランプ中に生値へ
                 // 移動量が蓄積して、逆方向へ動かしても長く追従しなくなるのを防ぐ。
-                self.tool_palette.pos = (rect.min.x + drag_resp.drag_delta().x, rect.min.y + drag_resp.drag_delta().y);
+                // 寄せ先はドラッグ中は固定し、offsetだけ動かす（離したときに寄せ先を決め直す）。
+                let moved = rect.min + drag_resp.drag_delta();
+                self.tool_palette.set_top_left_keep_anchor(viewport, rect.size(), moved);
+            }
+            if drag_resp.drag_stopped() {
+                self.tool_palette.reanchor_at(viewport, rect.size(), rect.min);
             }
         }
 
@@ -2707,6 +3283,24 @@ impl ViewerState {
                     }
                     _ => None,
                 };
+                // サムネバー切替：現在の配置（TOP/BOTTOM/LEFT/RIGHT、または OFF）を文字で表示する。
+                // OFF のみ灰色、表示中は緑（ON/OFF 表示と同じ配色）。
+                if content == crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::CycleThumbbar) {
+                    let on = cfg.thumbbar_pos != ThumbbarPos::None;
+                    let (r, g, b) = if on { (80, 220, 120) } else { (170, 170, 170) };
+                    let state_color = egui::Color32::from_rgba_unmultiplied(r, g, b, label_alpha);
+                    let state_font_size = (slot * 0.24).clamp(7.0, 12.0);
+                    let state_galley = child.painter().layout_no_wrap(
+                        lang.tool_palette_thumbbar_state(cfg.thumbbar_pos).to_string(),
+                        egui::FontId::proportional(state_font_size),
+                        state_color,
+                    );
+                    let state_pos = egui::pos2(
+                        slot_rect.center().x - state_galley.size().x / 2.0,
+                        slot_rect.max.y - state_galley.size().y - LABEL_PAD,
+                    );
+                    child.painter().with_clip_rect(slot_rect).galley(state_pos, state_galley, state_color);
+                }
                 if let Some(on) = stateful_action_on {
                     let (r, g, b) = if on { (80, 220, 120) } else { (170, 170, 170) };
                     let state_color = egui::Color32::from_rgba_unmultiplied(r, g, b, label_alpha);
@@ -2737,6 +3331,7 @@ impl ViewerState {
                 let mut dialog_child = ui.new_child(
                     egui::UiBuilder::new().id_salt("tool_palette_dialog_child").max_rect(dialog_rect.shrink(Self::TOOL_PALETTE_PAD)),
                 );
+                crate::ui_theme::force_dark_visuals(&mut dialog_child);
                 let mut dialog = crate::tool_palette::create_dialog(kind);
 
                 const CLOSE_BTN_W: f32 = 20.0;
@@ -2905,6 +3500,9 @@ impl ViewerState {
             crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::ApplySlot4) => {
                 self.apply_window_slot_and_toast(ctx, 3);
             }
+            crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::CycleThumbbar) => {
+                self.cycle_thumbbar_pos(ctx, cfg);
+            }
             crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::CycleApplySlot) => {
                 self.cycle_apply_slot_and_toast(ctx);
             }
@@ -3052,6 +3650,7 @@ impl ViewerState {
             )
             .then(|| crate::rating_overlay::band_rect(viewport_rect));
             let pointer_in_rating = input.hover_pos.is_some_and(|p| rating_rect.is_some_and(|r| r.contains(p)));
+            self.push_palette_below_overlay_menubar(viewport_rect);
             let palette_rect = self.tool_palette_rect(viewport_rect);
             let dialog_rect = self.tool_palette_open_dialog.and_then(|open_idx| {
                 let pr = palette_rect?;
@@ -3069,6 +3668,17 @@ impl ViewerState {
             }) || self.tool_palette_menu_open;
             self.tick_tool_palette_auto_hide(ui.ctx(), input.time, pointer_in_palette);
 
+            // ── 左エントリリスト：ホバーでの表示判定（オーバーレイ。サムネバーより先に判定＝リスト優先） ──
+            let entry_list_rect = self.update_entry_list_visibility(ui.ctx(), input.hover_pos, viewport_rect);
+            let pointer_in_entry_list = entry_list_rect.zip(input.hover_pos).is_some_and(|(r, p)| r.contains(p));
+
+            // ── サムネバー：ポインター侵入トリガーの表示判定 ─────────────────────
+            // 出ている間、バー上のクリック・ホバーは背面（画像・ページ送りゾーン）へ伝えない。
+            // 基準は `clip`（余白を含むパネル全体）。`viewport_rect` は CentralPanel の内側余白(8px)を引いた領域で、
+            // それを基準にすると画面端から浮いてしまい、その隙間でホイールがページ送りになる／メニューが出てしまう。
+            let thumbbar_rect = self.update_thumbbar_visibility(cfg, clip, input.hover_pos, ui.ctx());
+            let pointer_in_thumbbar = thumbbar_rect.zip(input.hover_pos).is_some_and(|(r, p)| r.contains(p));
+
             // ── 虫眼鏡：ホイール拡縮（ポインタ基準）とスライダーバー ────────────────────
             // パレット上のホイールは握りつぶす。バー上のホイールは表示中心基準で拡縮する。
             // バーはモードON中は（非表示でも）常にイベントを吸収し、ホバーで再表示される。
@@ -3085,7 +3695,7 @@ impl ViewerState {
                     input.hover_pos
                 };
                 let target = self.magnifier_target(frame);
-                self.update_magnifier(viewport_rect, target, anchor, input.wheel_notches, &mut cfg.magnifier, cfg.koma_on, input.time);
+                self.update_magnifier(viewport_rect, target, anchor, input.wheel_notches, input.wheel_scroll_px, &mut cfg.magnifier, cfg.koma_on, cfg.fit_mode, input.time);
                 let scale_before_bar = self.magnifier_view.map(|v| v.scale);
                 let view_before_bar = self.magnifier_view;
                 if let Some(bar) = bar_rects
@@ -3149,10 +3759,15 @@ impl ViewerState {
 
             // ── 左右端ページ送りゾーン ───────────────────────────────────────────
             let edge_ctx = ui.ctx().clone();
-            let guarded_hover = if pointer_in_palette || pointer_in_bar || pointer_in_rating { None } else { input.hover_pos };
-            let guarded_primary_clicked = input.primary_clicked && !pointer_in_palette && !pointer_in_bar && !pointer_in_rating;
-            self.handle_edge_turn(&edge_ctx, clip, guarded_hover, guarded_primary_clicked, is_spread, step, total, input.time);
+            let guarded_hover = if pointer_in_palette || pointer_in_bar || pointer_in_rating || pointer_in_thumbbar || pointer_in_entry_list { None } else { input.hover_pos };
+            let guarded_primary_clicked = input.primary_clicked && !pointer_in_palette && !pointer_in_bar && !pointer_in_rating && !pointer_in_thumbbar && !pointer_in_entry_list;
+            self.handle_edge_turn(&edge_ctx, clip, guarded_hover, guarded_primary_clicked, is_spread, step, total, input.time, cfg.thumbbar_pos);
             self.draw_edge_turn_marker(&edge_ctx, clip);
+            let title_shown = self.tick_title_band(&edge_ctx, input.time, input.hover_pos, input.viewport_rect, clip);
+            self.title_band_shown = title_shown;
+            if title_shown {
+                self.draw_title_band(&edge_ctx, clip);
+            }
 
             if !frame.animating || frame.zoom_actual || frame.magnifier {
                 // ── 通常レンダリング ──────────────────────────────────────────
@@ -3352,7 +3967,7 @@ impl ViewerState {
             }
 
             // パレット上でのクリックは画像側（ページめくり／原寸切替）へ伝えない。
-            if pointer_in_palette || pointer_in_rating {
+            if pointer_in_palette || pointer_in_rating || pointer_in_thumbbar || pointer_in_entry_list {
                 double_clicked = false;
                 single_clicked = false;
             }
@@ -3446,6 +4061,18 @@ impl ViewerState {
                 }
             }
 
+            // ── サムネバー（オーバーレイ） ────────────────────────────────────
+            // パレットより先に描く（同一レイヤー内は後描きが前面になるため、ツールボックスがバーの前面に来る）。
+            self.thumbbar_palette_block = if self.tool_palette_auto_hidden { None } else { palette_rect };
+            if let Some(rect) = thumbbar_rect {
+                self.draw_thumbbar_overlay(ui, cfg, cfg.thumbbar_pos, rect);
+            }
+            // ── 左エントリリスト（オーバーレイ）。サムネバーとは排他なので重ならない。 ──
+            if let Some(rect) = entry_list_rect {
+                let ctx = ui.ctx().clone();
+                self.draw_entry_list_overlay(ui, &ctx, rect);
+            }
+
             // ── ツールパレット：最前面オーバーレイ ────────────────────────────
             // auto_hidden中は完全無描画（pointer_in_paletteの当たり判定はrect自体が
             // 生きているため上のtick呼び出しで検知でき、描画をスキップするだけでよい）。
@@ -3467,59 +4094,185 @@ impl ViewerState {
         (double_clicked, single_clicked)
     }
 
-    /// サムネイルバー: 本画像の領域を圧迫する形（配置に応じて Panel で領域確保）。
-    fn draw_thumbbar_panel(&mut self, ui: &mut egui::Ui, cfg: &ViewerConfig, pos: ThumbbarPos) {
-        let outer = cfg.thumbbar_thumb_size as f32 + 16.0;
-        let frame = egui::Frame::side_top_panel(ui.style());
-        match pos {
-            ThumbbarPos::Left => {
-                egui::Panel::left("thumbbar_panel").exact_size(outer).resizable(false).frame(frame)
-                    .show(ui, |ui| self.draw_thumbbar_contents(ui, cfg, false));
-            }
-            ThumbbarPos::Right => {
-                egui::Panel::right("thumbbar_panel").exact_size(outer).resizable(false).frame(frame)
-                    .show(ui, |ui| self.draw_thumbbar_contents(ui, cfg, false));
-            }
-            ThumbbarPos::Top => {
-                egui::Panel::top("thumbbar_panel").exact_size(outer).resizable(false).frame(frame)
-                    .show(ui, |ui| self.draw_thumbbar_contents(ui, cfg, true));
-            }
-            ThumbbarPos::Bottom => {
-                egui::Panel::bottom("thumbbar_panel").exact_size(outer).resizable(false).frame(frame)
-                    .show(ui, |ui| self.draw_thumbbar_contents(ui, cfg, true));
-            }
-            ThumbbarPos::None => {}
-        }
+    /// 上配置のバーを左右それぞれ切り詰める幅（ここがメニューバー・ファイル名バーを出す導線＝遊びになる）。
+    const THUMBBAR_TOP_GAP: f32 = 50.0;
+    /// 左右バーの発火域（左下・右下の角）の一辺。ページ送りゾーン幅と同じにして、角をその領域からくり抜く。
+    const THUMBBAR_CORNER_W: f32 = 100.0;
+    /// 左右バーの発火域（下角）の高さの、画面高さに対する割合。ページ送りゾーン（幅100px）はこの高さぶん下側が削られる。
+    const THUMBBAR_CORNER_H_RATIO: f32 = 0.30;
+    /// 発火域の高さの下限（極端に低いウィンドウでも狙える大きさを保つ）。
+    const THUMBBAR_CORNER_H_MIN: f32 = 100.0;
+
+    /// 左右バーの発火域（下角）の高さ。画面高さの30%（最低100px）。幅は固定の THUMBBAR_CORNER_W。
+    fn thumbbar_corner_h(area_h: f32) -> f32 {
+        (area_h * Self::THUMBBAR_CORNER_H_RATIO).max(Self::THUMBBAR_CORNER_H_MIN).min(area_h.max(0.0))
+    }
+    /// 上端のメニューバー・タイトルバー用の確保高の下限（タイトル帯のホバートリガー高と同じ）。
+    const THUMBBAR_TOP_MIN_INSET: f32 = 40.0;
+
+    /// メニューバー＋タイトルバー（自動ハイドのオーバーレイ）の下端までの高さ。サムネバー・エントリリストは
+    /// これより下から始め、両バーを邪魔しない。メニューバーが出ている間はその分だけ下がる。
+    fn top_overlay_inset(&self) -> f32 {
+        (self.menubar_overlay_h + Self::TITLE_BAND_H).max(Self::THUMBBAR_TOP_MIN_INSET)
     }
 
-    /// サムネイルバー: 本画像の前面にオーバーレイ表示（領域は確保しない）。
-    /// `viewport` は central panel 描画前に記録した全体領域。
-    fn draw_thumbbar_overlay(&mut self, ui: &mut egui::Ui, cfg: &ViewerConfig, pos: ThumbbarPos, viewport: egui::Rect) {
+    /// サムネバーの矩形と発火域を求める（純粋関数）。バーは画面の端に完全に寄せる（余白0）。
+    /// ホイールがバー専用になる範囲＝バーの矩形なので、端に隙間があるとそこでページ送りが効いてしまう。
+    /// - 上下バー: 発火域はバー帯のうち、左右のページ送り保護域（各 EDGE_TURN_ZONE_W）を除いた区間。
+    /// - 左右バー: 発火域は左下／右下の角（幅 THUMBBAR_CORNER_W 固定×高さ=画面高さの30%）。エントリリスト発火域（上端15%）と競合しない場所。
+    /// - 上バーだけ、左右それぞれ THUMBBAR_TOP_GAP ずつ切り詰めて中央寄せにする（遊び＝メニュー導線）。
+    ///   Y は `top_stack`（メニューバー＋ファイル名バーのうち今出ている高さ）の下。何も出ていなければ上端（0）。
+    ///   メニュー等が先に出ているときは、発火域もその下になる。
+    /// - 左右バーは `top_inset` より下から始める（上端は従来どおりメニュー導線として空ける）。
+    fn thumbbar_rects(
+        pos: ThumbbarPos,
+        viewport: egui::Rect,
+        thickness: f32,
+        top_inset: f32,
+        top_stack: f32,
+    ) -> Option<(egui::Rect, egui::Rect)> {
+        let zone = Self::EDGE_TURN_ZONE_W;
+        let side_top = viewport.min.y + top_inset;
+        let (bar, trigger) = match pos {
+            ThumbbarPos::Top => {
+                let gap = Self::THUMBBAR_TOP_GAP;
+                let y = viewport.min.y + top_stack;
+                let bar = egui::Rect::from_min_size(
+                    egui::pos2(viewport.min.x + gap, y),
+                    egui::vec2((viewport.width() - gap * 2.0).max(0.0), thickness),
+                );
+                let trig = egui::Rect::from_min_max(
+                    egui::pos2(viewport.min.x + zone, bar.min.y),
+                    egui::pos2(viewport.max.x - zone, bar.max.y),
+                );
+                (bar, trig)
+            }
+            ThumbbarPos::Bottom => {
+                let bar = egui::Rect::from_min_size(
+                    egui::pos2(viewport.min.x, viewport.max.y - thickness),
+                    egui::vec2(viewport.width(), thickness),
+                );
+                let trig = egui::Rect::from_min_max(
+                    egui::pos2(viewport.min.x + zone, bar.min.y),
+                    egui::pos2(viewport.max.x - zone, bar.max.y),
+                );
+                (bar, trig)
+            }
+            ThumbbarPos::Left => {
+                let bar = egui::Rect::from_min_max(
+                    egui::pos2(viewport.min.x, side_top),
+                    egui::pos2(viewport.min.x + thickness, viewport.max.y.max(side_top)),
+                );
+                let trig = egui::Rect::from_min_max(
+                    egui::pos2(viewport.min.x, viewport.max.y - Self::thumbbar_corner_h(viewport.height())),
+                    egui::pos2(viewport.min.x + Self::THUMBBAR_CORNER_W, viewport.max.y),
+                );
+                (bar, trig)
+            }
+            ThumbbarPos::Right => {
+                let bar = egui::Rect::from_min_max(
+                    egui::pos2(viewport.max.x - thickness, side_top),
+                    egui::pos2(viewport.max.x, viewport.max.y.max(side_top)),
+                );
+                let trig = egui::Rect::from_min_max(
+                    egui::pos2(viewport.max.x - Self::THUMBBAR_CORNER_W, viewport.max.y - Self::thumbbar_corner_h(viewport.height())),
+                    egui::pos2(viewport.max.x, viewport.max.y),
+                );
+                (bar, trig)
+            }
+            ThumbbarPos::None => return None,
+        };
+        Some((bar, trigger))
+    }
+
+    /// 上配置のバーをY方向に押し下げる量（今出ているメニューバー＋ファイル名バーの高さ。何も出ていなければ0）。
+    fn thumbbar_top_stack(&self) -> f32 {
+        let menu = if self.menubar_visible { self.menubar_overlay_h } else { 0.0 };
+        let title = if self.title_band_shown { Self::TITLE_BAND_H } else { 0.0 };
+        menu + title
+    }
+
+    /// サムネバーの表示状態を更新し、出すべきなら矩形を返す。
+    /// - 発火域へのポインター侵入で出る。ポインターがバー上にある間は出続け（タイマーは止まる）、
+    ///   バーを出た時点から `thumbbar_idle_hide_ms` 後に消える。待機時間 0 は常時表示（トリガー不要）。
+    /// - 左エントリリストが出ている間は出さない（エントリリスト優先）。
+    /// - ページ送りでは出ない（ファイルを開いた直後も隠れた状態から始まる）。
+    fn update_thumbbar_visibility(
+        &mut self,
+        cfg: &ViewerConfig,
+        viewport: egui::Rect,
+        hover: Option<egui::Pos2>,
+        ctx: &egui::Context,
+    ) -> Option<egui::Rect> {
         let thickness = cfg.thumbbar_thumb_size as f32 + 16.0;
-        const MARGIN: f32 = 10.0;
-        let horizontal = matches!(pos, ThumbbarPos::Top | ThumbbarPos::Bottom);
-        let rect = match pos {
-            ThumbbarPos::Left => egui::Rect::from_min_size(
-                viewport.min + egui::vec2(MARGIN, MARGIN),
-                egui::vec2(thickness, viewport.height() - MARGIN * 2.0),
-            ),
-            ThumbbarPos::Right => egui::Rect::from_min_size(
-                egui::pos2(viewport.max.x - MARGIN - thickness, viewport.min.y + MARGIN),
-                egui::vec2(thickness, viewport.height() - MARGIN * 2.0),
-            ),
-            ThumbbarPos::Top => egui::Rect::from_min_size(
-                viewport.min + egui::vec2(MARGIN, MARGIN),
-                egui::vec2(viewport.width() - MARGIN * 2.0, thickness),
-            ),
-            ThumbbarPos::Bottom => egui::Rect::from_min_size(
-                egui::pos2(viewport.min.x + MARGIN, viewport.max.y - MARGIN - thickness),
-                egui::vec2(viewport.width() - MARGIN * 2.0, thickness),
-            ),
-            ThumbbarPos::None => return,
+        let top_inset = self.top_overlay_inset();
+        let rects = if self.entries.len() > 1 && !self.entry_list_visible {
+            Self::thumbbar_rects(cfg.thumbbar_pos, viewport, thickness, top_inset, self.thumbbar_top_stack())
+        } else {
+            None
+        };
+        let Some((bar, trigger)) = rects else {
+            self.thumbbar_visible = false;
+            self.thumbbar_shown_rect = None;
+            self.thumbbar_menu_guard = None;
+            return None;
         };
 
+        // バー上で押し始めたボタンが押されている間（スワイプ中）は、ポインターがバー外へ出ても「バー上」扱い。
+        let (pressed, down) = ctx.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_down()));
+        if pressed && hover.is_some_and(|p| bar.contains(p)) {
+            self.thumbbar_press_in_bar = true;
+        }
+        if !down {
+            self.thumbbar_press_in_bar = false;
+        }
+
+        let idle_ms = cfg.thumbbar_idle_hide_ms;
+        if idle_ms == 0 {
+            self.thumbbar_visible = true;
+        } else if self.thumbbar_visible {
+            if self.thumbbar_press_in_bar || hover.is_some_and(|p| bar.contains(p)) {
+                self.thumbbar_last_activity = Instant::now();
+            } else {
+                let elapsed = self.thumbbar_last_activity.elapsed().as_millis() as u64;
+                if elapsed >= idle_ms {
+                    self.thumbbar_visible = false;
+                } else {
+                    // 残り時間ちょうどで再描画させ、入力が無くても自動的に隠れるようにする。
+                    ctx.request_repaint_after(Duration::from_millis((idle_ms - elapsed).max(1)));
+                }
+            }
+        } else if hover.is_some_and(|p| trigger.contains(p)) {
+            self.thumbbar_visible = true;
+            self.thumbbar_last_activity = Instant::now();
+            ctx.request_repaint();
+        }
+
+        self.thumbbar_shown_rect = self.thumbbar_visible.then_some(bar);
+        // バーが出ている間は、メニューバー・ファイル名バーを新規に出さない（バー優先）。出せるのは左右の遊び
+        // （左右それぞれ THUMBBAR_TOP_GAP の幅）の上端からだけ。
+        // 上配置は、隠れている間も発火域（上端中央）がガード（上端中央ではバーが先に出る）。
+        // 上以外の配置は、出ている間だけ上端中央をガードする（隠れている間はメニューが通常どおり出る）。
+        self.thumbbar_menu_guard = match cfg.thumbbar_pos {
+            ThumbbarPos::Top => Some(if self.thumbbar_visible { bar } else { trigger }),
+            _ => self.thumbbar_visible.then(|| {
+                egui::Rect::from_min_max(
+                    egui::pos2(viewport.min.x + Self::THUMBBAR_TOP_GAP, viewport.min.y),
+                    egui::pos2(viewport.max.x - Self::THUMBBAR_TOP_GAP, viewport.min.y + top_inset.max(Self::THUMBBAR_TOP_MIN_INSET)),
+                )
+            }),
+        };
+        self.thumbbar_shown_rect
+    }
+
+    /// サムネイルバー: 本画像の前面にオーバーレイ表示（領域は確保しない）。`rect` は表示するバーの矩形。
+    fn draw_thumbbar_overlay(&mut self, ui: &mut egui::Ui, cfg: &ViewerConfig, pos: ThumbbarPos, rect: egui::Rect) {
+        let horizontal = matches!(pos, ThumbbarPos::Top | ThumbbarPos::Bottom);
         ui.painter().rect_filled(rect, 4.0, egui::Color32::from_black_alpha(160));
+        // バー全体を覆う土台のinteract。サムネの隙間・余白のクリックが背面の画像（ページ送り等）へ抜けないようにする。
+        ui.interact(rect, ui.id().with("thumbbar_backstop"), egui::Sense::click().union(egui::Sense::drag()));
         let mut child = ui.new_child(egui::UiBuilder::new().id_salt("thumbbar_overlay_child").max_rect(rect));
+        crate::ui_theme::force_dark_visuals(&mut child);
         self.draw_thumbbar_contents(&mut child, cfg, horizontal);
     }
 
@@ -3553,9 +4306,26 @@ impl ViewerState {
         let base = if virtual_left { 1 } else { 0 };
         let slot_count = total + base + if virtual_right { 1 } else { 0 };
 
-        egui::ScrollArea::new([horizontal, !horizontal])
+        // パレットがバーに重なっていて、その上にポインタがあるときは、バー側のスクロール（ドラッグ・ホイール）を止める。
+        let palette_over_pointer = self.thumbbar_palette_block.is_some_and(|r| {
+            ui.ctx().input(|i| i.pointer.hover_pos()).is_some_and(|p| r.contains(p))
+        });
+        ui.style_mut().always_scroll_the_only_direction = true;
+        let mut scroll_area = egui::ScrollArea::new([horizontal, !horizontal])
             .id_salt("thumbbar_scroll")
-            .auto_shrink([false, false])
+            .auto_shrink([false, false]);
+        // スワイプ: マウスでもバーをつかんで動かせる（離した後は慣性で流れる）。既定ではタッチ画面のみ。
+        // クリックとの判別は egui 側で、一定以上動かすとドラッグ扱いになりサムネのクリック（ジャンプ）は発火しない。
+        // ホイールはバーの表示位置を動かす専用（ページ送り・ファイル送りには渡さない。process_navigation 前のガード参照）。
+        // 横配置では、縦ホイール（上下回転）を左右移動へ変換する（egui 既定では横向きの領域は縦ホイールに反応しない）。
+        scroll_area = if palette_over_pointer {
+            scroll_area.scroll_source(egui::scroll_area::ScrollSource::NONE)
+        } else {
+            scroll_area
+                .scroll_source(egui::scroll_area::ScrollSource::ALL)
+                .on_drag_cursor(egui::CursorIcon::Grabbing)
+        };
+        scroll_area
             .show_viewport(ui, |ui, viewport| {
                 if slot_count <= 0 {
                     self.thumbbar_visible_range = Some((0, -1));
@@ -3627,6 +4397,26 @@ impl ViewerState {
                             );
                             ui.painter().galley(text_pos, galley, text_color);
                         }
+                        // クリックでそのページへジャンプ（仮想スロットは端の実ページへ丸める）。
+                        // ドラッグ（バーのスクロール）はクリック扱いにならない（egui の click は移動なしの押下→離上のみ）。
+                        // パレットが上に重なっている位置では受け付けない（パレットが最上位、イベントを貫通させない）。
+                        let blocked = palette_over_pointer;
+                        let sense = if blocked { egui::Sense::hover() } else { egui::Sense::click() };
+                        let resp = ui.interact(rect, ui.id().with(("thumbbar_item", s)), sense);
+                        if resp.hovered() && !blocked {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            ui.painter().rect_stroke(
+                                rect,
+                                3.0,
+                                egui::Stroke::new(1.5, egui::Color32::from_white_alpha(200)),
+                                egui::StrokeKind::Inside,
+                            );
+                        }
+                        if resp.clicked() && !blocked {
+                            self.jump_page_request = Some(page.clamp(0, total - 1));
+                            self.thumbbar_last_activity = Instant::now();
+                            ui.ctx().request_repaint();
+                        }
                     }
                 }
                 // 現在地(lo/hi)が可視範囲外（マージンの外）でも、位置計算だけで
@@ -3643,6 +4433,10 @@ impl ViewerState {
                     });
                     ui.scroll_to_rect(r, Some(egui::Align::Center));
                     self.thumbbar_scrolled_lo = Some(lo);
+                }
+                // バー上でポインタを動かしている間は自動非表示の起点を更新する（ジャンプ先を探している最中に消えないように）。
+                if ui.rect_contains_pointer(ui.clip_rect()) && ui.ctx().input(|i| i.pointer.is_moving()) {
+                    self.thumbbar_last_activity = Instant::now();
                 }
             });
     }
@@ -3791,6 +4585,21 @@ impl ViewerState {
         let mut min_repaint_after = Duration::MAX;
 
         let mut promoted_pages = Vec::new();
+
+        // ページ送りの待ち計測（perf ログ専用）。新しく見えたページが、先読み済みだったかを控える。
+        let mut flip = std::mem::take(&mut self.flip_tracker);
+        let flip_events = flip.begin_frame(
+            &visible_orig,
+            &|i| {
+                self.textures.contains_key(&i)
+                    || page_cache.get_best(&self.archive_path, i, active_generation, preparing_generation).is_some()
+            },
+            Instant::now(),
+        );
+        for e in &flip_events {
+            crate::log_perf!("[perf/open] {}", e.describe());
+        }
+
         for i in upload_order {
             let orig_i = self.entries[i].original_index;
             let Some((generation, content)) = page_cache.get_best(
@@ -4011,6 +4820,12 @@ impl ViewerState {
             page_cache.remove_older_versions(&self.archive_path, orig_i, generation);
         }
 
+        // 未準備で表示されたページが、このフレームのアップロードで届いたか。
+        for e in flip.end_frame(&|i| self.textures.contains_key(&i), Instant::now()) {
+            crate::log_perf!("[perf/open] {}", e.describe());
+        }
+        self.flip_tracker = flip;
+
         let window_orig: HashSet<usize> = (start..end)
             .map(|i| self.entries[i].original_index)
             .collect();
@@ -4049,12 +4864,17 @@ impl ViewerState {
     /// マウス位置がどちらの端ゾーンにあるかを判定する（進む/戻る可否は見ない）。
     /// 左ゾーンは左エントリリストの発火域（左端上部の一部）と競合しないよう、
     /// その下端から画面下端までとする。右ゾーンは競合が無いため全高。
-    fn edge_turn_zone_at(clip: egui::Rect, pos: egui::Pos2) -> Option<bool> {
+    /// サムネバーを左（右）に置いているときは、その側の下角（幅100px×高さ=画面高さの30%）をバーの発火域として
+    /// くり抜き、ページ送りゾーンから除く。
+    fn edge_turn_zone_at(clip: egui::Rect, pos: egui::Pos2, thumbbar_pos: ThumbbarPos) -> Option<bool> {
         let top_avoid_h = Self::hover_trigger_height(clip.height());
+        let corner_top = clip.max.y - Self::thumbbar_corner_h(clip.height());
         let in_left  = pos.x < clip.min.x + Self::EDGE_TURN_ZONE_W
-            && pos.y >= clip.min.y + top_avoid_h && pos.y <= clip.max.y;
+            && pos.y >= clip.min.y + top_avoid_h && pos.y <= clip.max.y
+            && !(thumbbar_pos == ThumbbarPos::Left && pos.y > corner_top);
         let in_right = pos.x > clip.max.x - Self::EDGE_TURN_ZONE_W
-            && pos.y >= clip.min.y && pos.y <= clip.max.y;
+            && pos.y >= clip.min.y && pos.y <= clip.max.y
+            && !(thumbbar_pos == ThumbbarPos::Right && pos.y > corner_top);
         if in_left { Some(true) } else if in_right { Some(false) } else { None }
     }
 
@@ -4081,6 +4901,7 @@ impl ViewerState {
         step: i32,
         total: usize,
         time: f64,
+        thumbbar_pos: ThumbbarPos,
     ) {
         let total_i = total as i32;
 
@@ -4088,7 +4909,7 @@ impl ViewerState {
             None
         } else {
             hover_pos
-                .and_then(|pos| Self::edge_turn_zone_at(clip, pos))
+                .and_then(|pos| Self::edge_turn_zone_at(clip, pos, thumbbar_pos))
                 .filter(|&left_edge| self.edge_turn_can_move(left_edge, is_spread, step, total_i))
         };
 
@@ -4149,83 +4970,239 @@ impl ViewerState {
         painter.add(egui::Shape::convex_polygon(vec![p_tip, p_top, p_bot], fill, egui::Stroke::NONE));
     }
 
-    /// 左エントリリストパネル（ホバー制御 + 描画）
-    fn draw_entry_list(
+    /// 仮想タイトル帯の表示可否を更新して返す。開いた直後の数秒と、上端ホバー中（外れて数秒の
+    /// 待機つき）に表示する。メニューバー/フルスクリーンバーの有無には依存しない。
+    fn tick_title_band(
         &mut self,
-        ui: &mut egui::Ui,
         ctx: &egui::Context,
-        viewer_style: &egui::Style,
+        time: f64,
+        hover_pos: Option<egui::Pos2>,
+        viewport: egui::Rect,
+        clip: egui::Rect,
+    ) -> bool {
+        const OPEN_SHOW_SEC: f64 = 3.0;
+        const HIDE_WAIT_SEC: f64 = TITLE_BAND_HIDE_WAIT_SEC;
+        const TRIGGER_H: f32 = 40.0;
+
+        let visible = self.title_band_hide_at.is_some_and(|t| time < t);
+        // 表示中は帯の下端まで、非表示中はウィンドウ上端 TRIGGER_H までをホバー域とする。
+        // 表示中の域も TRIGGER_H より狭くしない（差の帯でちらつくため）。
+        let zone_bottom = if visible {
+            (clip.min.y + self.menubar_overlay_h + Self::TITLE_BAND_H).max(viewport.min.y + TRIGGER_H)
+        } else {
+            viewport.min.y + TRIGGER_H
+        };
+        // 上配置のサムネバーが優先する範囲では、ファイル名バーを新規に出さない（出ている間の保持には影響しない）。
+        let blocked = |p: egui::Pos2| !visible && self.thumbbar_menu_guard.is_some_and(|g| g.contains(p));
+        let hovering = hover_pos.is_some_and(|p| viewport.contains(p) && p.y < zone_bottom && !blocked(p));
+
+        if hovering {
+            self.title_band_hide_at = Some(time + HIDE_WAIT_SEC);
+        } else if self.title_band_hide_at.is_none() {
+            self.title_band_hide_at = Some(time + OPEN_SHOW_SEC);
+        }
+        let now_visible = self.title_band_hide_at.is_some_and(|t| time < t);
+        if now_visible {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        } else if visible {
+            ctx.request_repaint();
+        }
+        now_visible
+    }
+
+    const TITLE_BAND_H: f32 = 32.0;
+
+    /// 仮想タイトル帯を clip 上端に描く。ファイル名のみ（プレフィックスなし）を上下左右中央寄せで1行。入力は握らない。
+    fn draw_title_band(&self, ctx: &egui::Context, clip: egui::Rect) {
+        const BAND_ALPHA: u8 = 160;
+        let text = self.title();
+
+        let band_min = clip.min + egui::vec2(0.0, self.menubar_overlay_h);
+        let band = egui::Rect::from_min_size(band_min, egui::vec2(clip.width(), Self::TITLE_BAND_H));
+        let painter = ctx
+            .layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("title_band")))
+            .with_clip_rect(band);
+        painter.rect_filled(band, 0.0, egui::Color32::from_black_alpha(BAND_ALPHA));
+        painter.text(
+            band.center(),
+            egui::Align2::CENTER_CENTER,
+            text,
+            egui::TextStyle::Body.resolve(&ctx.global_style()),
+            egui::Color32::WHITE,
+        );
+    }
+
+    /// 左エントリリストの幅。
+    const ENTRY_PANEL_W: f32 = 180.0;
+    /// 左エントリリスト背景の不透明度（50%透過）。
+    const ENTRY_LIST_BG_OPACITY: f32 = 0.5;
+
+    /// 左エントリリストの表示状態を更新し、出すべきなら本体の矩形を返す（ホバー制御）。
+    /// 矩形はメニューバー＋タイトルバーの下から始まるオーバーレイ（本画像の領域は確保しない）。
+    /// 隠した時点で、ホイールで動かした位置・現在行へのスクロール記録をリセットする。
+    fn update_entry_list_visibility(
+        &mut self,
+        ctx: &egui::Context,
         hover_pos: Option<egui::Pos2>,
         viewport_rect: egui::Rect,
-    ) {
-        const ENTRY_PANEL_W: f32 = 180.0;
+    ) -> Option<egui::Rect> {
         const TRIGGER_W: f32 = 40.0;
         const HIDE_MARGIN: f32 = 20.0;
 
         let was_visible = self.entry_list_visible;
         let screen_left = viewport_rect.min.x;
         let trigger_h = Self::hover_trigger_height(viewport_rect.height());
+        // リスト上で押し始めたボタンが押されている間（スワイプ中）は、ポインターがリスト外へ出ても隠さない。
+        let (pressed, down) = ctx.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_down()));
+        if pressed && hover_pos.zip(self.entry_list_rect).is_some_and(|(p, r)| r.contains(p)) {
+            self.entry_list_press_in = true;
+        }
+        if !down {
+            self.entry_list_press_in = false;
+        }
         if let Some(pos) = hover_pos {
+            // サムネバーが出ているときは、その上ではエントリリストを開かない（バー優先）。
             if !self.entry_list_visible
                 && pos.x < screen_left + TRIGGER_W
                 && pos.y < viewport_rect.min.y + trigger_h
+                && !self.thumbbar_shown_rect.is_some_and(|r| r.contains(pos))
             {
                 self.entry_list_visible = true;
                 ctx.request_repaint();
-            } else if self.entry_list_visible && pos.x > screen_left + ENTRY_PANEL_W + HIDE_MARGIN {
+            } else if self.entry_list_visible
+                && !self.entry_list_press_in
+                && pos.x > screen_left + Self::ENTRY_PANEL_W + HIDE_MARGIN
+            {
                 self.entry_list_visible = false;
                 ctx.request_repaint();
             }
         }
+        self.entry_list_just_opened = self.entry_list_visible && !was_visible;
 
-        if self.entry_list_visible {
-            // 仮想ページ(-1 or total)を握りつぶさないよう、クランプ前の生の lo/hi で
-            // ペア判定してから、実ページ範囲内のものだけハイライトする。
-            let lo = self.spread_lo();
-            let is_spread = self.page_mode != PageMode::Single;
-            let hi = if is_spread { lo + 1 } else { lo };
-            let entries_snap = self.entries.clone();
-            let scroll_anchor = Self::entry_list_scroll_anchor(lo, entries_snap.len());
-            let should_scroll = !was_visible || self.entry_list_scrolled_lo != Some(lo);
+        if !self.entry_list_visible {
+            // 隠した時点でリセット（再表示時は現在ページが中央になる）。
+            self.entry_list_rect = None;
+            self.entry_list_scrolled_lo = None;
+            return None;
+        }
+        let top = (viewport_rect.min.y + self.top_overlay_inset()).min(viewport_rect.max.y);
+        let rect = egui::Rect::from_min_max(
+            egui::pos2(screen_left, top),
+            egui::pos2(screen_left + Self::ENTRY_PANEL_W, viewport_rect.max.y),
+        );
+        self.entry_list_rect = Some(rect);
+        self.entry_list_rect
+    }
 
-            egui::Panel::left("entry_list_panel")
-                .exact_size(ENTRY_PANEL_W)
-                // 固定幅なのにリサイズカーソルだけ出る不具合の防止（既定resizable=true）
-                .resizable(false)
-                .frame(egui::Frame::side_top_panel(viewer_style))
-                .show(ui, |ui| {
-                    let output = egui::ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            let mut anchor_rect = None;
-                            for (i, entry) in entries_snap.iter().enumerate() {
-                                let is_cur = i as i32 == lo || i as i32 == hi;
-                                let response = ui.selectable_label(is_cur, &entry.display_name);
-                                if scroll_anchor == Some(i) {
-                                    anchor_rect = Some(response.rect);
-                                }
-                            }
-                            anchor_rect
-                        });
+    /// エントリリストの1行（選択中は強調背景）。背景が半透明で背後の画像が透けるため、文字に影を付けて読みやすくする
+    /// （ページ数オーバーレイと同じ手法: 黒の半透明を1pxずらして下に敷く）。クリックを返す。
+    fn entry_list_row(ui: &mut egui::Ui, selected: bool, text: &str) -> egui::Response {
+        let pad = ui.spacing().button_padding;
+        let wrap_w = (ui.available_width() - pad.x * 2.0).max(1.0);
+        let font = egui::TextStyle::Button.resolve(ui.style());
+        let probe = ui.painter().layout(text.to_owned(), font.clone(), egui::Color32::WHITE, wrap_w);
+        let height = (probe.size().y + pad.y * 2.0).max(ui.spacing().interact_size.y);
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::click());
+        if ui.is_rect_visible(rect) {
+            let visuals = ui.style().interact_selectable(&response, selected);
+            if selected || response.hovered() {
+                ui.painter().rect_filled(rect, visuals.corner_radius, visuals.weak_bg_fill);
+            }
+            let galley = ui.painter().layout(text.to_owned(), font, visuals.text_color(), wrap_w);
+            let pos = egui::pos2(rect.min.x + pad.x, rect.center().y - galley.size().y / 2.0);
+            let painter = ui.painter();
+            painter.galley_with_override_text_color(pos + egui::vec2(1.0, 1.0), galley.clone(), egui::Color32::from_black_alpha(200));
+            painter.galley(pos, galley, visuals.text_color());
+        }
+        response
+    }
 
-                    if should_scroll && let Some(anchor_rect) = output.inner {
-                        // 現在行のコンテンツ上の位置から絶対オフセットを求める。
-                        // 0..max_offset にクランプすることで、先頭側ではマーカーが
-                        // 中央まで移動し、中盤だけ中央固定、末尾側では再び下へ移動する。
-                        let max_offset = (output.content_size.y - output.inner_rect.height()).max(0.0);
-                        let desired = Self::entry_list_follow_offset(
-                            output.state.offset.y,
-                            anchor_rect.center().y,
-                            output.inner_rect.center().y,
-                            max_offset,
-                        );
-                        let mut state = output.state;
-                        state.offset.y = desired;
-                        state.store(ctx, output.id);
-                        ctx.request_repaint();
-                        self.entry_list_scrolled_lo = Some(lo);
+    /// 左エントリリストをオーバーレイ描画する（`update_entry_list_visibility` が返した矩形に）。
+    /// パレットより先に描く（同一レイヤー内は後描きが前面）。行クリックでそのページへジャンプ要求を出す。
+    fn draw_entry_list_overlay(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, rect: egui::Rect) {
+        // 仮想ページ(-1 or total)を握りつぶさないよう、クランプ前の生の lo/hi で
+        // ペア判定してから、実ページ範囲内のものだけハイライトする。
+        let lo = self.spread_lo();
+        let is_spread = self.page_mode != PageMode::Single;
+        let hi = if is_spread { lo + 1 } else { lo };
+        let entries_snap = self.entries.clone();
+        let scroll_anchor = Self::entry_list_scroll_anchor(lo, entries_snap.len());
+        let should_scroll = self.entry_list_just_opened || self.entry_list_scrolled_lo != Some(lo);
+        // 表示中にページが変わったとき（行クリックのジャンプ・キー送りなど）は、行き先まで滑らかにスクロールして着地する。
+        // 表示を始めた瞬間の初期位置だけは即時（従来どおり）。
+        let smooth = should_scroll && !self.entry_list_just_opened;
+        let mut jump_to: Option<i32> = None;
+
+        // 背景: パネル色の50%透過。
+        let panel_frame = egui::Frame::side_top_panel(ui.style());
+        ui.painter().rect_filled(rect, 0.0, panel_frame.fill.gamma_multiply(Self::ENTRY_LIST_BG_OPACITY));
+        // 領域全体を覆う土台のinteract。行の隙間・余白のクリックが背面の画像（ページ送り等）へ抜けないようにする。
+        ui.interact(rect, ui.id().with("entry_list_backstop"), egui::Sense::click().union(egui::Sense::drag()));
+
+        let m = panel_frame.inner_margin;
+        let inner = egui::Rect::from_min_max(
+            rect.min + egui::vec2(f32::from(m.left), f32::from(m.top)),
+            rect.max - egui::vec2(f32::from(m.right), f32::from(m.bottom)),
+        );
+        // パレットがリストに重なっていて、その上にポインタがあるときは、リスト側のスクロールを止める。
+        let palette_over_pointer = self.thumbbar_palette_block.is_some_and(|r| {
+            ctx.input(|i| i.pointer.hover_pos()).is_some_and(|p| r.contains(p))
+        });
+        let mut child = ui.new_child(egui::UiBuilder::new().id_salt("entry_list_child").max_rect(inner));
+        let mut scroll_area = egui::ScrollArea::vertical().id_salt("entry_list_scroll").auto_shrink([false, false]);
+        // スワイプ: マウスでもリストをつかんで動かせる（離した後は慣性で流れる）。サムネバーと同じ。
+        // クリックとの判別は egui 側で、一定以上動かすと行のクリック（ジャンプ）は発火しない。
+        scroll_area = if palette_over_pointer {
+            scroll_area.scroll_source(egui::scroll_area::ScrollSource::NONE)
+        } else {
+            scroll_area
+                .scroll_source(egui::scroll_area::ScrollSource::ALL)
+                .on_drag_cursor(egui::CursorIcon::Grabbing)
+        };
+        let output = scroll_area.show(&mut child, |ui| {
+            let mut anchor_rect = None;
+            for (i, entry) in entries_snap.iter().enumerate() {
+                let is_cur = i as i32 == lo || i as i32 == hi;
+                let response = Self::entry_list_row(ui, is_cur, &entry.display_name);
+                if scroll_anchor == Some(i) {
+                    anchor_rect = Some(response.rect);
+                    if smooth {
+                        // 中央へ寄せる。先頭・末尾付近は egui が範囲内にクランプする（中央までは行かない）。
+                        ui.scroll_to_rect(response.rect, Some(egui::Align::Center));
                     }
-                });
+                }
+                // クリックでそのページへジャンプ（見開きはそのページを含む見開きへ着地）。
+                if response.clicked() {
+                    jump_to = Some(i as i32);
+                }
+            }
+            anchor_rect
+        });
+
+        if smooth {
+            ctx.request_repaint();
+            self.entry_list_scrolled_lo = Some(lo);
+        } else if should_scroll && let Some(anchor_rect) = output.inner {
+            // 現在行のコンテンツ上の位置から絶対オフセットを求める。
+            // 0..max_offset にクランプすることで、先頭側ではマーカーが
+            // 中央まで移動し、中盤だけ中央固定、末尾側では再び下へ移動する。
+            let max_offset = (output.content_size.y - output.inner_rect.height()).max(0.0);
+            let desired = Self::entry_list_follow_offset(
+                output.state.offset.y,
+                anchor_rect.center().y,
+                output.inner_rect.center().y,
+                max_offset,
+            );
+            let mut state = output.state;
+            state.offset.y = desired;
+            state.store(ctx, output.id);
+            ctx.request_repaint();
+            self.entry_list_scrolled_lo = Some(lo);
+        }
+        if let Some(page) = jump_to {
+            self.jump_page_request = Some(page);
+            self.thumbbar_last_activity = Instant::now();
+            ctx.request_repaint();
         }
     }
 
@@ -4250,6 +5227,10 @@ impl ViewerState {
         let order = cfg.bar_order;
         let mut prev_group: Option<BarGroup> = None;
         for item in order {
+            // 表示対象外の項目は、セパレータごと飛ばす（空の区切りを残さない）
+            if item == ViewerBarItem::Rating && !self.rating_bar_visible(cfg) {
+                continue;
+            }
             if prev_group.is_some_and(|g| g != item.group()) {
                 ui.separator();
             }
@@ -4258,17 +5239,61 @@ impl ViewerState {
         }
     }
 
+    /// barの採点UIを出すか（アーカイブのみ・スコアリングON時のみ）。
+    fn rating_bar_visible(&self, cfg: &ViewerConfig) -> bool {
+        crate::rating_overlay::bar_visible(cfg.rating_overlay_enabled, self.is_raw_file, self.is_virtual_book)
+    }
+
+    /// barの±0.5ボタンの操作を反映する。巻末オーバーレイと同じ `apply_rating_event` を通すので、
+    /// 表示値・DB保存・サムネ評価帯への反映が1経路にまとまり、両者は常に同期する。
+    /// 未評価に戻す場合（0）も `Set(0)` で絶対値保存する。巻末の「未評価にする」(`Clear`)と違い、
+    /// barからはトーストを出さない（点数表示が即変わるため）。
+    fn step_rating_from_bar(&mut self, up: bool) {
+        use crate::controller::RatingSaveAction;
+        let Some(next) = crate::rating_overlay::step_half(self.rating_half, up) else { return };
+        self.rating_half = next;
+        self.pending_rating_action = Some(RatingSaveAction::Set(next));
+    }
+
     fn draw_bar_item(&mut self, ui: &mut egui::Ui, cfg: &mut ViewerConfig, item: ViewerBarItem) {
         let t = i18n::t();
         match item {
-            ViewerBarItem::SortName | ViewerBarItem::SortNatural | ViewerBarItem::SortDate => {
+            ViewerBarItem::SortNatural => {
+                // 1ボタンで「行頭番号優先」⇔「層番号優先」を循環する。ラベルは現在のモードを示す。
+                let layer = self.sort_key == ViewerSortKey::NaturalLayer;
+                let label = if layer { t.sort_natural_layer() } else { t.sort_natural() };
+                let selected = layer || self.sort_key == ViewerSortKey::Natural;
+                if ui.selectable_label(selected, label).on_hover_text(t.sort_natural_tip()).clicked() {
+                    self.sort_key = if self.sort_key == ViewerSortKey::Natural {
+                        ViewerSortKey::NaturalLayer
+                    } else {
+                        ViewerSortKey::Natural
+                    };
+                    self.sort_entries();
+                }
+            }
+            ViewerBarItem::SortName | ViewerBarItem::SortDate => {
                 let (key, label) = match item {
-                    ViewerBarItem::SortName    => (ViewerSortKey::Name,    t.sort_name()),
-                    ViewerBarItem::SortNatural => (ViewerSortKey::Natural, t.sort_natural()),
-                    _                          => (ViewerSortKey::Date,    t.sort_date()),
+                    ViewerBarItem::SortName => (ViewerSortKey::Name, t.sort_name()),
+                    _                       => (ViewerSortKey::Date, t.sort_date()),
                 };
                 if ui.selectable_label(self.sort_key == key, label).clicked() {
                     self.sort_key = key;
+                    self.sort_entries();
+                }
+            }
+            ViewerBarItem::SortStored => {
+                let available = self.stored_sort_available();
+                let tip = if available { t.sort_stored_tip() } else { t.sort_stored_unavailable_tip() };
+                let selected = available && self.sort_key == ViewerSortKey::Stored;
+                let clicked = ui
+                    .add_enabled_ui(available, |ui| ui.selectable_label(selected, t.sort_stored()))
+                    .inner
+                    .on_hover_text(tip)
+                    .on_disabled_hover_text(tip)
+                    .clicked();
+                if clicked {
+                    self.sort_key = ViewerSortKey::Stored;
                     self.sort_entries();
                 }
             }
@@ -4359,6 +5384,35 @@ impl ViewerState {
                     cfg.exif_orientation_enabled = !cfg.exif_orientation_enabled;
                 }
             }
+            // 虫眼鏡のフィット基準軸のサイクル（全体→幅→高さ）。ボタンには現在の基準軸を出し、
+            // 幅/高さのときは選択状態にする。押すと虫眼鏡モードも立てる（コマモード中は押しても効かない）。
+            ViewerBarItem::FitMode => {
+                use crate::magnifier::FitMode;
+                let label = match cfg.fit_mode {
+                    FitMode::Contain => t.toolbar_fit_mode_contain(),
+                    FitMode::Width => t.toolbar_fit_mode_width(),
+                    FitMode::Height => t.toolbar_fit_mode_height(),
+                };
+                if ui.selectable_label(cfg.fit_mode != FitMode::Contain, label)
+                    .on_hover_text(t.toolbar_fit_mode_tip())
+                    .clicked()
+                {
+                    cfg.set_fit_mode(cfg.fit_mode.next());
+                }
+            }
+            // ホイール動作（拡大⇔スクロール）。幅/高さフィット中だけ切り替えられる（それ以外はグレー）。
+            ViewerBarItem::WheelMode => {
+                let enabled = cfg.fit_mode != crate::magnifier::FitMode::Contain && !cfg.koma_on;
+                let label = if cfg.wheel_scroll { t.toolbar_wheel_mode_scroll() } else { t.toolbar_wheel_mode_zoom() };
+                ui.add_enabled_ui(enabled, |ui| {
+                    if ui.selectable_label(cfg.wheel_scroll, label)
+                        .on_hover_text(t.toolbar_wheel_mode_tip(enabled))
+                        .clicked()
+                    {
+                        cfg.wheel_scroll = !cfg.wheel_scroll;
+                    }
+                });
+            }
             // OCR/翻訳子ウィンドウの開閉トグル。実際の開閉状態はapp側が持ち、show()呼び出し時に
             // translate_window_openとして受け取って表示にのみ使う（真の状態はここでは変更しない）。
             ViewerBarItem::TranslateToggle => {
@@ -4372,6 +5426,25 @@ impl ViewerState {
                     }
                 });
             }
+            // 採点: 点数表示＋[-][+]（右側に固める）。値は巻末オーバーレイと共有。
+            ViewerBarItem::Rating => {
+                if !self.rating_bar_visible(cfg) { return; }
+                ui.label(crate::rating_overlay::bar_score_text(self.rating_half, t.rating_bar_unset()));
+                let half = self.rating_half;
+                let tip = t.rating_bar_step_tip();
+                if ui.add_enabled(crate::rating_overlay::step_half(half, false).is_some(), egui::Button::new("-"))
+                    .on_hover_text(tip)
+                    .clicked()
+                {
+                    self.step_rating_from_bar(false);
+                }
+                if ui.add_enabled(crate::rating_overlay::step_half(half, true).is_some(), egui::Button::new("+"))
+                    .on_hover_text(tip)
+                    .clicked()
+                {
+                    self.step_rating_from_bar(true);
+                }
+            }
         }
     }
 
@@ -4379,7 +5452,9 @@ impl ViewerState {
         let key_label = match key {
             ViewerSortKey::Name => t.sort_name(),
             ViewerSortKey::Natural => t.sort_natural(),
+            ViewerSortKey::NaturalLayer => t.sort_natural_layer(),
             ViewerSortKey::Date => t.sort_date(),
+            ViewerSortKey::Stored => t.sort_stored(),
         };
         let order_label = if ascending { t.sort_asc() } else { t.sort_desc() };
         format!(
@@ -4656,11 +5731,13 @@ impl ViewerState {
         target: Option<crate::magnifier::MagnifierTarget>,
         wheel_anchor: Option<egui::Pos2>,
         wheel_notches: f32,
+        wheel_scroll_px: f32,
         cfg: &mut crate::magnifier::MagnifierConfig,
         koma_on: bool,
+        fit_mode: crate::magnifier::FitMode,
         time: f64,
     ) {
-        use crate::magnifier::{carried_view, fit_scale, notch_scale, rescale_for_new_texture, snap_stops, zoom_about, clamp_offset, MagnifierView, FIT_EPS};
+        use crate::magnifier::{carried_view, fit_mode_view, fit_scale, fit_scale_for, notch_scale, rescale_for_new_texture, fit_stops, zoom_about, clamp_offset, MagnifierView, FIT_EPS};
         if !koma_on {
             self.koma_was_on = false;
         }
@@ -4673,10 +5750,27 @@ impl ViewerState {
         let img = target.img;
         let vp = viewport.size();
         let fit = fit_scale(vp, img);
-        let range = cfg.scale_range(fit);
+        // 幅/高さフィットの倍率（contain のときは fit と同じ）。コマモード中は contain に固定する。
+        let fit_mode = if koma_on { crate::magnifier::FitMode::Contain } else { fit_mode };
+        let mode_changed = self.magnifier_fit_mode != fit_mode;
+        self.magnifier_fit_mode = fit_mode;
+        let mode_fit = fit_scale_for(fit_mode, vp, img);
+        let mut range = cfg.scale_range(fit);
+        // 幅/高さフィット倍率は contain 以上。上限が足りないときは広げて、フィット自体は必ず表現できるようにする。
+        range.1 = range.1.max(mode_fit);
 
         let had_view = self.magnifier_view.is_some() && self.magnifier_key == Some(target.key);
         let mut view = match self.magnifier_view {
+            // フィット基準軸が切り替わった: 同じページのまま、新しい基準のフィットへ作り直す（拡大中でも戻る）。
+            Some(_) if self.magnifier_key == Some(target.key) && mode_changed => {
+                self.magnifier_offset_dirty = true;
+                if fit_mode == crate::magnifier::FitMode::Contain {
+                    MagnifierView::fit(vp, img)
+                } else {
+                    let rtl = self.koma_read_dir() == crate::koma::ReadDir::RightToLeft;
+                    fit_mode_view(fit_mode, vp, img, range, rtl, false)
+                }
+            }
             Some(mut v) if self.magnifier_key == Some(target.key) => {
                 // 原寸デコードへの差し替えなどで解像度が変わったら、画面上の大きさを
                 // 保つよう倍率を換算する（スクロール位置は画面px基準なのでそのまま）。
@@ -4706,7 +5800,7 @@ impl ViewerState {
                 }
                 // フィット表示のままなら窓サイズ変更にフィット倍率で追従する。
                 // それ以外は範囲内へ丸め、スクロール範囲も収め直す。
-                let scale = if self.magnifier_at_fit { fit } else { v.scale.clamp(range.0, range.1) };
+                let scale = if self.magnifier_at_fit { mode_fit } else { v.scale.clamp(range.0, range.1) };
                 if scale != v.scale {
                     self.magnifier_offset_dirty = true;
                 }
@@ -4735,6 +5829,13 @@ impl ViewerState {
                         MagnifierView { scale, offset: if arrive_last { grid.last() } else { grid.first() } }
                     }
                     // 進行方向と逆の端・上端から始める（既存の原寸見開きと同じ慣例）。
+                    // 幅/高さフィット: 引き継ぎは使わず、ページごとにフィットし直す。開始位置は読み方向側の端
+                    // （戻りで入ったときは逆端）。
+                    (None, _) if fit_mode != crate::magnifier::FitMode::Contain => {
+                        let back = self.anim_dir < 0;
+                        let rtl = self.koma_read_dir() == crate::koma::ReadDir::RightToLeft;
+                        fit_mode_view(fit_mode, vp, img, range, rtl != back, back)
+                    }
                     (None, Some(rel)) => carried_view(rel, fit, range, vp, img, self.anim_dir < 0),
                     (None, None) => MagnifierView::fit(vp, img),
                 }
@@ -4774,7 +5875,7 @@ impl ViewerState {
             && self.koma_tween.is_none()
             && let Some(p) = wheel_anchor.filter(|p| viewport.contains(*p))
         {
-            let next = notch_scale(view.scale, wheel_notches, cfg.notch_ratio(), range, &snap_stops(fit));
+            let next = notch_scale(view.scale, wheel_notches, cfg.notch_ratio(), range, &fit_stops(fit, mode_fit));
             if next != view.scale {
                 // コマモード: 選んだ倍率が新しい基準倍率（縮小前）。表示する倍率は、超過分の自動縮小を査定した値。
                 let mut target_scale = next;
@@ -4787,10 +5888,34 @@ impl ViewerState {
             }
         }
 
-        self.magnifier_at_fit = (view.scale - fit).abs() <= FIT_EPS;
+        // ホイールスクロール（幅/高さフィット中・スクロール指定）: 溢れる軸（幅フィット=縦、高さフィット=横）へ
+        // 動かす。下回し（負）で先へ進む。端で止まるだけで、ページは送らない。
+        if wheel_scroll_px != 0.0
+            && self.koma_tween.is_none()
+            && fit_mode != crate::magnifier::FitMode::Contain
+            && wheel_anchor.is_some_and(|p| viewport.contains(p))
+        {
+            let mut next = view;
+            match fit_mode {
+                crate::magnifier::FitMode::Width => next.offset.y -= wheel_scroll_px,
+                _ => next.offset.x -= wheel_scroll_px,
+            }
+            let next = clamp_offset(next, vp, img);
+            if next.offset != view.offset {
+                view = next;
+                self.magnifier_offset_dirty = true;
+            }
+        }
+
+        self.magnifier_at_fit = (view.scale - mode_fit).abs() <= FIT_EPS;
         self.magnifier_ref_len = target.ref_len;
         self.magnifier_view = Some(view);
         self.koma_geom = Some((img, vp));
+    }
+
+    /// ホイールをスクロールに使うか。トグルがONで、幅/高さフィット中かつコマモードでないときだけ有効。
+    pub(crate) fn wheel_scroll_effective(cfg: &ViewerConfig) -> bool {
+        cfg.wheel_scroll && cfg.fit_mode != crate::magnifier::FitMode::Contain && !cfg.koma_on
     }
 
     /// 虫眼鏡カーソルの画像（画面の拡大率に合わせた大きさ）。同じ大きさの間は使い回す。
@@ -4833,7 +5958,9 @@ impl ViewerState {
         let img = target.img;
         let vp = viewport.size();
         let fit = fit_scale(vp, img);
-        let range = cfg.scale_range(fit);
+        let mode_fit = fit_scale_for(self.magnifier_fit_mode, vp, img);
+        let mut range = cfg.scale_range(fit);
+        range.1 = range.1.max(mode_fit);
 
         if wheel_active || pointer_in_bar {
             self.magnifier_bar_active_at = Some(time);
@@ -4935,12 +6062,15 @@ impl ViewerState {
                     }
                 }
                 // フィット倍率（入場時倍率）の位置。原寸と重なるときは原寸の目盛りに任せる。
-                if (fit - ACTUAL_SCALE).abs() > 1e-3 {
-                    let x = x_of(fit);
-                    painter.line_segment(
-                        [egui::pos2(x, cy - 6.0), egui::pos2(x, cy + 6.0)],
-                        egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(110, 190, 240, a(230))),
-                    );
+                // 幅/高さフィット中は、その倍率の位置にも同じ印を付ける。
+                for mark in [fit, mode_fit] {
+                    if (mark - ACTUAL_SCALE).abs() > 1e-3 {
+                        let x = x_of(mark);
+                        painter.line_segment(
+                            [egui::pos2(x, cy - 6.0), egui::pos2(x, cy + 6.0)],
+                            egui::Stroke::new(1.5, egui::Color32::from_rgba_unmultiplied(110, 190, 240, a(230))),
+                        );
+                    }
                 }
                 let radius = (track.height() / 2.0 - 1.0).clamp(3.0, 7.0);
                 painter.circle_filled(egui::pos2(thumb_x, cy), radius, egui::Color32::from_white_alpha(a(240)));
@@ -4969,11 +6099,11 @@ impl ViewerState {
         }
 
         if let Some(x) = pressed_x {
-            let target = slider_scale_at(x, (track.left(), track.right()), range, BAR_ACTUAL_MAGNET_PX, &snap_stops(fit));
+            let target = slider_scale_at(x, (track.left(), track.right()), range, BAR_ACTUAL_MAGNET_PX, &fit_stops(fit, mode_fit));
             if (target - view.scale).abs() > 1e-6 {
                 self.magnifier_view = Some(zoom_about(view, vp / 2.0, vp, img, target));
                 self.magnifier_offset_dirty = true;
-                self.magnifier_at_fit = (target - fit).abs() <= FIT_EPS;
+                self.magnifier_at_fit = (target - mode_fit).abs() <= FIT_EPS;
             }
             self.magnifier_bar_active_at = Some(time);
         }
@@ -5779,15 +6909,6 @@ impl ViewerState {
         fit
     }
 
-    /// スロット位置をモニター内に収まるようクランプする（少なくとも 100px は画面内に残す）
-    fn clamp_slot_position_inner(x: i32, y: i32, w: u32, _h: u32, monitor: egui::Vec2) -> (i32, i32) {
-        let min_visible = 100.0_f32;
-        let cx = x.max(-(w as i32) + min_visible as i32)
-                  .min((monitor.x - min_visible) as i32);
-        let cy = y.max(0).min((monitor.y - min_visible) as i32);
-        (cx, cy)
-    }
-
     /// 単ページを offset_x だけ横にずらして描画（アニメーション用）
     fn paint_single_at(
         painter: &egui::Painter,
@@ -6143,8 +7264,460 @@ mod sort_save_state_tests {
             display_name: "second".to_string(),
             date_key: 1,
             original_index: 1,
+            stored_index: 1,
         });
         viewer
+    }
+
+    fn tb_viewport() -> egui::Rect {
+        egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1000.0, 800.0))
+    }
+
+    fn tb_cfg(pos: ThumbbarPos, idle_ms: u64) -> ViewerConfig {
+        let mut cfg = ViewerConfig::default();
+        cfg.thumbbar_pos = pos;
+        cfg.thumbbar_idle_hide_ms = idle_ms;
+        cfg
+    }
+
+    fn tb_viewer() -> ViewerState {
+        let mut v = archive_viewer();
+        v.entries = (0..10)
+            .map(|i| ViewerEntry {
+                entry_name: format!("p{i}"),
+                display_name: format!("p{i}"),
+                date_key: i,
+                original_index: i as usize,
+                stored_index: i as usize,
+            })
+            .collect();
+        v
+    }
+
+    #[test]
+    fn thumbbar_trigger_for_top_and_bottom_excludes_the_page_turn_zones() {
+        let vp = tb_viewport();
+        for pos in [ThumbbarPos::Top, ThumbbarPos::Bottom] {
+            let (bar, trig) = ViewerState::thumbbar_rects(pos, vp, 116.0, 40.0, 0.0).unwrap();
+            // 左右の保護域(100px)の内側は発火しない
+            assert!(!trig.contains(egui::pos2(50.0, bar.center().y)));
+            assert!(!trig.contains(egui::pos2(950.0, bar.center().y)));
+            assert!(trig.contains(egui::pos2(500.0, bar.center().y)));
+        }
+    }
+
+    /// サムネバーの配置基準は `ui.clip_rect()`（余白を含むパネル全体）でなければならない。
+    /// CentralPanel の既定は内側余白8pxがあり、`ui.cursor()`/`available_size()` 基準（viewport_rect）だと
+    /// 画面端から8px浮く。この前提（clip が余白込みの全体であること）が egui の更新で崩れていないかを確かめる。
+    #[test]
+    fn central_panel_clip_rect_includes_the_inner_margin_unlike_the_cursor_area() {
+        let ctx = egui::Context::default();
+        let vp = tb_viewport();
+        let mut seen = None;
+        let _ = ctx.run_ui(egui::RawInput { screen_rect: Some(vp), ..Default::default() }, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
+                seen = Some((ui.clip_rect(), ui.cursor().left_top()));
+            });
+        });
+        let (clip, cursor) = seen.unwrap();
+        assert_eq!(clip, vp, "clip は余白込みの全体");
+        assert!(cursor.x > 0.0 && cursor.y > 0.0, "cursor 基準は余白ぶん内側: {cursor:?}");
+    }
+
+    #[test]
+    fn thumbbar_bars_sit_flush_against_the_screen_edges_with_no_margin() {
+        let vp = tb_viewport();
+        let (b, _) = ViewerState::thumbbar_rects(ThumbbarPos::Bottom, vp, 116.0, 40.0, 0.0).unwrap();
+        assert_eq!((b.min.x, b.max.x, b.max.y), (0.0, 1000.0, 800.0));
+        let (l, _) = ViewerState::thumbbar_rects(ThumbbarPos::Left, vp, 116.0, 40.0, 0.0).unwrap();
+        assert_eq!((l.min.x, l.max.y), (0.0, 800.0));
+        let (r, _) = ViewerState::thumbbar_rects(ThumbbarPos::Right, vp, 116.0, 40.0, 0.0).unwrap();
+        assert_eq!((r.max.x, r.max.y), (1000.0, 800.0));
+    }
+
+    #[test]
+    fn thumbbar_top_bar_is_narrowed_by_50px_each_side_and_flush_to_the_top_when_nothing_is_shown() {
+        let vp = tb_viewport();
+        let (bar, trig) = ViewerState::thumbbar_rects(ThumbbarPos::Top, vp, 116.0, 40.0, 0.0).unwrap();
+        assert_eq!((bar.min.x, bar.max.x), (50.0, 950.0)); // 左右50pxずつの遊び（中央寄せ）
+        assert_eq!(bar.min.y, 0.0); // メニューバー・ファイル名バーを無視して上端
+        assert_eq!(trig.min.y, 0.0); // 上端のホバーで発火する
+    }
+
+    #[test]
+    fn thumbbar_top_bar_and_its_trigger_move_below_the_menu_and_title_bars() {
+        let vp = tb_viewport();
+        // メニュー(30)＋ファイル名バー(32)が出ているとき
+        let (bar, trig) = ViewerState::thumbbar_rects(ThumbbarPos::Top, vp, 116.0, 62.0, 62.0).unwrap();
+        assert_eq!(bar.min.y, 62.0);
+        assert_eq!(trig.min.y, 62.0); // 検知域も2つのバーより下
+        // 左右バーの上端は従来どおり上端40px以上（メニュー等が出ていればその下）を空ける
+        for pos in [ThumbbarPos::Left, ThumbbarPos::Right] {
+            let (bar, _) = ViewerState::thumbbar_rects(pos, vp, 116.0, 62.0, 62.0).unwrap();
+            assert!(bar.min.y >= 62.0);
+            let (bar0, _) = ViewerState::thumbbar_rects(pos, vp, 116.0, 40.0, 0.0).unwrap();
+            assert!(bar0.min.y >= 40.0);
+        }
+    }
+
+    #[test]
+    fn thumbbar_top_stack_is_the_height_of_whichever_of_menu_and_title_bars_is_shown() {
+        let mut v = tb_viewer();
+        assert_eq!(v.thumbbar_top_stack(), 0.0);
+        v.title_band_shown = true;
+        assert_eq!(v.thumbbar_top_stack(), ViewerState::TITLE_BAND_H);
+        v.menubar_visible = true;
+        v.menubar_overlay_h = 30.0;
+        assert_eq!(v.thumbbar_top_stack(), 30.0 + ViewerState::TITLE_BAND_H);
+        // メニューが引っ込んだら、ファイル名バーの分だけに戻る（Yを再調整）
+        v.menubar_visible = false;
+        assert_eq!(v.thumbbar_top_stack(), ViewerState::TITLE_BAND_H);
+        v.title_band_shown = false;
+        assert_eq!(v.thumbbar_top_stack(), 0.0);
+    }
+
+    #[test]
+    fn top_thumbbar_guards_the_menu_triggers_with_its_rect_when_shown_and_its_trigger_when_hidden() {
+        let ctx = egui::Context::default();
+        let vp = tb_viewport();
+        let cfg = tb_cfg(ThumbbarPos::Top, 3000);
+        let mut v = tb_viewer();
+        // 隠れている間: 発火域（x=100..900, 上端）がガード。上端中央ではメニューを出さない
+        let _ = v.update_thumbbar_visibility(&cfg, vp, Some(egui::pos2(500.0, 500.0)), &ctx);
+        let g = v.thumbbar_menu_guard.expect("上配置ではガードがある");
+        assert!(g.contains(egui::pos2(500.0, 10.0)));
+        assert!(!g.contains(egui::pos2(20.0, 10.0))); // 左右の遊び（x<50）はメニューを出せる
+        // 発火域へ侵入して出る → ガードはバーの矩形（x=50..950）
+        let bar = v.update_thumbbar_visibility(&cfg, vp, Some(egui::pos2(500.0, 10.0)), &ctx).unwrap();
+        assert_eq!(v.thumbbar_menu_guard, Some(bar));
+        assert!(!bar.contains(egui::pos2(20.0, 10.0)));
+        // メニュー・ファイル名バーが出たら、バーは押し下げられる
+        v.menubar_visible = true;
+        v.menubar_overlay_h = 30.0;
+        v.title_band_shown = true;
+        let moved = v.update_thumbbar_visibility(&cfg, vp, Some(egui::pos2(500.0, 100.0)), &ctx).unwrap();
+        assert_eq!(moved.min.y, 62.0);
+    }
+
+    #[test]
+    fn non_top_thumbbar_guards_the_top_edge_only_while_shown_and_leaves_the_side_gaps_open() {
+        let ctx = egui::Context::default();
+        let vp = tb_viewport();
+        for pos in [ThumbbarPos::Bottom, ThumbbarPos::Left, ThumbbarPos::Right] {
+            let cfg = tb_cfg(pos, 3000);
+            let mut v = tb_viewer();
+            // 隠れている間はガードなし（メニューは通常どおり出る）
+            let _ = v.update_thumbbar_visibility(&cfg, vp, Some(egui::pos2(500.0, 300.0)), &ctx);
+            assert!(v.thumbbar_menu_guard.is_none(), "{pos:?}");
+            // 出ている間: 上端中央はガード、左右の遊び（x<50, x>w-50）はメニューを出せる
+            v.thumbbar_visible = true;
+            let _ = v.update_thumbbar_visibility(&cfg, vp, Some(egui::pos2(500.0, 300.0)), &ctx);
+            let g = v.thumbbar_menu_guard.unwrap_or_else(|| panic!("{pos:?}: 出ている間はガードがある"));
+            assert!(g.contains(egui::pos2(500.0, 10.0)), "{pos:?}");
+            assert!(g.contains(egui::pos2(60.0, 10.0)), "{pos:?}");
+            assert!(!g.contains(egui::pos2(20.0, 10.0)), "{pos:?}");
+            assert!(!g.contains(egui::pos2(980.0, 10.0)), "{pos:?}");
+        }
+    }
+
+    #[test]
+    fn title_band_is_not_newly_shown_inside_the_top_thumbbar_guard_but_is_from_the_side_gaps() {
+        let ctx = egui::Context::default();
+        let vp = tb_viewport();
+        let mut v = tb_viewer();
+        v.title_band_hide_at = Some(0.0); // 引っ込んでいる状態（time=10 では期限切れ）
+        v.thumbbar_menu_guard = Some(egui::Rect::from_min_max(egui::pos2(50.0, 0.0), egui::pos2(950.0, 116.0)));
+        // バーの上端ではファイル名バーを出さない
+        assert!(!v.tick_title_band(&ctx, 10.0, Some(egui::pos2(500.0, 10.0)), vp, vp));
+        // 左右の遊び（x<50）の上端からは出る
+        assert!(v.tick_title_band(&ctx, 10.0, Some(egui::pos2(20.0, 10.0)), vp, vp));
+    }
+
+    #[test]
+    fn thumbbar_trigger_for_left_and_right_is_the_bottom_corner_only() {
+        let vp = tb_viewport();
+        let (_, l) = ViewerState::thumbbar_rects(ThumbbarPos::Left, vp, 116.0, 40.0, 0.0).unwrap();
+        assert!(l.contains(egui::pos2(10.0, 790.0)));
+        assert!(!l.contains(egui::pos2(10.0, 400.0)));
+        assert!(!l.contains(egui::pos2(990.0, 790.0)));
+        let (_, r) = ViewerState::thumbbar_rects(ThumbbarPos::Right, vp, 116.0, 40.0, 0.0).unwrap();
+        assert!(r.contains(egui::pos2(990.0, 790.0)));
+        assert!(!r.contains(egui::pos2(10.0, 790.0)));
+        assert!(ViewerState::thumbbar_rects(ThumbbarPos::None, vp, 116.0, 40.0, 0.0).is_none());
+    }
+
+    #[test]
+    fn thumbbar_corner_height_is_30_percent_of_the_screen_with_a_100px_floor() {
+        let near = |a: f32, b: f32| (a - b).abs() < 0.01;
+        assert!(near(ViewerState::thumbbar_corner_h(800.0), 240.0));
+        assert!(near(ViewerState::thumbbar_corner_h(1080.0), 324.0));
+        // 低いウィンドウでも100pxは確保する。ウィンドウ自体が100pxより低ければ全高まで
+        assert_eq!(ViewerState::thumbbar_corner_h(200.0), 100.0);
+        assert_eq!(ViewerState::thumbbar_corner_h(60.0), 60.0);
+    }
+
+    #[test]
+    fn left_and_right_bar_trigger_grows_with_the_screen_height_and_matches_the_page_turn_carve_out() {
+        let vp = tb_viewport(); // 高さ800 → 角の高さ240（y>560）
+        for pos in [ThumbbarPos::Left, ThumbbarPos::Right] {
+            let (_, trig) = ViewerState::thumbbar_rects(pos, vp, 116.0, 40.0, 0.0).unwrap();
+            assert!((trig.height() - 240.0).abs() < 0.01);
+            assert_eq!(trig.width(), 100.0); // 幅は固定
+            // 発火域とページ送りのくり抜きが同じ範囲（境界の上下で入れ替わる）
+            let x = if pos == ThumbbarPos::Left { 10.0 } else { 990.0 };
+            let inside = egui::pos2(x, 600.0);
+            let above = egui::pos2(x, 500.0);
+            assert!(trig.contains(inside) && !trig.contains(above));
+            assert_eq!(ViewerState::edge_turn_zone_at(vp, inside, pos), None);
+            assert!(ViewerState::edge_turn_zone_at(vp, above, pos).is_some());
+        }
+    }
+
+    #[test]
+    fn edge_turn_zone_is_carved_out_at_the_corner_on_the_thumbbar_side_only() {
+        let vp = tb_viewport();
+        let in_left_corner = egui::pos2(10.0, 790.0);
+        let in_right_corner = egui::pos2(990.0, 790.0);
+        // バーなし/上下バー: 従来どおり左右下角もページ送りゾーン
+        assert_eq!(ViewerState::edge_turn_zone_at(vp, in_left_corner, ThumbbarPos::None), Some(true));
+        assert_eq!(ViewerState::edge_turn_zone_at(vp, in_right_corner, ThumbbarPos::Bottom), Some(false));
+        // 左バー: 左下角だけくり抜く。右下角は残る
+        assert_eq!(ViewerState::edge_turn_zone_at(vp, in_left_corner, ThumbbarPos::Left), None);
+        assert_eq!(ViewerState::edge_turn_zone_at(vp, in_right_corner, ThumbbarPos::Left), Some(false));
+        // 右バー: 右下角だけくり抜く
+        assert_eq!(ViewerState::edge_turn_zone_at(vp, in_right_corner, ThumbbarPos::Right), None);
+        // くり抜き域より上は左右とも従来どおり
+        assert_eq!(ViewerState::edge_turn_zone_at(vp, egui::pos2(10.0, 400.0), ThumbbarPos::Left), Some(true));
+    }
+
+    #[test]
+    fn thumbbar_appears_on_trigger_entry_stays_while_pointer_is_inside_and_is_hidden_by_default() {
+        let ctx = egui::Context::default();
+        let vp = tb_viewport();
+        let cfg = tb_cfg(ThumbbarPos::Bottom, 3000);
+        let mut v = tb_viewer();
+        // 初期は隠れている。ページ送り相当の状態変化では出ない
+        assert!(v.update_thumbbar_visibility(&cfg, vp, Some(egui::pos2(500.0, 300.0)), &ctx).is_none());
+        // 発火域（下帯の中央）への侵入で出る
+        let bar = v.update_thumbbar_visibility(&cfg, vp, Some(egui::pos2(500.0, 790.0)), &ctx);
+        assert!(bar.is_some());
+        // バー上にいる間は、待機時間を超えても消えない（タイマーは進まず更新される）
+        v.thumbbar_last_activity = Instant::now() - Duration::from_millis(10_000);
+        let bar_c = bar.unwrap().center();
+        assert!(v.update_thumbbar_visibility(&cfg, vp, Some(bar_c), &ctx).is_some());
+        // バーを出てから待機時間が過ぎたら消える
+        v.thumbbar_last_activity = Instant::now() - Duration::from_millis(10_000);
+        assert!(v.update_thumbbar_visibility(&cfg, vp, Some(egui::pos2(500.0, 100.0)), &ctx).is_none());
+        // 消えた後は、バーの位置にいても発火域でなければ再表示されない（左右ページ送り保護域）
+        assert!(v.update_thumbbar_visibility(&cfg, vp, Some(egui::pos2(30.0, 790.0)), &ctx).is_none());
+    }
+
+    #[test]
+    fn thumbbar_does_not_hide_before_the_wait_elapses_after_leaving() {
+        let ctx = egui::Context::default();
+        let vp = tb_viewport();
+        let cfg = tb_cfg(ThumbbarPos::Bottom, 3000);
+        let mut v = tb_viewer();
+        assert!(v.update_thumbbar_visibility(&cfg, vp, Some(egui::pos2(500.0, 790.0)), &ctx).is_some());
+        assert!(v.update_thumbbar_visibility(&cfg, vp, Some(egui::pos2(500.0, 100.0)), &ctx).is_some());
+    }
+
+    /// エントリリストを1フレーム回す（ホバー位置を渡して表示・非表示の判定も走らせ、表示中なら描く）。
+    fn run_entry_list_frame(v: &mut ViewerState, ctx: &egui::Context, hover: Option<egui::Pos2>) {
+        let vp = tb_viewport();
+        let _ = ctx.run_ui(egui::RawInput { screen_rect: Some(vp), ..Default::default() }, |ui| {
+            let ctx = ui.ctx().clone();
+            if let Some(rect) = v.update_entry_list_visibility(&ctx, hover, vp) {
+                v.draw_entry_list_overlay(ui, &ctx, rect);
+            }
+        });
+    }
+
+    #[test]
+    fn entry_list_stays_while_swiping_even_if_the_pointer_leaves_it() {
+        let ctx = egui::Context::default();
+        let vp = tb_viewport();
+        let mut v = tb_viewer();
+        let button = |pos: egui::Pos2, pressed: bool| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        // 開く（左上のホバー域）→ 矩形が確定
+        run_entry_list_frame(&mut v, &ctx, Some(egui::pos2(10.0, 10.0)));
+        run_entry_list_frame(&mut v, &ctx, Some(egui::pos2(10.0, 300.0)));
+        let inside = egui::pos2(50.0, 300.0);
+        let outside = egui::pos2(600.0, 300.0);
+        // リスト上で押す
+        ctx.begin_pass(egui::RawInput { events: vec![egui::Event::PointerMoved(inside), button(inside, true)], ..Default::default() });
+        let _ = v.update_entry_list_visibility(&ctx, Some(inside), vp);
+        let _ = ctx.end_pass();
+        // 押したままリスト外（隠れる距離）へ出ても隠れない
+        ctx.begin_pass(egui::RawInput { events: vec![egui::Event::PointerMoved(outside)], ..Default::default() });
+        let _ = v.update_entry_list_visibility(&ctx, Some(outside), vp);
+        let _ = ctx.end_pass();
+        assert!(v.entry_list_visible);
+        // 離したあと、リスト外にいるなら隠れる
+        ctx.begin_pass(egui::RawInput { events: vec![button(outside, false)], ..Default::default() });
+        let _ = v.update_entry_list_visibility(&ctx, Some(outside), vp);
+        let _ = ctx.end_pass();
+        assert!(!v.entry_list_visible);
+    }
+
+    #[test]
+    fn entry_list_overlay_does_not_reserve_space_so_the_image_area_does_not_shrink() {
+        let ctx = egui::Context::default();
+        let mut v = tb_viewer();
+        v.entry_list_visible = true;
+        let vp = tb_viewport();
+        let mut before = egui::Rect::NOTHING;
+        let mut after = egui::Rect::NOTHING;
+        let _ = ctx.run_ui(egui::RawInput { screen_rect: Some(vp), ..Default::default() }, |ui| {
+            let ctx = ui.ctx().clone();
+            before = ui.available_rect_before_wrap();
+            let rect = v.update_entry_list_visibility(&ctx, Some(egui::pos2(10.0, 300.0)), vp).unwrap();
+            v.draw_entry_list_overlay(ui, &ctx, rect);
+            after = ui.available_rect_before_wrap();
+        });
+        assert_eq!(before, after, "リストを出しても残り領域（本画像の領域）は変わらない");
+    }
+
+    #[test]
+    fn entry_list_starts_below_the_menu_and_title_zone_and_resets_when_hidden() {
+        let ctx = egui::Context::default();
+        let mut v = tb_viewer();
+        v.menubar_overlay_h = 30.0;
+        // 左上のホバー域で開く
+        run_entry_list_frame(&mut v, &ctx, Some(egui::pos2(10.0, 10.0)));
+        assert!(v.entry_list_visible);
+        let rect = v.entry_list_rect.expect("表示中は矩形が記録される");
+        // メニューバー(30)＋タイトルバー(32)の下から始まる
+        assert!(rect.min.y >= 62.0, "min.y={}", rect.min.y);
+        // 表示中に1フレーム回すと、現在行への初期スクロールが記録される
+        run_entry_list_frame(&mut v, &ctx, Some(egui::pos2(10.0, 300.0)));
+        assert!(v.entry_list_scrolled_lo.is_some());
+        // 右へ出て隠す → 矩形とスクロール記録がリセットされる
+        run_entry_list_frame(&mut v, &ctx, Some(egui::pos2(600.0, 300.0)));
+        assert!(!v.entry_list_visible);
+        assert!(v.entry_list_rect.is_none());
+        assert!(v.entry_list_scrolled_lo.is_none());
+    }
+
+    #[test]
+    fn thumbbar_stays_while_swiping_even_if_the_pointer_leaves_the_bar() {
+        let ctx = egui::Context::default();
+        let vp = tb_viewport();
+        let cfg = tb_cfg(ThumbbarPos::Bottom, 3000);
+        let mut v = tb_viewer();
+        let bar = v.update_thumbbar_visibility(&cfg, vp, Some(egui::pos2(500.0, 790.0)), &ctx).unwrap();
+        let inside = bar.center();
+        let outside = egui::pos2(500.0, 100.0);
+        let button = |pos: egui::Pos2, pressed: bool| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        // バー上で押す
+        ctx.begin_pass(egui::RawInput { events: vec![egui::Event::PointerMoved(inside), button(inside, true)], ..Default::default() });
+        assert!(v.update_thumbbar_visibility(&cfg, vp, Some(inside), &ctx).is_some());
+        let _ = ctx.end_pass();
+        // 押したままバー外へ出て、待機時間を超えても消えない
+        v.thumbbar_last_activity = Instant::now() - Duration::from_millis(10_000);
+        ctx.begin_pass(egui::RawInput { events: vec![egui::Event::PointerMoved(outside)], ..Default::default() });
+        assert!(v.update_thumbbar_visibility(&cfg, vp, Some(outside), &ctx).is_some());
+        let _ = ctx.end_pass();
+        // 離したら、バー外にいるので待機時間の経過で消える
+        v.thumbbar_last_activity = Instant::now() - Duration::from_millis(10_000);
+        ctx.begin_pass(egui::RawInput { events: vec![button(outside, false)], ..Default::default() });
+        assert!(v.update_thumbbar_visibility(&cfg, vp, Some(outside), &ctx).is_none());
+        let _ = ctx.end_pass();
+    }
+
+    #[test]
+    fn thumbbar_is_suppressed_while_the_entry_list_is_open_and_zero_wait_means_always_visible() {
+        let ctx = egui::Context::default();
+        let vp = tb_viewport();
+        let mut v = tb_viewer();
+        // 待機時間0: トリガーなしで常時表示
+        let always = tb_cfg(ThumbbarPos::Top, 0);
+        assert!(v.update_thumbbar_visibility(&always, vp, None, &ctx).is_some());
+        // エントリリスト表示中は出さない（0でも）
+        v.entry_list_visible = true;
+        assert!(v.update_thumbbar_visibility(&always, vp, None, &ctx).is_none());
+        // 配置なし・1ファイルのときも出ない
+        v.entry_list_visible = false;
+        assert!(v.update_thumbbar_visibility(&tb_cfg(ThumbbarPos::None, 0), vp, None, &ctx).is_none());
+        let mut single = viewer();
+        single.entries.truncate(1);
+        assert!(single.update_thumbbar_visibility(&always, vp, None, &ctx).is_none());
+    }
+
+    #[test]
+    fn cycling_the_thumbbar_from_the_palette_shows_it_immediately() {
+        let ctx = egui::Context::default();
+        let vp = tb_viewport();
+        let mut cfg = tb_cfg(ThumbbarPos::None, 3000);
+        let mut v = tb_viewer();
+        v.cycle_thumbbar_pos(&ctx, &mut cfg);
+        assert_eq!(cfg.thumbbar_pos, ThumbbarPos::Bottom);
+        // ポインターがバー外でも、押した瞬間は表示される（待機時間はそこから数える）
+        assert!(v.update_thumbbar_visibility(&cfg, vp, Some(egui::pos2(500.0, 100.0)), &ctx).is_some());
+    }
+
+    #[test]
+    fn jump_target_single_page_lands_on_the_page_itself() {
+        assert_eq!(ViewerState::jump_target(0, 0, false, 30), (0, false));
+        assert_eq!(ViewerState::jump_target(19, 0, false, 30), (19, false));
+        // 範囲外は実ページへ丸める
+        assert_eq!(ViewerState::jump_target(-1, 0, false, 30), (0, false));
+        assert_eq!(ViewerState::jump_target(30, 0, false, 30), (29, false));
+    }
+
+    #[test]
+    fn jump_target_spread_lands_on_the_spread_containing_the_page_for_every_offset() {
+        for offset in [-1, 0, 1] {
+            for page in 0..30 {
+                let (base, force_left) = ViewerState::jump_target(page, offset, true, 30);
+                let (eff_offset, lo) = if force_left { (-1, base - 1) } else { (offset, base + offset) };
+                assert!(lo == page || lo + 1 == page, "off={offset} page={page} lo={lo}");
+                // lo は（実効）offset と偶奇が一致し、spread_base は 2 の倍数
+                assert_eq!((lo - eff_offset).rem_euclid(2), 0, "parity off={offset} page={page}");
+                assert_eq!(base.rem_euclid(2), 0, "base off={offset} page={page}");
+            }
+        }
+    }
+
+    #[test]
+    fn jump_target_shifted_offset_to_first_page_falls_back_to_virtual_left() {
+        // offset=+1 では lo=-1 を表せないため仮想左(-1)へ倒す
+        assert_eq!(ViewerState::jump_target(0, 1, true, 30), (0, true));
+        assert_eq!(ViewerState::jump_target(0, -1, true, 30), (0, true));
+        assert_eq!(ViewerState::jump_target(0, 0, true, 30), (0, false));
+    }
+
+    #[test]
+    fn jump_to_page_keeps_spread_offset_and_shows_the_clicked_page() {
+        let mut viewer = viewer();
+        viewer.entries = (0..30)
+            .map(|i| ViewerEntry {
+                entry_name: format!("p{i}"),
+                display_name: format!("p{i}"),
+                date_key: i,
+                original_index: i as usize,
+                stored_index: i as usize,
+            })
+            .collect();
+        viewer.offset.advance(); // 0 → +1
+        viewer.jump_to_page(19, true, 30);
+        assert_eq!(viewer.offset.value(), 1);
+        let lo = viewer.spread_lo();
+        assert!(lo == 19 || lo + 1 == 19);
+        // 単ページでは offset が戻り、そのページそのものを表示
+        viewer.jump_to_page(19, false, 30);
+        assert_eq!(viewer.spread_lo(), 19);
+        assert_eq!(viewer.offset.value(), 0);
     }
 
     #[test]
@@ -6341,12 +7914,14 @@ mod sort_save_state_tests {
                 display_name: "b".to_string(),
                 date_key: 2,
                 original_index: 0,
+                stored_index: 0,
             },
             ViewerEntry {
                 entry_name: "a".to_string(),
                 display_name: "a".to_string(),
                 date_key: 1,
                 original_index: 1,
+                stored_index: 1,
             },
         ];
         viewer.sort_key = ViewerSortKey::Date;
@@ -6378,6 +7953,63 @@ mod sort_save_state_tests {
     }
 
     #[test]
+    fn split_layer_extracts_trailing_paren_number() {
+        assert_eq!(split_layer("001.jpg"), (0, "001.jpg".to_string()));
+        assert_eq!(split_layer("001 (2).jpg"), (2, "001.jpg".to_string()));
+        assert_eq!(split_layer("001(3).jpg"), (3, "001.jpg".to_string()));
+        assert_eq!(split_layer("a (b).jpg"), (0, "a (b).jpg".to_string()));
+        assert_eq!(split_layer("(2).jpg"), (0, "(2).jpg".to_string()));
+        assert_eq!(split_layer("x (2) y.jpg"), (0, "x (2) y.jpg".to_string()));
+        assert_eq!(split_layer("noext (4)"), (4, "noext".to_string()));
+    }
+
+    #[test]
+    fn nat_layer_orders_layer_major_then_number() {
+        let mut names = vec![
+            "002 (2).jpg", "001.jpg", "002.jpg", "003 (3).jpg", "001 (2).jpg",
+            "003.jpg", "002 (3).jpg", "003 (2).jpg", "010.jpg", "010 (2).jpg",
+        ];
+        names.sort_by(|a, b| nat_layer_cmp(a, b));
+        assert_eq!(
+            names,
+            vec![
+                "001.jpg", "002.jpg", "003.jpg", "010.jpg",
+                "001 (2).jpg", "002 (2).jpg", "003 (2).jpg", "010 (2).jpg",
+                "002 (3).jpg", "003 (3).jpg",
+            ]
+        );
+        // 行頭番号優先（従来の自然順）は番号ごとに層が混ざる
+        let mut lead = vec!["002.jpg", "001 (2).jpg", "001.jpg"];
+        lead.sort_by(|a, b| nat_cmp(a, b));
+        assert_eq!(lead, vec!["001 (2).jpg", "001.jpg", "002.jpg"]);
+    }
+
+    #[test]
+    fn natural_layer_sort_applies_to_entries_and_descends() {
+        let mut viewer = viewer();
+        viewer.entries = ["002 (2).jpg", "001.jpg", "002.jpg", "001 (2).jpg"]
+            .iter()
+            .enumerate()
+            .map(|(i, n)| crate::types::ViewerEntry {
+                display_name: n.to_string(),
+                entry_name: n.to_string(),
+                date_key: 0,
+                original_index: i,
+                stored_index: i,
+            })
+            .collect();
+        viewer.sort_key = ViewerSortKey::NaturalLayer;
+        viewer.sort_ascending = true;
+        viewer.sort_entries();
+        let order: Vec<_> = viewer.entries.iter().map(|e| e.display_name.as_str()).collect();
+        assert_eq!(order, ["001.jpg", "002.jpg", "001 (2).jpg", "002 (2).jpg"]);
+        viewer.sort_ascending = false;
+        viewer.sort_entries();
+        let order: Vec<_> = viewer.entries.iter().map(|e| e.display_name.as_str()).collect();
+        assert_eq!(order, ["002 (2).jpg", "001 (2).jpg", "002.jpg", "001.jpg"]);
+    }
+
+    #[test]
     fn sort_setting_text_uses_unbracketed_localized_labels() {
         assert_eq!(
             ViewerState::sort_setting_text(ViewerSortKey::Name, true, i18n::Lang::Japanese),
@@ -6385,7 +8017,7 @@ mod sort_save_state_tests {
         );
         assert_eq!(
             ViewerState::sort_setting_text(ViewerSortKey::Natural, false, i18n::Lang::English),
-            "Natural Desc"
+            "Natural:Lead Desc"
         );
         assert_eq!(
             ViewerState::sort_setting_text(ViewerSortKey::Date, true, i18n::Lang::Chinese),
@@ -6403,12 +8035,14 @@ mod sort_save_state_tests {
                 display_name: "old".to_string(),
                 date_key: 1,
                 original_index: 0,
+                stored_index: 0,
             },
             ViewerEntry {
                 entry_name: "new".to_string(),
                 display_name: "new".to_string(),
                 date_key: 2,
                 original_index: 1,
+                stored_index: 1,
             },
         ];
 
@@ -6434,6 +8068,65 @@ mod sort_save_state_tests {
 
         assert_eq!(viewer.spread_base, 4);
     }
+
+    /// 格納順テスト用: 名前順と格納順が食い違う3ページ（格納順: c, a, b）。
+    fn stored_viewer() -> ViewerState {
+        let mut viewer = viewer();
+        viewer.is_raw_file = false;
+        viewer.is_virtual_book = false;
+        let mk = |name: &str, orig: usize, stored: usize| ViewerEntry {
+            entry_name: name.to_string(),
+            display_name: name.to_string(),
+            date_key: 0,
+            original_index: orig,
+            stored_index: stored,
+        };
+        // original_index は名前ソート後の位置（a=0, b=1, c=2）
+        viewer.entries = vec![mk("a", 0, 1), mk("b", 1, 2), mk("c", 2, 0)];
+        viewer
+    }
+
+    fn names(viewer: &ViewerState) -> Vec<&str> {
+        viewer.entries.iter().map(|e| e.display_name.as_str()).collect()
+    }
+
+    #[test]
+    fn stored_sort_follows_archive_order_and_keeps_original_index() {
+        let mut viewer = stored_viewer();
+        viewer.restore_saved_sort(ViewerSortKey::Stored, true);
+        assert_eq!(names(&viewer), ["c", "a", "b"]);
+        // キャッシュキーの original_index はソートで変化しない
+        let origs: Vec<usize> = viewer.entries.iter().map(|e| e.original_index).collect();
+        assert_eq!(origs, [2, 0, 1]);
+        // 降順は格納順の逆
+        viewer.restore_saved_sort(ViewerSortKey::Stored, false);
+        assert_eq!(names(&viewer), ["b", "a", "c"]);
+        // 名前順へ戻せる
+        viewer.restore_saved_sort(ViewerSortKey::Name, true);
+        assert_eq!(names(&viewer), ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn stored_sort_is_unavailable_for_folder_and_raw_file() {
+        let mut viewer = stored_viewer();
+        assert!(viewer.stored_sort_available());
+        viewer.is_virtual_book = true;
+        assert!(!viewer.stored_sort_available());
+        // フォルダでは保存値・既定設定が格納順でも名前順のまま開く
+        viewer.restore_saved_sort(ViewerSortKey::Stored, true);
+        assert!(matches!(viewer.current_sort_snapshot().0, ViewerSortKey::Name));
+        // 保存値(格納順)との差は「変更あり」と数えない
+        viewer.set_saved_sort(Some((ViewerSortKey::Stored, true)));
+        assert!(!viewer.sort_save_changed());
+        // 万一 sort_key が Stored でも並びは名前順に読み替える
+        viewer.sort_key = ViewerSortKey::Stored;
+        viewer.sort_entries();
+        assert_eq!(names(&viewer), ["a", "b", "c"]);
+        // 単一画像も不可
+        let mut raw = stored_viewer();
+        raw.is_raw_file = true;
+        assert!(!raw.stored_sort_available());
+    }
 }
 
 #[cfg(test)]
@@ -6453,12 +8146,14 @@ mod bookmark_restore_tests {
                 display_name: "first".to_string(),
                 date_key: 0,
                 original_index: 0,
+                stored_index: 0,
             },
             ViewerEntry {
                 entry_name: "second".to_string(),
                 display_name: "second".to_string(),
                 date_key: 1,
                 original_index: 1,
+                stored_index: 1,
             },
         ];
         viewer
@@ -6560,6 +8255,40 @@ mod bookmark_restore_tests {
     }
 
     #[test]
+    fn bar_step_syncs_with_overlay_value_and_saves_absolute() {
+        use crate::controller::RatingSaveAction;
+        use crate::rating_overlay::RatingEvent;
+        let mut viewer = archive_viewer();
+        // 未評価から＋ → ★0.5
+        viewer.step_rating_from_bar(true);
+        assert_eq!(viewer.rating_half, 1);
+        assert_eq!(viewer.take_rating_action(), Some(RatingSaveAction::Set(1)));
+        // 巻末オーバーレイで★3.5にしたあと、barの＋は同じ値から続く（同期）
+        viewer.apply_rating_event(RatingEvent::Set(7));
+        viewer.take_rating_action();
+        viewer.step_rating_from_bar(true);
+        assert_eq!(viewer.rating_half, 8);
+        assert_eq!(viewer.take_rating_action(), Some(RatingSaveAction::Set(8)));
+        // ★0.5から－で未評価（トーストを伴うClearではなく、絶対値0の保存）
+        viewer.set_saved_rating(1);
+        viewer.step_rating_from_bar(false);
+        assert_eq!(viewer.rating_half, 0);
+        assert_eq!(viewer.take_rating_action(), Some(RatingSaveAction::Set(0)));
+    }
+
+    #[test]
+    fn bar_step_at_limits_does_nothing() {
+        let mut viewer = archive_viewer();
+        viewer.step_rating_from_bar(false);
+        assert_eq!(viewer.rating_half, 0);
+        assert_eq!(viewer.take_rating_action(), None, "0で－は保存要求を出さない");
+        viewer.set_saved_rating(crate::rating_overlay::MAX_HALF);
+        viewer.step_rating_from_bar(true);
+        assert_eq!(viewer.rating_half, crate::rating_overlay::MAX_HALF);
+        assert_eq!(viewer.take_rating_action(), None, "★5.0で＋は保存要求を出さない");
+    }
+
+    #[test]
     fn saved_rating_above_max_is_clamped_for_display() {
         let mut viewer = archive_viewer();
         viewer.set_saved_rating(99);
@@ -6589,6 +8318,49 @@ mod decode_edge_tests {
     fn edge_is_never_zero() {
         assert_eq!(clamp_decode_edge(0, 8192), 1);
         assert_eq!(clamp_decode_edge(100, 0), 1);
+    }
+
+    #[test]
+    fn magnifier_target_widens_only_the_overflow_axis() {
+        use super::magnifier_decode_target;
+        use crate::magnifier::FitMode;
+        assert_eq!(magnifier_decode_target(4000, 8192, FitMode::Contain), (4000, 4000));
+        assert_eq!(magnifier_decode_target(4000, 8192, FitMode::Width), (4000, 8192));
+        assert_eq!(magnifier_decode_target(4000, 8192, FitMode::Height), (8192, 4000));
+        // 設定値がテクスチャ上限を超えても、上限で頭打ちになる。
+        assert_eq!(magnifier_decode_target(15360, 8192, FitMode::Width), (8192, 8192));
+    }
+
+    #[test]
+    fn width_fit_keeps_a_tall_webtoon_wide_enough() {
+        use super::magnifier_decode_target;
+        use crate::magnifier::FitMode;
+        // 800x6000 の縦長は、幅フィットなら縮められず原寸のままデコードされる（従来の正方形目標だと 533x4000）。
+        let (tw, th) = magnifier_decode_target(4000, 8192, FitMode::Width);
+        assert_eq!(crate::anim::fit_within(800, 6000, tw, th), (800, 6000));
+        let (tw, th) = magnifier_decode_target(4000, 8192, FitMode::Contain);
+        assert_eq!(crate::anim::fit_within(800, 6000, tw, th), (533, 4000));
+        // 上限を超える 800x20000 は、テクスチャ上限（8192）までの縮小で止まる（幅は 327px）。
+        let (tw, th) = magnifier_decode_target(4000, 8192, FitMode::Width);
+        assert_eq!(crate::anim::fit_within(800, 20000, tw, th), (327, 8192));
+    }
+
+    #[test]
+    fn guardrail_target_follows_the_fit_mode_for_the_original_size_setting() {
+        use crate::magnifier::FitMode;
+        let v = super::ViewerState::new_raw(std::path::PathBuf::from("t.png"), [None; 4], None);
+        // 単ページ・実測前のテクスチャ上限(8192)。全体は従来どおり正方形。
+        assert_eq!(v.guardrail_decode_target(4000, FitMode::Contain), (4000, 4000));
+        assert_eq!(v.guardrail_decode_target(4000, FitMode::Width), (4000, 8192));
+        assert_eq!(v.guardrail_decode_target(4000, FitMode::Height), (8192, 4000));
+    }
+
+    #[test]
+    fn height_fit_keeps_a_wide_panorama_tall_enough() {
+        use super::magnifier_decode_target;
+        use crate::magnifier::FitMode;
+        let (tw, th) = magnifier_decode_target(4000, 8192, FitMode::Height);
+        assert_eq!(crate::anim::fit_within(6000, 800, tw, th), (6000, 800));
     }
 }
 
@@ -6663,7 +8435,7 @@ mod magnifier_flow_tests {
         fn with_palette_slot() -> Self {
             let mut h = Self::new_unwarmed();
             h.cfg.tool_palette.visible = true;
-            h.cfg.tool_palette.pos = (100.0, 100.0);
+            h.cfg.tool_palette.set_top_left_offset(100.0, 100.0);
             h.cfg.tool_palette.slots[0] = crate::tool_palette::PaletteSlotContent::Toggle(crate::tool_palette::ToggleKind::Magnifier);
             h.warm_up();
             h
@@ -6835,9 +8607,15 @@ mod magnifier_flow_tests {
         fit
     }
 
+    /// ハーネスで実際に中央パネルへ渡る viewport（画面からタイトル帯・余白を引いた矩形）。
+    /// パレットは viewport 基準の寄せ先で置かれるので、テストの座標計算もこれを使う。
+    fn real_viewport(screen: egui::Vec2) -> egui::Rect {
+        egui::Rect::from_min_max(egui::pos2(8.0, 30.0), egui::pos2(screen.x - 8.0, screen.y - 8.0))
+    }
+
     /// バーのモード終了ボタンを、実際のクリック操作（ホバー→押下→離す）で押す。
     fn click_exit_button(h: &mut Harness) {
-        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, h.screen);
+        let viewport = real_viewport(h.screen);
         let center = h
             .cfg
             .magnifier
@@ -6979,7 +8757,7 @@ mod magnifier_flow_tests {
 
     /// パレットの虫眼鏡マスを、実際のクリック操作（押下→離す）で切り替える。
     fn click_palette_magnifier_slot(h: &mut Harness) {
-        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, SCREEN);
+        let viewport = real_viewport(SCREEN);
         let palette = h.viewer.tool_palette_rect(viewport).expect("パレットが表示されていない");
         let slot = h.viewer.tool_palette.slot_size_px();
         let center = palette.min
@@ -7117,6 +8895,7 @@ mod magnifier_flow_tests {
                     display_name: format!("{i}.png"),
                     date_key: 0,
                     original_index: i,
+                    stored_index: i,
                 });
                 let img = image::RgbaImage::from_pixel(w, h_px, image::Rgba([180, 180, 180, 255]));
                 h.cache.insert(path.clone(), i, 0, PageContent::Static(img), &path, 0);
@@ -7279,7 +9058,7 @@ mod magnifier_flow_tests {
         // マス内容はビューアー側のキャッシュが持つ（cfg は初回同期のみ）。
         h.cfg.tool_palette.visible = true;
         h.viewer.tool_palette.visible = true;
-        h.viewer.tool_palette.pos = (100.0, 100.0);
+        h.viewer.tool_palette.set_top_left_offset(100.0, 100.0);
         h.viewer.tool_palette.slots[0] = crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::KomaNext);
         h.frame(vec![], egui::Modifiers::NONE);
         // コマモードOFF（拡大表示中でも、通常表示でも）: 何も起きない。
@@ -7390,6 +9169,193 @@ mod magnifier_flow_tests {
         assert_offset_at(&h, grid.position(1), "変形後のコマ送り");
     }
 
+    // ── 幅フィット／高さフィット ─────────────────────────────────────────────
+    fn set_fit(h: &mut Harness, mode: crate::magnifier::FitMode) {
+        h.cfg.fit_mode = mode;
+        h.cfg.magnifier_on = true;
+        for _ in 0..3 {
+            h.frame(vec![], egui::Modifiers::NONE);
+        }
+    }
+
+    #[test]
+    fn fit_width_scales_the_page_to_the_window_width_and_starts_at_the_top() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        set_fit(&mut h, crate::magnifier::FitMode::Width);
+        let (img, vp) = h.viewer.koma_geom.unwrap();
+        let view = h.viewer.magnifier_view.unwrap();
+        assert!((view.scale - vp.x / img.x).abs() < 1e-3, "幅に合っていない: {} vs {}", view.scale, vp.x / img.x);
+        assert!(view.offset.y.abs() < 1e-3, "上端から始まっていない: {:?}", view.offset);
+        assert!(h.viewer.magnifier_at_fit);
+    }
+
+    #[test]
+    fn fit_height_scales_the_page_to_the_window_height() {
+        let mut h = Harness::with_pages(3, 1200, 800);
+        set_fit(&mut h, crate::magnifier::FitMode::Height);
+        let (img, vp) = h.viewer.koma_geom.unwrap();
+        let view = h.viewer.magnifier_view.unwrap();
+        assert!((view.scale - vp.y / img.y).abs() < 1e-3, "高さに合っていない: {} vs {}", view.scale, vp.y / img.y);
+    }
+
+    #[test]
+    fn fit_mode_switch_while_magnified_returns_to_the_new_fit() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        set_fit(&mut h, crate::magnifier::FitMode::Width);
+        // 拡大してフィットから外す。
+        let v = h.viewer.magnifier_view.unwrap();
+        h.viewer.magnifier_view = Some(crate::magnifier::MagnifierView { scale: v.scale * 1.5, offset: v.offset });
+        h.viewer.magnifier_at_fit = false;
+        h.frame(vec![], egui::Modifiers::NONE);
+        set_fit(&mut h, crate::magnifier::FitMode::Height);
+        let (img, vp) = h.viewer.koma_geom.unwrap();
+        let view = h.viewer.magnifier_view.unwrap();
+        assert!((view.scale - vp.y / img.y).abs() < 1e-3, "新しい基準のフィットに戻らない: {}", view.scale);
+    }
+
+    #[test]
+    fn fit_width_follows_the_window_width_and_survives_page_turns() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        set_fit(&mut h, crate::magnifier::FitMode::Width);
+        h.screen = egui::vec2(SCREEN.x * 0.6, SCREEN.y);
+        for _ in 0..3 {
+            h.frame(vec![], egui::Modifiers::NONE);
+        }
+        let (img, vp) = h.viewer.koma_geom.unwrap();
+        let view = h.viewer.magnifier_view.unwrap();
+        assert!((view.scale - vp.x / img.x).abs() < 1e-3, "窓幅の変化に追従しない: {}", view.scale);
+        press(&mut h, egui::Key::Space);
+        for _ in 0..3 {
+            h.frame(vec![], egui::Modifiers::NONE);
+        }
+        assert_eq!(h.cfg.fit_mode, crate::magnifier::FitMode::Width, "ページ送りでモードが外れた");
+        let (img, vp) = h.viewer.koma_geom.unwrap();
+        let view = h.viewer.magnifier_view.unwrap();
+        assert!((view.scale - vp.x / img.x).abs() < 1e-3, "次ページが幅に合っていない: {}", view.scale);
+    }
+
+    fn wheel_n(h: &mut Harness, up: bool, modifiers: egui::Modifiers, n: usize) {
+        for _ in 0..n {
+            h.wheel(up, modifiers);
+        }
+        for _ in 0..4 {
+            h.frame(vec![], egui::Modifiers::NONE);
+        }
+    }
+
+    #[test]
+    fn wheel_scrolls_the_overflow_axis_in_fit_width_when_scroll_mode_is_on() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        h.cfg.wheel_scroll = true;
+        set_fit(&mut h, crate::magnifier::FitMode::Width);
+        let s0 = h.viewer.magnifier_view.unwrap().scale;
+        let page0 = h.viewer.spread_lo();
+        wheel_n(&mut h, false, egui::Modifiers::NONE, 2);
+        let view = h.viewer.magnifier_view.unwrap();
+        assert!(view.offset.y > 1.0, "下回しで縦に進まない: {:?}", view.offset);
+        assert!((view.scale - s0).abs() < 1e-6, "スクロールのはずが拡縮された: {} -> {}", s0, view.scale);
+        assert_eq!(h.viewer.spread_lo(), page0, "スクロールでページが送られた");
+        // 上回しで戻る（上端で止まり、負にはならない）。
+        wheel_n(&mut h, true, egui::Modifiers::NONE, 10);
+        assert!(h.viewer.magnifier_view.unwrap().offset.y.abs() < 1e-3, "上端で止まらない");
+        assert_eq!(h.viewer.spread_lo(), page0);
+    }
+
+    #[test]
+    fn wheel_zooms_when_scroll_mode_is_off_even_in_fit_width() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        set_fit(&mut h, crate::magnifier::FitMode::Width);
+        let s0 = h.viewer.magnifier_view.unwrap().scale;
+        wheel_n(&mut h, true, egui::Modifiers::NONE, 1);
+        assert!(h.viewer.magnifier_view.unwrap().scale > s0, "既定は拡縮のまま: {}", h.state());
+    }
+
+    #[test]
+    fn shift_wheel_still_zooms_in_scroll_mode() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        h.cfg.wheel_scroll = true;
+        set_fit(&mut h, crate::magnifier::FitMode::Width);
+        let s0 = h.viewer.magnifier_view.unwrap().scale;
+        wheel_n(&mut h, true, egui::Modifiers::SHIFT, 1);
+        assert!(h.viewer.magnifier_view.unwrap().scale > s0, "Shift+ホイールで拡縮できない: {}", h.state());
+    }
+
+    #[test]
+    fn scroll_mode_is_ignored_outside_fit_and_in_koma_mode() {
+        let mut cfg = ViewerConfig::default();
+        cfg.wheel_scroll = true;
+        assert!(!ViewerState::wheel_scroll_effective(&cfg), "全体フィットでは無効");
+        cfg.fit_mode = crate::magnifier::FitMode::Height;
+        assert!(ViewerState::wheel_scroll_effective(&cfg));
+        cfg.koma_on = true;
+        assert!(!ViewerState::wheel_scroll_effective(&cfg), "コマモード中は無効");
+    }
+
+    #[test]
+    fn scroll_mode_flag_survives_an_archive_change() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        h.cfg.wheel_scroll = true;
+        set_fit(&mut h, crate::magnifier::FitMode::Width);
+        h.viewer.archive_path = PathBuf::from("other.png");
+        h.frame(vec![], egui::Modifiers::NONE);
+        assert_eq!(h.cfg.fit_mode, crate::magnifier::FitMode::Contain);
+        assert!(h.cfg.wheel_scroll, "ホイールの好みは書庫切替で消さない");
+    }
+
+    #[test]
+    fn exit_button_style_magnifier_off_returns_the_fit_mode_to_contain() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        h.cfg.set_fit_mode(crate::magnifier::FitMode::Width);
+        h.frame(vec![], egui::Modifiers::NONE);
+        assert!(h.cfg.magnifier_on);
+        // 終了ボタン・トグルと同じ: 虫眼鏡だけが切れる。
+        h.cfg.magnifier_on = false;
+        h.frame(vec![], egui::Modifiers::NONE);
+        assert_eq!(h.cfg.fit_mode, crate::magnifier::FitMode::Contain, "虫眼鏡が切れたのにフィットが残った");
+        assert!(!h.cfg.fit_entered_magnifier);
+    }
+
+    #[test]
+    fn cycling_back_to_contain_turns_the_magnifier_off_and_restores_double_click() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        for _ in 0..3 {
+            h.cfg.set_fit_mode(h.cfg.fit_mode.next());
+            h.frame(vec![], egui::Modifiers::NONE);
+        }
+        assert_eq!(h.cfg.fit_mode, crate::magnifier::FitMode::Contain);
+        assert!(!h.cfg.magnifier_on, "一周しても虫眼鏡が残る: {}", h.state());
+        assert!(h.viewer.magnifier_view.is_none());
+    }
+
+    #[test]
+    fn archive_change_also_restores_the_magnifier_the_fit_mode_turned_on() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        h.cfg.set_fit_mode(crate::magnifier::FitMode::Width);
+        h.frame(vec![], egui::Modifiers::NONE);
+        h.viewer.archive_path = PathBuf::from("other.png");
+        h.frame(vec![], egui::Modifiers::NONE);
+        h.frame(vec![], egui::Modifiers::NONE);
+        assert_eq!(h.cfg.fit_mode, crate::magnifier::FitMode::Contain);
+        assert!(!h.cfg.magnifier_on, "書庫切替後も虫眼鏡が残る");
+    }
+
+    #[test]
+    fn fit_mode_resets_to_contain_when_the_archive_changes() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        set_fit(&mut h, crate::magnifier::FitMode::Width);
+        h.viewer.archive_path = PathBuf::from("other.png");
+        h.frame(vec![], egui::Modifiers::NONE);
+        assert_eq!(h.cfg.fit_mode, crate::magnifier::FitMode::Contain);
+    }
+
+    #[test]
+    fn fit_mode_is_ignored_while_the_koma_mode_is_on() {
+        let mut h = Harness::with_pages(3, 800, 1200);
+        h.cfg.fit_mode = crate::magnifier::FitMode::Width;
+        h.start_koma(1.0);
+        assert_eq!(h.viewer.magnifier_fit_mode, crate::magnifier::FitMode::Contain);
+    }
+
     #[test]
     fn koma_right_binding_starts_at_the_right_edge_and_reads_right_to_left() {
         let mut h = Harness::with_pages(6, 800, 1200);
@@ -7423,7 +9389,7 @@ mod magnifier_flow_tests {
         let mut h = Harness::with_pages(3, 800, 1200);
         h.cfg.tool_palette.visible = true;
         h.viewer.tool_palette.visible = true;
-        h.viewer.tool_palette.pos = (100.0, 100.0);
+        h.viewer.tool_palette.set_top_left_offset(100.0, 100.0);
         h.viewer.tool_palette.slots[0] = crate::tool_palette::PaletteSlotContent::Action(crate::tool_palette::ActionKind::KomaPrev);
         h.frame(vec![], egui::Modifiers::NONE);
         h.start_koma(2.5);
@@ -7753,7 +9719,7 @@ mod magnifier_flow_tests {
 
     // ── ツールパレットのドラッグ：クランプ中の座標蓄積 ─────────────────────────
     fn palette_rect(h: &Harness) -> egui::Rect {
-        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, h.screen);
+        let viewport = real_viewport(h.screen);
         h.viewer.tool_palette_rect(viewport).expect("パレットが表示されていない")
     }
 
@@ -7794,7 +9760,7 @@ mod magnifier_flow_tests {
     fn palette_drag_right_after_window_shrink_follows_immediately() {
         let mut h = Harness::with_palette_slot();
         // 大きな画面の下端に置いた状態（生値が縮小後の範囲を大きく超える）。
-        h.viewer.tool_palette.pos = (100.0, 700.0);
+        h.viewer.tool_palette.set_top_left_offset(100.0, 700.0);
         h.frame(vec![], egui::Modifiers::NONE);
         h.screen = egui::vec2(1000.0, 300.0);
         h.warm_up();
@@ -7805,8 +9771,8 @@ mod magnifier_flow_tests {
         let after_y = palette_rect(&h).min.y;
         assert!(
             after_y <= clamped_y - 50.0,
-            "クランプ中の生値が蓄積され、上へ100pxドラッグしても追従しない: {clamped_y} -> {after_y} (pos={:?})",
-            h.viewer.tool_palette.pos
+            "クランプ中の生値が蓄積され、上へ100pxドラッグしても追従しない: {clamped_y} -> {after_y} (offset={:?})",
+            h.viewer.tool_palette.offset
         );
     }
 
@@ -7814,7 +9780,7 @@ mod magnifier_flow_tests {
     fn palette_drag_pressed_against_edge_does_not_accumulate() {
         let mut h = Harness::with_palette_slot();
         let bottom_y = {
-            h.viewer.tool_palette.pos = (100.0, 10_000.0);
+            h.viewer.tool_palette.set_top_left_offset(100.0, 10_000.0);
             h.warm_up();
             palette_rect(&h).min.y
         };
@@ -7827,8 +9793,8 @@ mod magnifier_flow_tests {
         let after_y = palette_rect(&h).min.y;
         assert!(
             after_y <= bottom_y - 50.0,
-            "端に押し付けた分が蓄積され、逆方向へ動かしても追従しない: {bottom_y} -> {after_y} (pos={:?})",
-            h.viewer.tool_palette.pos
+            "端に押し付けた分が蓄積され、逆方向へ動かしても追従しない: {bottom_y} -> {after_y} (offset={:?})",
+            h.viewer.tool_palette.offset
         );
     }
 
@@ -7836,7 +9802,7 @@ mod magnifier_flow_tests {
     #[test]
     fn palette_returns_to_original_position_when_window_restored_without_drag() {
         let mut h = Harness::with_palette_slot();
-        h.viewer.tool_palette.pos = (100.0, 600.0);
+        h.viewer.tool_palette.set_top_left_offset(100.0, 600.0);
         h.warm_up();
         let original = palette_rect(&h).min;
         h.screen = egui::vec2(1000.0, 300.0);
@@ -7845,6 +9811,62 @@ mod magnifier_flow_tests {
         h.screen = SCREEN;
         h.warm_up();
         assert_eq!(palette_rect(&h).min, original);
+    }
+
+    /// 自動ハイドのメニューバーが出てツールボックスの上端と重なったら、バーの下へ押し下げる。
+    #[test]
+    fn palette_is_pushed_below_overlay_menubar_only_when_overlapping() {
+        let mut h = Harness::with_palette_slot();
+        let viewport = real_viewport(h.screen);
+        // バーが出ていなければ何もしない。
+        h.viewer.tool_palette.set_top_left_offset(100.0, 4.0);
+        h.viewer.menubar_overlay_h = 0.0;
+        h.viewer.push_palette_below_overlay_menubar(viewport);
+        assert_eq!(h.viewer.tool_palette.offset, (100.0, 4.0));
+        // バーが出て重なっていれば、バー高＋余白の位置まで下げる（offsetが更新される）。
+        h.viewer.menubar_overlay_h = 30.0;
+        h.viewer.push_palette_below_overlay_menubar(viewport);
+        assert_eq!(h.viewer.tool_palette_rect(viewport).unwrap().min.y, viewport.min.y + 30.0 + MENUBAR_KEEP_MARGIN);
+        assert_eq!(h.viewer.tool_palette.offset.1, 30.0 + MENUBAR_KEEP_MARGIN);
+        // 重なっていない位置は動かさない。
+        h.viewer.tool_palette.set_top_left_offset(100.0, 200.0);
+        h.viewer.push_palette_below_overlay_menubar(viewport);
+        assert_eq!(h.viewer.tool_palette.offset, (100.0, 200.0));
+    }
+
+    /// 右下に置いたパレットは、窓を拡大しても右下の隅に追従する（左上の絶対座標のままだと取り残される）。
+    #[test]
+    fn palette_dragged_to_bottom_right_follows_window_growth() {
+        use crate::tool_palette::Align;
+        let mut h = Harness::with_palette_slot();
+        h.viewer.tool_palette.set_top_left_offset(10_000.0, 10_000.0);
+        h.warm_up();
+        // ヘッダーを少しだけ掴んで動かし、離して寄せ先を確定させる。
+        drag_palette_header_by(&mut h, -10.0);
+        assert_eq!(h.viewer.tool_palette.anchor, (Align::End, Align::End), "右下へ寄せ先が決まらない");
+        let gap_before = h.screen.y - palette_rect(&h).max.y;
+        let right_gap_before = h.screen.x - palette_rect(&h).max.x;
+
+        h.screen = egui::vec2(h.screen.x + 400.0, h.screen.y + 300.0);
+        h.warm_up();
+        let r = palette_rect(&h);
+        assert!((h.screen.y - r.max.y - gap_before).abs() < 0.5, "下端からの距離が窓拡大で変わった");
+        assert!((h.screen.x - r.max.x - right_gap_before).abs() < 0.5, "右端からの距離が窓拡大で変わった");
+    }
+
+    /// 左上へ置いた場合は従来どおり左上基準のまま（窓拡大で動かない）。
+    #[test]
+    fn palette_dragged_to_top_left_stays_put_on_window_growth() {
+        use crate::tool_palette::Align;
+        let mut h = Harness::with_palette_slot();
+        h.viewer.tool_palette.set_top_left_offset(20.0, 20.0);
+        h.warm_up();
+        drag_palette_header_by(&mut h, 10.0);
+        assert_eq!(h.viewer.tool_palette.anchor, (Align::Start, Align::Start));
+        let before = palette_rect(&h).min;
+        h.screen = egui::vec2(h.screen.x + 400.0, h.screen.y + 300.0);
+        h.warm_up();
+        assert_eq!(palette_rect(&h).min, before);
     }
 
     /// ツールボックスの割り当てキーを1回押す（押下→離し）。
@@ -7936,6 +9958,7 @@ mod texture_window_flow_tests {
                     display_name: format!("{i}.png"),
                     date_key: 0,
                     original_index: i,
+                    stored_index: i,
                 });
                 let img = image::RgbaImage::from_pixel(page_w, page_h, image::Rgba([180, 180, 180, 255]));
                 cache.insert(path.clone(), i, 0, PageContent::Static(img), &path, 0);
@@ -8070,6 +10093,7 @@ mod image_info_spread_tests {
                     display_name: format!("{i}.png"),
                     date_key: 0,
                     original_index: i,
+                    stored_index: i,
                 });
                 let (w, h) = if i % 2 == 0 { SIZE_EVEN } else { SIZE_ODD };
                 let img = image::RgbaImage::from_pixel(w, h, image::Rgba([180, 180, 180, 255]));

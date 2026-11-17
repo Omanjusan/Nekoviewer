@@ -65,7 +65,11 @@ impl NekoviewApp {
         self.refresh_status_data(dt_ms);
         {
             let data = self.status_window_data.lock().unwrap();
-            crate::view_status::draw_content(ui, &data);
+            // 独立 OS 窓のルートには背景塗りが無い（クリア色は黒）。ライト時に暗い文字が黒地に載らないよう、
+            // テーマ連動の背景を持つパネルに載せる。
+            egui::CentralPanel::default().show(ui, |ui| {
+                crate::view_status::draw_content(ui, &data);
+            });
         }
         // 次の 1Hz tick へ向けて自分自身の再描画を予約する。
         ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
@@ -187,56 +191,6 @@ impl NekoviewApp {
             });
         if !open {
             self.memory_warning_open = false;
-        }
-    }
-
-    /// 「フォルダ本アクセス」トグルのON/OFFを切り替える。ONにする瞬間、初回警告を
-    /// まだ確認していなければ（次回から表示しないチェック済みでなければ）警告ダイアログを開く。
-    pub(super) fn toggle_folder_book_access(&mut self) {
-        if self.folder_book_access_enabled {
-            self.folder_book_access_enabled = false;
-            return;
-        }
-        self.folder_book_access_enabled = true;
-        if !self.config.folder_book_access_warning_seen {
-            self.folder_book_access_notice_dont_show_again = false;
-            self.folder_book_access_notice_open = true;
-        }
-    }
-
-    /// 「フォルダ本アクセス」初回警告ダイアログ。仮想アーカイブは各種保存系操作を
-    /// 行わない旨を知らせる。「次回から表示しない」チェック済みでOKするとstateへ永続化する。
-    pub(super) fn draw_folder_book_access_notice(&mut self, ctx: &egui::Context) {
-        if !self.folder_book_access_notice_open {
-            return;
-        }
-        let lang = i18n::t();
-        let mut open = true;
-        let mut ok_clicked = false;
-        let mut dont_show_again = self.folder_book_access_notice_dont_show_again;
-        egui::Window::new(lang.folder_book_access_notice_title())
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-            .show(ctx, |ui| {
-                ui.label(lang.folder_book_access_notice_body());
-                ui.add_space(8.0);
-                ui.checkbox(&mut dont_show_again, lang.folder_book_access_notice_dont_show_again());
-                ui.add_space(8.0);
-                ui.vertical_centered(|ui| {
-                    if ui.button(lang.memory_warning_ok()).clicked() {
-                        ok_clicked = true;
-                    }
-                });
-            });
-        self.folder_book_access_notice_dont_show_again = dont_show_again;
-        if ok_clicked || !open {
-            self.folder_book_access_notice_open = false;
-            if dont_show_again {
-                self.config.folder_book_access_warning_seen = true;
-                self.persist_state();
-            }
         }
     }
 

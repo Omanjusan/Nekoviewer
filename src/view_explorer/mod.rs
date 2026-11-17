@@ -19,6 +19,8 @@ impl crate::explorer_sort::RatingSortKey {
         match self {
             Self::Score => t.sort_score(),
             Self::Visits => t.sort_visits(),
+            Self::Pages => t.sort_pages(),
+            Self::SourceRating => t.sort_source_rating(),
         }
     }
 }
@@ -66,8 +68,6 @@ enum TreeAction {
     DoubleClick(PathBuf),
     /// 実ツリー右クリック「仮想フォルダに追加する」
     AddToVirtual(PathBuf),
-    /// 実ツリー右クリック「このフォルダを検索タブで開く」
-    OpenInSearch(PathBuf),
     /// 実ツリー右クリック「ソート条件設定」（ツリー全体の設定でパスに依存しない）
     SortSetting,
 }
@@ -163,59 +163,125 @@ impl FocusPane {
     }
 }
 
+/// 検索タブのモード。新=ID台帳の全件走査（検索文字列＋サイズ）、旧=基点フォルダ配下の
+/// サムネDB照会（従来の検索）。既定は新。
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum SearchMode {
+    #[default]
+    New,
+    Legacy,
+}
+
+impl SearchMode {
+    /// このモードで、フォームの先頭になる入力欄。
+    pub(crate) fn first_field(self) -> SearchFormFocus {
+        match self {
+            Self::New => SearchFormFocus::NewText,
+            Self::Legacy => SearchFormFocus::NamePattern,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum SearchFormFocus {
-    NamePattern, IncludeSubdirs, SizeMin, SizeMax, DateAfter, DateBefore, Start, Clear,
+    // 旧モード
+    NamePattern, IncludeSubdirs, SizeMin, SizeMax, DateAfter, DateBefore,
+    // 新モード
+    NewText, NewSizeMin, NewSizeMax,
+    // 共通（ボタン。フォームの下に固定）
+    Start, Clear,
 }
 
 impl SearchFormFocus {
-    fn next(self) -> Option<Self> { Some(match self {
-        Self::NamePattern => Self::IncludeSubdirs, Self::IncludeSubdirs => Self::SizeMin,
-        Self::SizeMin => Self::SizeMax, Self::SizeMax => Self::DateAfter,
-        Self::DateAfter => Self::DateBefore, Self::DateBefore => Self::Start,
-        Self::Start => Self::Clear, Self::Clear => return None,
-    }) }
-    fn prev(self) -> Option<Self> { Some(match self {
-        Self::NamePattern => return None, Self::IncludeSubdirs => Self::NamePattern,
-        Self::SizeMin => Self::IncludeSubdirs, Self::SizeMax => Self::SizeMin,
-        Self::DateAfter => Self::SizeMax, Self::DateBefore => Self::DateAfter,
-        Self::Start => Self::DateBefore, Self::Clear => Self::Start,
-    }) }
+    /// モードごとの巡回順（Tab）。ボタンはどちらも末尾。
+    fn order(mode: SearchMode) -> &'static [Self] {
+        use SearchFormFocus::*;
+        match mode {
+            SearchMode::New => &[NewText, NewSizeMin, NewSizeMax, Start, Clear],
+            SearchMode::Legacy => &[NamePattern, IncludeSubdirs, SizeMin, SizeMax, DateAfter, DateBefore, Start, Clear],
+        }
+    }
+    fn next(self, mode: SearchMode) -> Option<Self> {
+        let order = Self::order(mode);
+        let pos = order.iter().position(|f| *f == self)?;
+        order.get(pos + 1).copied()
+    }
+    fn prev(self, mode: SearchMode) -> Option<Self> {
+        let order = Self::order(mode);
+        let pos = order.iter().position(|f| *f == self)?;
+        pos.checked_sub(1).map(|p| order[p])
+    }
 }
 
 #[cfg(test)]
 mod search_focus_tests {
     use super::SearchFormFocus::*;
+    use super::SearchMode;
 
-    #[test]
-    fn search_form_focus_visits_every_field_in_confirmed_order() {
-        let mut current = NamePattern;
+    fn walk(mode: SearchMode) -> Vec<super::SearchFormFocus> {
+        let mut current = mode.first_field();
         let mut visited = vec![current];
-        while let Some(next) = current.next() {
+        while let Some(next) = current.next(mode) {
             visited.push(next);
             current = next;
         }
-        assert_eq!(visited, vec![NamePattern, IncludeSubdirs, SizeMin, SizeMax,
+        visited
+    }
+
+    #[test]
+    fn search_form_focus_visits_every_legacy_field_in_confirmed_order() {
+        assert_eq!(walk(SearchMode::Legacy), vec![NamePattern, IncludeSubdirs, SizeMin, SizeMax,
             DateAfter, DateBefore, Start, Clear]);
-        assert_eq!(NamePattern.prev(), None);
-        assert_eq!(Clear.next(), None);
+        assert_eq!(NamePattern.prev(SearchMode::Legacy), None);
+        assert_eq!(Clear.next(SearchMode::Legacy), None);
+    }
+
+    #[test]
+    fn search_form_focus_visits_new_mode_fields_and_skips_legacy_only_ones() {
+        assert_eq!(walk(SearchMode::New), vec![NewText, NewSizeMin, NewSizeMax, Start, Clear]);
+        assert_eq!(NewText.prev(SearchMode::New), None);
+        assert_eq!(Clear.prev(SearchMode::New), Some(Start));
+        // 別モードの欄に居るときは、巡回できない（None）。モード切替側が先頭へ戻す。
+        assert_eq!(IncludeSubdirs.next(SearchMode::New), None);
     }
 }
 
 /// 1回の検索実行結果。左ペインの検索結果リストに1行として表示される
 /// （検索された順で最上位に追加され、下へ送られていく）。
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(crate) struct SearchResultEntry {
-    /// リスト表示用ラベル（検索ファイル名の表示ができるだけの文字数）
+    /// リスト表示用ラベル（検索ファイル名の表示ができるだけの文字数）。
+    /// 新モードの実行中エントリは、ヒット・進捗が届くたびに作り直す。
     pub label: String,
-    /// ヒットしたファイルのフルパス一覧
+    /// ヒットしたファイルのフルパス一覧（実行中のエントリは、集まった分まで）
     pub hits: Vec<PathBuf>,
     /// 検索開始時点のフォーム入力。履歴を選択した際にフォームへ復元する。
     pub form: SearchFormState,
+    /// 新モードの検索が実行中のエントリ（同時に1つだけ）。旧モードのエントリは常に false。
+    pub running: bool,
+    /// 新モード: 進捗（調べた件数, 台帳の総数）。
+    pub progress: Option<(usize, usize)>,
+    /// 新モード: 前回の確認で見つからなかったため、一覧から外した件数。
+    pub unconfirmed: usize,
+    /// 新モード: 途中で中断した（それまでの結果は残る）。
+    pub cancelled: bool,
+    /// 結果を持たない行（再起動後に条件だけ復元した行、またはセッション内で結果を手放した行）。
+    /// 選ぶと、条件をフォームへ復元して再走査する。
+    pub restored: bool,
+    /// 保存ファイルの行の保存時刻（unix秒）。検索条件の履歴ファイルの行と対応する。
+    pub saved_at: Option<i64>,
+    /// 新モードの結果: `hits` と同じ並びのファイルID（重複マーカーの引き当てに使う）。旧モードの行は空。
+    pub hit_ids: Vec<u64>,
+    /// セッション内で一意な行の識別子（0 は未割り当て）。検索タブへ戻ったときに、直前に見ていた行を探す。
+    pub uid: u64,
 }
 
 /// 検索結果を履歴の先頭に追加する（新しい実行が最上位に来て、既存分は下に送られる）。
-pub(crate) fn push_search_result(history: &mut Vec<SearchResultEntry>, entry: SearchResultEntry) {
+pub(crate) fn push_search_result(history: &mut Vec<SearchResultEntry>, mut entry: SearchResultEntry) {
+    static NEXT_UID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    if entry.uid == 0 {
+        entry.uid = NEXT_UID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     history.insert(0, entry);
 }
 
@@ -223,6 +289,8 @@ pub(crate) fn push_search_result(history: &mut Vec<SearchResultEntry>, entry: Se
 /// 実行時（Phase3）にパースする。
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SearchFormState {
+    /// 検索タブのモード（新／旧）。履歴の復元でも一緒に戻る。
+    pub mode: SearchMode,
     /// 検索の基点ディレクトリ。None のうちは検索タブ初回入場時に current_dir で初期化される
     /// （switch_folder_tab参照）。以降はアイテムペイン内ツリー/ドライブのクリックで更新され、
     /// タブを行き来しても保持される。
@@ -233,6 +301,11 @@ pub(crate) struct SearchFormState {
     pub size_max_mb: String,
     pub date_after: String,
     pub date_before: String,
+    /// 新モードの検索文字列（スペース区切り・`"..."` で句・どれかに当たればヒット。ファイル名とタグ名が対象）。
+    /// 旧モードの欄とは意味が違うので共有しない。
+    pub new_text: String,
+    pub new_size_min_mb: String,
+    pub new_size_max_mb: String,
 }
 
 /// サムネグリッドの「↑・サブフォルダ・アーカイブファイル」を貫通する統一カーソル位置。
@@ -264,48 +337,57 @@ enum FavoriteSelection {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MenuBarButton {
     Reload,
-    SortName,
-    SortDate,
-    SortSize,
-    SortOrder,
-    /// 第2ソートセット（スコア／訪問回数）。押し下げ中をもう一度押すとOFF
-    SortScore,
-    SortVisits,
-    SortRatingOrder,
-    CardInfoToggle,
-    /// 評価帯（info2）の表示量の循環トグル。
-    CardRatingToggle,
-    /// スコアリング（アーカイブ末尾の評価オーバーレイ）のON/OFF。viewer_cfg直結の永続設定。
-    ScoringToggle,
+    /// ソート条件の展開メニュー（基本キー＝名前・日付・サイズ＋昇降、評価キー＝スコア・訪問回数＋昇降）。
+    Sort,
+    /// カード帯の設定ダイアログを開く（旧「情報」「情報2」の2ボタンを1つに集約）。
+    CardBand,
+    /// UIベースカラー（ダーク⇄ライト）の切替。永続設定。メニューバー右端の[stat]と[?]の間。
+    ThemeToggle,
     StatusToggle,
     /// ヘルプ（ツールチップ）表示のON/OFF。非永続。メニューバーの視覚上の右端。
     HelpToggle,
-    /// ビューアー内ツールパレット（マス配置ツールボックス）の表示ON/OFF。
-    /// ファイルを渡り歩いても同じ状態を保つ（viewer_cfg経由でPaletteStateへ直結）。
-    ToolPaletteToggle,
-    /// 「フォルダ本アクセス」トグル。永続化しない（毎回OFF起動）。
-    FolderBookAccessToggle,
+    /// 便利機能の展開メニュー（フォルダ本アクセス・スコアリング・ツールボックスのON/OFF）。
+    /// 旧3ボタンを1個に集約した。操作はソート展開メニューと同じ作法（convenience_menu.rs）。
+    Convenience,
+    /// 画面外へ行ったビューアー窓を中央へ戻す単発ボタン。ビューアーが開いているときだけ有効。
+    ViewerRecover,
     Settings,
 }
 
+/// ソート展開メニュー内のカーソル対象（キーボード操作と描画で共用）。
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum SortMenuItem {
+    PrimaryOrder,
+    PrimaryKey(ExplorerSortKey),
+    RatingOrder,
+    RatingKey(crate::explorer_sort::RatingSortKey),
+    /// ビューアーのデフォルト（任意）の昇降。キーが未指定の間は押せない
+    ViewerDefaultOrder,
+    ViewerDefaultKey(crate::types::ReaderSortKey),
+}
+
+/// 便利機能メニュー内のカーソル対象（キーボード操作と描画で共用。並びが表示順）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ConvenienceItem {
+    FolderBook,
+    Scoring,
+    ToolBox,
+}
+
+pub(crate) const CONVENIENCE_ITEMS: [ConvenienceItem; 3] =
+    [ConvenienceItem::FolderBook, ConvenienceItem::Scoring, ConvenienceItem::ToolBox];
+
 /// 表示順そのもの（draw_menu_barの描画順と一致させること）。
 /// 見開き・ページモード群はビューアーツールバーへ移設した（toolbar.rs 参照）。
-pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 16] = [
+pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 9] = [
     MenuBarButton::Reload,
-    MenuBarButton::SortName,
-    MenuBarButton::SortDate,
-    MenuBarButton::SortSize,
-    MenuBarButton::SortOrder,
-    MenuBarButton::SortScore,
-    MenuBarButton::SortVisits,
-    MenuBarButton::SortRatingOrder,
-    MenuBarButton::CardInfoToggle,
-    MenuBarButton::CardRatingToggle,
-    MenuBarButton::FolderBookAccessToggle,
-    MenuBarButton::ScoringToggle,
-    MenuBarButton::ToolPaletteToggle,
+    MenuBarButton::Sort,
+    MenuBarButton::CardBand,
+    MenuBarButton::Convenience,
+    MenuBarButton::ViewerRecover,
     MenuBarButton::Settings,
     MenuBarButton::StatusToggle,
+    MenuBarButton::ThemeToggle,
     MenuBarButton::HelpToggle,
 ];
 
@@ -314,25 +396,18 @@ mod menu_bar_order_tests {
     use super::{MenuBarButton, MENU_BAR_ORDER};
 
     #[test]
-    fn rating_sort_set_follows_the_main_sort_set() {
-        assert_eq!(
-            &MENU_BAR_ORDER[4..8],
-            &[
-                MenuBarButton::SortOrder,
-                MenuBarButton::SortScore,
-                MenuBarButton::SortVisits,
-                MenuBarButton::SortRatingOrder,
-            ],
-        );
+    fn sort_menu_button_follows_reload() {
+        assert_eq!(&MENU_BAR_ORDER[..2], &[MenuBarButton::Reload, MenuBarButton::Sort]);
     }
 
     #[test]
     fn settings_status_and_help_keep_the_visual_right_end_order() {
         assert_eq!(
-            &MENU_BAR_ORDER[13..],
+            &MENU_BAR_ORDER[5..],
             &[
                 MenuBarButton::Settings,
                 MenuBarButton::StatusToggle,
+                MenuBarButton::ThemeToggle,
                 MenuBarButton::HelpToggle,
             ],
         );
@@ -599,6 +674,8 @@ struct SortConditionDialogState {
     targets: Vec<PathBuf>,
     sort_key: crate::types::ReaderSortKey,
     ascending: bool,
+    /// 「未定義に戻す」の確認表示中
+    confirm_clear: bool,
 }
 
 /// エクスプローラー右クリック「しおり保存」一括変更ダイアログの状態。
@@ -632,6 +709,7 @@ struct RatingSettingDialogState {
 }
 
 /// タグマネージャー: カテゴリのUI状態（`tag_manager.rs`でJSON永続化される）。
+#[derive(Clone)]
 pub(crate) struct TagManagerCategoryUi {
     /// 保存名。メインカテゴリは表示に使わない（`display_name`参照）。
     pub(crate) name: String,
@@ -647,6 +725,9 @@ pub(crate) struct TagManagerCategoryUi {
     /// `is_main`のカテゴリは常にtrue固定（メインタグドラムと同じ排他選択）。
     /// それ以外のカテゴリはタグ管理画面のラジオボタンで切り替え可能（既定false＝複数選択）。
     pub(crate) single_select: bool,
+    /// システムが作るカテゴリの種別。`Some` のカテゴリは削除できない（名前・色の変更と要素の増減は自由）。
+    /// 種別キーでJSONに保存するので、名前を変えても追跡できる（`tag_master::SystemKind`）。
+    pub(crate) system_kind: Option<crate::tag_master::SystemKind>,
 }
 
 impl TagManagerCategoryUi {
@@ -699,6 +780,7 @@ pub(crate) fn pick_distinct_tag_color(existing: &[egui::Color32]) -> egui::Color
 }
 
 /// タグマネージャー: tier1件ぶんのUI状態。
+#[derive(Clone)]
 pub(crate) struct TagManagerTierUi {
     /// tier（＝要素）の不変ID。連番採番で削除しても再利用しない。要素名(`element`)は
     /// リネーム可能だが`id`は変わらないため、将来ファイルとの紐付けをID参照で持たせても
@@ -818,14 +900,36 @@ pub struct NekoviewApp {
     favorite_cursor: Option<FavoriteSelection>,
     /// MenuBar内のプレターゲティングカーソル（MENU_BAR_ORDER上のインデックス）
     menu_cursor: usize,
+    /// ソート展開メニューが開いているか（マウス・キーボード共通）。
+    sort_menu_open: bool,
+    /// キーボードでメニュー内を操作中のカーソル（`sort_menu_items()` の添字）。None = メニュー外（バー側）にカーソルがある。
+    sort_menu_cursor: Option<usize>,
     /// 定義済みお気に入りフォルダ一覧のキャッシュ（DB操作の都度リフレッシュ）
     favorite_folders: Vec<crate::favorites::FavoriteFolder>,
     favorite_selected: FavoriteSelection,
     favorite_dialog: Option<FavoriteDialogState>,
     /// 削除確認待ちのお気に入りフォルダID
     favorite_delete_confirm: Option<u8>,
-    /// お気に入りタブ右クリック「移動先を指定して元ファイルを検索」のダイアログ状態（`relink_ui.rs`）
+    /// お気に入りタブ右クリック「移動先を指定して再紐付け」のダイアログ状態（`relink_ui.rs`）
     relink_dialog: Option<relink_ui::RelinkDialog>,
+    /// 右クリックしたファイルの、検索の切り口になる名前（種類別・解決済み）。「タグ検索」のすだれメニューが読む（`key_search_ui.rs`）
+    key_menu: Option<key_search_ui::KeyMenuCache>,
+    /// 複数候補のときの選択ダイアログ
+    key_pick: Option<key_search_ui::KeyPickDialog>,
+    /// 「主要タグ検索」のステータスボタンから開く、取得状況の案内ダイアログの状態（押された時点の状態）
+    key_notice: Option<crate::search_keys::KeyStatus>,
+    /// 予約された「主要タグ検索」の検索文字列。描画が終わってから実行する（`run_pending_key_search`）
+    key_search_pending: Option<String>,
+    /// 予約された「この要素をタグ検索」のtier ID（右タグパネルのチップの右クリック）。描画後に実行する（`run_pending_tag_search`）
+    tag_search_pending: Option<u64>,
+    /// 左クリックで開いている「この要素名をタグ検索」ポップアップの要素ID（1つだけ開く）。None=閉じている
+    tag_chip_menu: Option<u64>,
+    /// タグ検索タブの要素フィルタ欄の入力（保存しない）
+    tag_search_filter: String,
+    /// タグ検索タブの要素フィルタ欄が、入力フォーカスを持ったまま描かれた最後のフレーム番号。
+    /// 直近のフレームなら、エクスプローラーのキー操作と、毎フレームのテキスト入力解除（`stop_text_input`）を止める
+    /// （タブを離れて欄が描かれなくなったら、自然に切れる）。`tag_search_filter_focused` で判定する。
+    tag_search_filter_focus_frame: Option<u64>,
     /// 再紐付けのバックグラウンド実行（結果の受け取り口）。実行中は Some
     relink_job: Option<mpsc::Receiver<crate::identity_relink::RelinkReport>>,
     /// 複数件の「お気に入り設定から外す」の確認待ちパス
@@ -864,6 +968,8 @@ pub struct NekoviewApp {
     cd_summary_updated_at: Option<std::time::Instant>,
     /// 現在ディレクトリの redb キャッシュDB（キャッシュ無効なら None）
     cache_db: Option<std::sync::Arc<std::sync::Mutex<redb::Database>>>,
+    /// リストの「ページ数」「詳細」列用。フォルダ単位で cache.redb の記録を読んで持つ。
+    archive_info: archive_info_cache::ArchiveInfoCache,
     /// 現在ディレクトリに対応するキャッシュディレクトリのパス。
     /// DB未作成のフォルダで対象ファイルが見つかった時点の遅延作成に使う。
     cache_neko_dir: Option<PathBuf>,
@@ -886,6 +992,24 @@ pub struct NekoviewApp {
     marker_icon_hits: HashMap<usize, egui::Rect>,
     /// リストの「ファイラー」ボタンの矩形（行番号 → 矩形）。毎フレーム `draw_archive_list` の頭で作り直す。
     reveal_icon_hits: HashMap<usize, egui::Rect>,
+    /// リストの「実フォルダ」列の移動アイコンの当たり判定（行の実インデックス → 矩形）。今フレームに描いた行だけ。
+    goto_real_hits: HashMap<usize, egui::Rect>,
+    /// 同じく「仮想フォルダ」列（登録した仮想フォルダがあるときだけ押せる）。
+    goto_virtual_hits: HashMap<usize, egui::Rect>,
+    /// 実フォルダ → それを登録している仮想ノードのID（登録順）。移動アイコンの有効・無効と移動先に使う。
+    virtual_lookup: HashMap<PathBuf, Vec<u32>>,
+    /// `virtual_lookup` が最新か。タブを移ったとき・仮想ノードを読み直したときに false にし、描画の前に引き直す。
+    virtual_lookup_loaded: bool,
+    /// 「仮想フォルダ」アイコンが押されたファイルと、押した位置。描画の後に消化する。
+    pending_goto_virtual: Option<(PathBuf, egui::Pos2)>,
+    /// 移動先の仮想フォルダが複数あるときに出す選択メニュー。
+    goto_virtual_menu: Option<goto_virtual::GotoVirtualMenu>,
+    /// 「実フォルダ」アイコンが押されたファイル。描画の途中で表示を差し替えないよう、一覧の描画後に消化する。
+    pending_goto_real: Option<PathBuf>,
+    /// リストの「詳細」アイコンの矩形（行番号 → 矩形）。毎フレーム `draw_archive_list` の頭で作り直す。
+    detail_icon_hits: HashMap<usize, Vec<(egui::Rect, detail_window::DetailKind)>>,
+    /// 開いている詳細ウィンドウ（ComicInfo・nfo・zipコメント）。
+    detail_window: Option<detail_window::DetailWindow>,
     /// 開いている重複マーカーのポップアップ。
     marker_popup: Option<dup_marker_ui::MarkerPopup>,
     /// 下段フィルタ「重複」。自身にマーカーがあるファイルだけを出す（保存しない）。
@@ -952,6 +1076,17 @@ pub struct NekoviewApp {
     thumb_res_rx: mpsc::Receiver<ThumbResult>,
     thumb_session: Arc<AtomicU64>,
     thumb_pending: HashSet<PathBuf>,
+    /// 設定（サムネサイズ・フィルタ）を変えた時点で表示中だった、旧形式のテクスチャのパス。旧サムネを見せたまま、
+    /// 新形式で作り直して差し替えるための印（新形式が届くか、フォルダに入り直して `thumbnails` を空にすると消える）。
+    thumb_stale_textures: HashSet<PathBuf>,
+    /// サムネ生成の待ち時間の計測（`[perf/thumb-wait]` ログ用。perf ログOFFのときは使わない）。
+    /// 送信した時刻と種類（優先・通常・手すき）を、結果が返るまで覚える。
+    thumb_trace: HashMap<PathBuf, (std::time::Instant, &'static str)>,
+    /// 同じ計測の集計（件数・送信→結果の合計と最大・最初の送信時刻）。フォルダのサムネ生成が済んだ時に出して戻す。
+    thumb_trace_count: usize,
+    thumb_trace_sum_ms: f64,
+    thumb_trace_max_ms: f64,
+    thumb_trace_first_sent: Option<std::time::Instant>,
     thumb_display_requested: HashSet<PathBuf>,
     thumb_queue: VecDeque<PathBuf>,
     thumb_priority_queue: VecDeque<PathBuf>,
@@ -959,6 +1094,14 @@ pub struct NekoviewApp {
     thumb_missing_queued: HashSet<PathBuf>,
     thumb_priority_queued: HashSet<PathBuf>,
     thumb_last_user_activity: std::time::Instant,
+    /// 手すき生成の判定に使う「最後の操作」。`thumb_last_user_activity`（並列度の絞り用。マウス移動などあらゆる
+    /// イベントで更新）と違い、キー・テキスト・マウスボタン・タッチ・コピー貼り付けの「操作」だけで更新する
+    /// （マウスを動かす・ホイールで一覧をスクロールするだけでは、手すき生成のタイマーを戻さない）。
+    idle_last_activity: std::time::Instant,
+    /// `idle_last_activity` を戻す操作の見分け（クリックとドラッグの区別のため、押した位置を覚える）。
+    idle_op_tracker: idle_thumb::OperationTracker,
+    /// 手すき時間のサムネ生成の進行状態（idle_thumb.rs）。
+    idle_thumb: idle_thumb::IdleThumb,
     /// 直近フレームで確定した可視範囲（filtered_indices順のposition）。
     /// スクロール方向の判定にのみ使う（[[update_thumbnail_lookahead]]）。
     thumb_visible_order_range: Option<(usize, usize)>,
@@ -1036,6 +1179,22 @@ pub struct NekoviewApp {
     /// 中央オーバーレイでプログレスバー＋キャンセルボタンを表示し、
     /// エクスプローラー側の他操作（キーボードショートカット等）を止める。
     pending_open: Option<open_progress::PendingOpen>,
+    /// 開く操作の所要時間の計測メモ（`[perf/open]` ログ用）。
+    open_trace: Option<open_progress::OpenTrace>,
+    /// 「現フォルダ内タグ情報取得」の走査中のジョブ。
+    tag_scan_job: Option<tag_scan::TagScanJob>,
+    /// 直近の走査結果（メモリのみ。候補生成・確認ウィンドウ・適用が読む）。
+    tag_scan_result: Option<tag_scan::TagScanResult>,
+    /// 開いているタグ候補の確認ウィンドウ（2枚）。
+    tag_confirm: Option<tag_confirm::TagConfirm>,
+    /// 適用中のジョブ（バックアップ → マスター保存 → タグ書き込み）。
+    tag_apply_job: Option<tag_confirm::TagApplyJob>,
+    /// 試用中の確定・破棄の確認ダイアログ。
+    tag_trial_dialog: Option<tag_trial_ui::TrialDialog>,
+    /// 試用の破棄の実行中（各ファイルからタグを外している間）。
+    tag_discard_job: Option<tag_trial_ui::TagDiscardJob>,
+    /// 試用中の案内トーストを出したか（起動後に1回だけ）。
+    tag_trial_notified: bool,
     /// 設定ダイアログの表示状態・選択中タブ・編集用下書き
     pub(crate) settings_open: bool,
     pub(crate) settings_tab: SettingsTab,
@@ -1044,14 +1203,14 @@ pub struct NekoviewApp {
     identity_worker: identity_worker::IdentityWorker,
     /// ID解決が済むまで「ファイル検証中」を出すパス（新規・移動直後のファイル）。
     pub(super) identity_verifying: HashSet<PathBuf>,
+    /// 「検証中」のうち、画面に見えているため優先解決を依頼済みのパス（同じ依頼を毎フレーム出さない）。
+    identity_priority_sent: HashSet<PathBuf>,
     /// 解決で評価等が付き替わった（完了時に並び・フィルタを作り直す）。
     identity_dirty: bool,
     /// 重複・曖昧の解決UI（現状はレイアウトのモック。仮データ）。
     identity_resolve_ui: identity_resolution_ui::ResolveUiState,
-    /// ID解決の進捗（処理が長引いた時だけ、処理中トーストを出す）。
+    /// ID解決の進捗。サムネイル状況ラベルのID取得状況（取得中/取得済）の元になる。
     identity_progress: Option<identity_worker::IdentityProgress>,
-    /// 処理中トーストとして出している文言（出し入れの変化検知用）。
-    identity_toast_msg: Option<String>,
     /// 未解決（重複・曖昧）の総数。解決の完了ごとに更新する（解決UIの本実装で、ボタンの数字に使う）。
     identity_pending_count: usize,
     /// 旧レコードのバックフィル依頼を出したか（起動後1回）。
@@ -1066,6 +1225,8 @@ pub struct NekoviewApp {
     exit_requested: bool,
     /// 開発用DBツール（デバッグタブ）の状態。実リリース時に dev_db_tools.rs ごと削除する。
     pub(crate) dev_db_ui: dev_db_tools::DevDbUiState,
+    /// 計測フィクスチャー（カード右クリック）のダイアログ状態。開発専用。
+    perf_fixture_ui: perf_fixture_ui::PerfFixtureUi,
     /// 翻訳機能(実験的)の永続設定。設定ダイアログの[反映]でのみ書き換わる。
     pub(crate) translate_cfg: crate::translate::TranslateConfig,
     /// お気に入り・検索・仮想フォルダの各タブが最後にいた位置（stateファイルに保存・復元）。
@@ -1080,9 +1241,6 @@ pub struct NekoviewApp {
     pub(crate) tag_panel_width: f32,
     /// タグ機能・レイアウト器: タグパネルの編集モード展開状態（上側ツマミでさらに中央側へ拡張）。
     pub(crate) tag_panel_edit_expanded: bool,
-    /// アイテム一覧の右クリック「このフォルダを検索タブで開く」の要求。描画の途中でタブを
-    /// 切り替えないよう、一覧の描画後に消化する（draw_archive_grid の末尾）。
-    pub(crate) pending_open_in_search: Option<PathBuf>,
     /// 「選択した項目を維持したままファイラーで開く」複数選択時のダイアログ状態
     reveal_dialog: Option<reveal_ui::RevealDialogState>,
     /// ファイラー呼び出し（別スレッド）の結果待ち
@@ -1123,6 +1281,8 @@ pub struct NekoviewApp {
     /// タグパネル高画質プレビュー: 生成リクエスト発行済みで結果待ちのパス
     /// （多重リクエスト防止用）。
     pub(crate) tag_preview_pending: Option<PathBuf>,
+    /// 高画質プレビューを要求したいパスと、その選択が始まった時刻（デバウンス用。`draw_tag_panel_preview` 参照）。
+    pub(crate) tag_preview_want: Option<(PathBuf, std::time::Instant)>,
     /// タグマネージャー(フェーズTM0): カテゴリ・tier・要素を管理する独立画面の開閉状態。
     /// 既存のメインタグ／属性タグUIとは今回切り離して考える。
     pub(crate) tag_manager_open: bool,
@@ -1134,6 +1294,29 @@ pub struct NekoviewApp {
     pub(crate) tag_manager_categories: Vec<TagManagerCategoryUi>,
     /// タグマネージャー: 次に採番するtier(要素)ID。削除しても減らさない単調増加カウンタ。
     pub(crate) tag_manager_next_tier_id: u64,
+    /// 一括タグ付けの判定の学習データ（全フォルダ共通）。設定フォルダの `nekoviewer_tag_learning.json`。
+    pub(crate) tag_learned: crate::tag_learning::LearnedSet,
+    /// 学習データから作ったモデル（学習データが空なら None）。使うかどうかは `config.tag_learning_use`。
+    pub(crate) tag_model: Option<std::sync::Arc<crate::tag_model::Model>>,
+    /// タグ自動取得のタグ抽出ルール（抽出の下処理）。設定フォルダの `nekoviewer_tag_rules.json`。
+    pub(crate) tag_rules: crate::tag_rules::RuleSet,
+    /// 一括タグ取得の確認窓で保存した候補ルール（カテゴリ振替）。設定フォルダの `nekoviewer_candidate_rules.json`。
+    pub(crate) candidate_rules: crate::candidate_rules::CandidateRules,
+    /// タグ学習窓（開いている間 Some）。
+    tag_learn: Option<tag_learning_ui::TagLearn>,
+    /// タグ抽出ルールの一覧窓（仮。編集UIは後で決める）を開いているか。
+    tag_rules_open: bool,
+    /// タグ管理の入口メニュー（エクスプローラー中央の選択メニュー）を開いているか。
+    tag_entry_menu_open: bool,
+    /// ルール一覧で、削除の確認を出しているルールのID。
+    tag_rules_del_ask: Option<u64>,
+    /// ルール一覧の「コピーして編集」で、コピー元に選んでいるルールのID。
+    tag_rules_copy_src: Option<u64>,
+    /// ルール編集画面（ステップ式）の下書き。Some の間は、窓に一覧でなく編集画面を出す。
+    tag_rules_editor: Option<tag_rules_ui::RuleEditor>,
+    /// 一括タグ付けの適用後の「試用中」か。試用中は仮マスター（`nekoviewer_tags.trial.json`）を読み書きし、
+    /// 本物のマスターは確定まで変えない。ファイルが残っていれば、次回起動も試用中から始まる。
+    pub(crate) tag_trial_active: bool,
     /// タグ検索タブ（モック）: 有効化中のタグ(tier_id)。`TAG_MAIN_UNSET_ID`はメイン未設定の疑似タグ。
     /// セッション中のみ保持し、永続化はしない。
     pub(crate) tag_search_enabled: std::collections::HashSet<u64>,
@@ -1147,6 +1330,22 @@ pub struct NekoviewApp {
     tag_search_unconfirmed: usize,
     /// タグマネージャー(フェーズTM1): 選択中カテゴリのインデックス。
     pub(crate) tag_manager_selected_category: Option<usize>,
+    /// タグマネージャー: カテゴリ削除の確認待ち（カテゴリindex, 押した時点の表示名）。表示名が変わっていたら破棄する。
+    tag_manager_delete_confirm: Option<(usize, String)>,
+    /// タグマネージャー: マスター世代の窓（開いている間だけ Some）。
+    tag_master_gen_ui: Option<tag_master_gen_ui::GenWindow>,
+    /// タグマネージャー: ロールバックボタンの範囲（押した位置が窓の外かの判定から除く）。
+    tag_master_gen_btn_rect: egui::Rect,
+    /// タグマネージャー: 「危険な設定」窓を開いているか。
+    tag_danger_open: bool,
+    /// タグマネージャー: 「危険な設定」ボタンの範囲（押した位置が窓の外かの判定から除く）。
+    tag_danger_btn_rect: egui::Rect,
+    /// 「危険な設定」のタグのクリア: 確認の段階（0=なし、1=内容の確認、2=最終確認）。
+    tag_danger_clear_stage: u8,
+    /// 「危険な設定」のリカバリポイント: 確認待ちの操作（0=なし、1=上書きして設定、2=削除）。
+    tag_danger_recovery_ask: u8,
+    /// タグマネージャー: 今回開いている間に、開く前の状態の世代を取り済みか（開くたびに false へ戻す）。
+    tag_manager_session_snapped: std::cell::Cell<bool>,
     /// タグマネージャー: インライン編集中の要素(カテゴリindex, tier内index)。
     /// ダイアログは使わず、tier行のその場でテキスト入力に切り替える。
     pub(crate) tag_manager_editing_element: Option<(usize, usize)>,
@@ -1228,6 +1427,8 @@ pub struct NekoviewApp {
     pub(crate) translate_window_autocheck_done_for: Option<PathBuf>,
     /// ビューアウィンドウをフォーカス前面に出すフラグ
     viewer_focus_requested: bool,
+    /// ビューアー窓を画面中央へ戻す要求（メニューバーの「ビューアー復帰」）。winit_app が取り出して実行する
+    viewer_recover_requested: bool,
     pub(crate) show_hidden: bool,
     /// サムネカード下部の情報帯の表示量（メニューバーの1ボタンで循環）。
     pub(crate) card_info_mode: CardInfoMode,
@@ -1243,6 +1444,10 @@ pub struct NekoviewApp {
     pub(crate) card_date_format: crate::card_date_format::CardDateFormat,
     /// 情報帯の見た目（背景色・透過度・文字色・文字サイズ）。今は Default 固定。
     pub(crate) card_info_style: CardInfoStyle,
+    /// カード帯のカスタム書式・有効な導線・背景の透過度（state に保存。従来方式の選択は card_info_mode / card_rating_mode）
+    pub(crate) card_band: crate::card_band::BandSettings,
+    /// カード帯設定ダイアログ（開いている間のドラフト）
+    card_band_dialog: card_band_dialog_ui::CardBandDialog,
     /// 情報帯の行が帯幅を超えた時のホバー横スクロール状態: (対象パス, ホバー開始時刻)。
     pub(crate) card_info_hover: Option<(PathBuf, std::time::Instant)>,
     /// 可視カードぶんだけ遅延取得するファイルメタデータのキャッシュ: パス → (更新日時, サイズbytes)。
@@ -1288,6 +1493,23 @@ pub struct NekoviewApp {
     search_pending: Option<mpsc::Receiver<Vec<PathBuf>>>,
     /// 実行中の検索を開始した時点のフォーム入力。
     search_pending_form: Option<SearchFormState>,
+    /// 旧モードの実行中の検索について、保存した条件の行の時刻（完了時に履歴の行へ引き継ぐ）。
+    search_pending_saved_at: Option<i64>,
+    /// 新モードの検索ジョブ（実行中のみSome）。タブを切り替えても、アプリ本体が持つので継続する。
+    /// 結果は履歴の実行中エントリ（`running`）へ溜まる。
+    search_job: Option<crate::ledger_search::LedgerSearchJob>,
+    /// 新モードの検索結果の各ファイルの重複マーカー（保存済みの分を、ファイルIDで読んだもの。キー = フルパス）。
+    /// 検索タブで新モードの結果を表示している間だけ持つ。読み取り専用の表示で、検出や照合は動かさない。
+    cross_markers: HashMap<PathBuf, crate::duplicate_marker::DirMarker>,
+    /// 新モードの検索結果の各ファイルのID（キー = フルパス）。重複マーカーと「？」の引き当てに使う。
+    cross_hit_ids: HashMap<PathBuf, u64>,
+    /// 新モードの検索結果の「？」（保存済みハッシュによる、表示中の行だけの遅延照合）の状態と専用スレッド。
+    sim_cross: similar_cross::SimilarCrossState,
+    sim_cross_worker: Option<similar_cross::SimilarCrossWorker>,
+    /// 検索タブを離れたときに見ていた履歴の行（`SearchResultEntry::uid`）。検索タブへ戻ったとき、その行の結果を出し直す。
+    search_resume_uid: Option<u64>,
+    /// 新モードの「注意点」ダイアログを開いているか。
+    search_notice_open: bool,
     /// Some(_) の間、中央グリッドは実ディレクトリではなく選択中の検索結果
     /// （search_history[idx]）のフラット一覧を表示している。
     viewing_search: Option<usize>,
@@ -1307,10 +1529,10 @@ pub struct NekoviewApp {
     /// 「フォルダ本アクセス」トグル。ONの間、条件を満たすフォルダに入ると
     /// 通常の一覧表示の代わりに仮想アーカイブとしてビューアーを開く。永続化しない（毎回OFF起動）。
     folder_book_access_enabled: bool,
-    /// 初回警告ダイアログの表示中フラグ。非永続・実行時のみ。
-    folder_book_access_notice_open: bool,
-    /// 初回警告ダイアログ内「次回から表示しない」チェックボックスの一時状態。
-    folder_book_access_notice_dont_show_again: bool,
+    /// 便利機能メニューの開閉。非永続。
+    convenience_menu_open: bool,
+    /// 便利機能メニュー内のキーボードカーソル（CONVENIENCE_ITEMS の添字）。マウスで開いた間は None。
+    convenience_menu_cursor: Option<usize>,
     status_window_data: Arc<Mutex<crate::view_status::StatusData>>,
     /// ステータスデータを最後に更新した時刻（1秒間隔制御用）
     last_status_update: std::time::Instant,
@@ -1318,6 +1540,9 @@ pub struct NekoviewApp {
     status_update_requested: Arc<std::sync::atomic::AtomicBool>,
     /// バックグラウンドワーカーから ROOT を起こす（イベント駆動再描画）ために保持する ctx
     egui_ctx: egui::Context,
+    /// UIベースカラー（ダーク／ライト）。`nekoviewer.state` の `theme` に保存する。
+    /// 全窓へ適用する（窓ごとの Context へは winit_app の render 直前に行き渡らせる）。
+    theme_mode: crate::ui_theme::ThemeMode,
     /// ビューアー窓自身の ctx（render_viewer 毎フレーム更新）。OCR/翻訳子ウィンドウから
     /// ページ送りで共有 ViewerState を書き換えた際、独立 Context のビューアー窓を
     /// 起こす（request_repaint）ために保持する。
@@ -1346,19 +1571,34 @@ pub struct NekoviewApp {
     exif_orientation_enabled_last_seen: bool,
     /// viewer_cfg.magnifier_on の変化検知用（ON/OFFで即時に再デコードを発火する）。
     magnifier_on_last_seen: bool,
+    /// 虫眼鏡中のフィット基準軸の変化検知用（デコード目標が変わるので再デコードを発火する）。
+    fit_mode_last_seen: crate::magnifier::FitMode,
     /// viewer_cfg.image_filter の変化検知用（exif_orientation_enabled_last_seenと同じ方式）。
     image_filter_last_seen: crate::image_filter::ImageFilterSettings,
+    /// P8（等倍に近い縮小のスキップ）設定の変化検知用。
+    near_unity_skip_last_seen: bool,
     /// viewer_cfg.tool_palette.visible の変化検知用。エクスプローラーメニューのトグルで
     /// 変更された値をビューアー側（開きっぱなしのViewerState）へライブ反映するのに使う。
     tool_palette_visible_last_seen: bool,
 }
 
+mod archive_info_cache;
+mod tag_scan;
+mod tag_scan_perf;
+mod tag_confirm;
+mod tag_trial_ui;
+mod tag_master_gen_ui;
+mod tag_danger_ui;
+mod tag_learning_ui;
+mod tag_rules_ui;
+mod tag_menu_ui;
 mod scan;
 mod folder_sort;
 mod workers;
 mod viewer_host;
 mod input;
 mod panels;
+mod convenience_menu;
 mod favorites_ui;
 mod real_dir_stash;
 mod tab_position;
@@ -1369,18 +1609,29 @@ mod real_tree_sort;
 mod bulk_settings_ui;
 mod search_ui;
 mod search;
+mod search_new;
+mod goto_virtual;
+mod similar_cross;
+mod search_history_ui;
+#[cfg(feature = "test-control")]
+mod test_explore;
 mod status;
 mod nav_icons;
 mod calendar_gui;
 mod open_progress;
 mod help;
 mod dev_db_tools;
+mod idle_thumb;
+mod perf_fixture_ui;
 mod identity_worker;
 mod identity_resolution_ui;
 mod backup_failure_ui;
 mod release_notice_ui;
+mod card_band_dialog_ui;
+mod card_band_paint;
 mod reveal_ui;
 mod relink_ui;
+mod key_search_ui;
 mod db_backup_ui;
 mod unreachable_clean_ui;
 mod grid_anchor;
@@ -1396,6 +1647,7 @@ mod marker_probe;
 mod marker_compare;
 mod similar_view;
 mod dismissed_window;
+mod detail_window;
 mod thumb_hash_worker;
 mod layout_anchor;
 
@@ -1404,7 +1656,7 @@ mod glyph_audit;
 
 
 impl NekoviewApp {
-    pub fn new(start_dir: PathBuf, mut config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: crate::card_date_format::CardDateFormat, translate_cfg: crate::translate::TranslateConfig, tab_positions: crate::gui_config::TabPositions, tree_sorts: crate::tree_sort::TreeSorts, tag_panel_open: bool, tag_preview_high_quality: bool, explorer_view_mode: &str, explorer_list_cols: &str, explorer_sim_threshold: &str, open_target: Option<PathBuf>, ctx: egui::Context) -> Self {
+    pub fn new(start_dir: PathBuf, mut config: AppConfig, viewer_slots: [Option<WindowSlot>; 4], sort_state: SortState, viewer_cfg: ViewerConfig, show_hidden: bool, card_info_mode: &str, card_rating_mode: &str, card_date_format: crate::card_date_format::CardDateFormat, card_band: crate::card_band::BandSettings, translate_cfg: crate::translate::TranslateConfig, tab_positions: crate::gui_config::TabPositions, tree_sorts: crate::tree_sort::TreeSorts, tag_panel_open: bool, tag_preview_high_quality: bool, explorer_view_mode: &str, explorer_list_cols: &str, explorer_sim_threshold: &str, theme_mode: crate::ui_theme::ThemeMode, open_target: Option<PathBuf>, ctx: egui::Context) -> Self {
         // 「前回フォルダに復帰」がオフなら、他のフォルダ系タブの保存位置も復元しない（既定に戻す）
         let tab_positions = if config.startup.use_last_dir {
             tab_positions
@@ -1412,6 +1664,7 @@ impl NekoviewApp {
             // 左ペイン幅はレイアウト設定なので、位置を捨てても残す
             crate::gui_config::TabPositions {
                 tag_search_left_width: tab_positions.tag_search_left_width,
+                tag_search_mode: tab_positions.tag_search_mode,
                 ..Default::default()
             }
         };
@@ -1434,22 +1687,55 @@ impl NekoviewApp {
         if !release_notice_pending {
             config.last_run_version = current_version.to_string();
         }
-        let (tag_manager_categories, tag_manager_next_tier_id) =
-            crate::tag_manager::load(&config_root).unwrap_or_else(crate::tag_manager::default_state);
+        // 試用中（仮マスターが残っている）なら、仮マスターから始める。読めなければ破棄して本物に戻す。
+        let mut tag_trial_active = crate::tag_manager::trial_exists(&config_root);
+        let trial_loaded = if tag_trial_active { crate::tag_manager::load_slot(&config_root, crate::tag_manager::Slot::Trial) } else { None };
+        if tag_trial_active && trial_loaded.is_none() {
+            crate::log_common!("[tag-trial] 仮マスターを読めないので破棄して本物に戻す");
+            let _ = crate::tag_manager::discard_trial(&config_root);
+            tag_trial_active = false;
+        }
+        let (mut tag_manager_categories, mut tag_manager_next_tier_id) = trial_loaded
+            .or_else(|| crate::tag_manager::load(&config_root))
+            .unwrap_or_else(crate::tag_manager::default_state);
+        // システムカテゴリ（アーカイブ形式）が無ければ、初期要素つきで作って保存する。
+        if crate::tag_master::TagMaster::new(&mut tag_manager_categories, &mut tag_manager_next_tier_id)
+            .ensure_system_categories()
+        {
+            let slot = if tag_trial_active { crate::tag_manager::Slot::Trial } else { crate::tag_manager::Slot::Real };
+            crate::tag_manager::save_slot(&config_root, slot, &tag_manager_categories, tag_manager_next_tier_id);
+        }
+        let tag_learned = tag_learning_ui::load_learned(&config_root);
+        let tag_model = tag_learning_ui::train_model(&tag_learned, &config.tag_match);
+        // ルールファイルが無い初回だけ、初期ルール（すべて「無効」）を置く。壊れている・新しい版のファイルは、上書きしない。
+        let tag_rules = match crate::tag_rules::RuleSet::load(&config_root) {
+            Some(set) => set,
+            None if !crate::tag_rules::RuleSet::file_exists(&config_root) => {
+                let set = crate::tag_rules::RuleSet::with_initial_rules();
+                set.save(&config_root);
+                set
+            }
+            None => crate::tag_rules::RuleSet::default(),
+        };
+        let candidate_rules = crate::candidate_rules::CandidateRules::load(&config_root);
         let (tag_main_options, tag_attr_options) = crate::tag_manager::derive_tag_options(&tag_manager_categories);
         let tag_main_selected = tag_main_options.first().map(|(id, _)| *id);
         let mut tag_attr_selected: Vec<u64> = Vec::new();
         let _ = crate::tag_manager::enforce_single_select(&tag_manager_categories, &mut tag_attr_selected);
+        // システム連動は使わず、保存値（既定ダーク）を明示的に渡す。
+        theme_mode.apply(&ctx);
         let settings_draft = SettingsDraft::from_current(&config, &viewer_cfg, show_hidden, card_date_format, &translate_cfg);
         // viewer_cfg は下でArc<Mutex<..>>へムーブするため、そこで必要な値は先に控えておく
         // （config_root等、他のconfig系フィールドと同じ扱い）。
         let redecode_trigger_seq = viewer_cfg.redecode_trigger_seq;
         let exif_orientation_enabled = viewer_cfg.exif_orientation_enabled;
         let image_filter_snapshot = crate::image_filter::normalize_for_change_detection(viewer_cfg.image_filter);
+        let viewer_cfg_near_unity_skip = viewer_cfg.near_unity_skip_enabled;
         let tool_palette_visible_snapshot = viewer_cfg.tool_palette.visible;
         let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone(), cache_max, ring_bounds, frame_hard_limit_bytes);
         let (thumb_req_tx, thumb_res_rx, thumb_session) =
             spawn_thumb_worker(config.resolved_decode_threads(), ctx.clone());
+        crate::cache::set_thumb_cache_root(config.cache_root());
         let (entry_thumb_req_tx, entry_thumb_res_rx) = spawn_entry_thumb_worker(config.thumb_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone());
         let (file_cache_req_tx, file_cache_res_rx) = spawn_file_cache_worker(ctx.clone(), file_cache_max);
         // gvfs の一覧はバックグラウンド取得（起動後に poll_gvfs_list で反映）。起動フォルダが
@@ -1506,11 +1792,21 @@ impl NekoviewApp {
             drive_cursor: None,
             favorite_cursor: None,
             menu_cursor: 0,
+            sort_menu_open: false,
+            sort_menu_cursor: None,
             favorite_folders: Vec::new(),
             favorite_selected: FavoriteSelection::None,
             favorite_dialog: None,
             favorite_delete_confirm: None,
             relink_dialog: None,
+            key_menu: None,
+            key_pick: None,
+            key_notice: None,
+            key_search_pending: None,
+            tag_search_pending: None,
+            tag_chip_menu: None,
+            tag_search_filter: String::new(),
+            tag_search_filter_focus_frame: None,
             relink_job: None,
             favorite_unset_confirm: None,
             db_restore_confirm: None,
@@ -1529,6 +1825,7 @@ impl NekoviewApp {
             cd_summary_rx: None,
             cd_summary_updated_at: None,
             cache_db: None,
+            archive_info: Default::default(),
             cache_neko_dir: None,
             spread_db,
             backup_failure,
@@ -1542,6 +1839,15 @@ impl NekoviewApp {
             marker_seen_dir: None,
             marker_icon_hits: HashMap::new(),
             reveal_icon_hits: HashMap::new(),
+            goto_real_hits: HashMap::new(),
+            goto_virtual_hits: HashMap::new(),
+            virtual_lookup: HashMap::new(),
+            virtual_lookup_loaded: false,
+            pending_goto_virtual: None,
+            goto_virtual_menu: None,
+            pending_goto_real: None,
+            detail_icon_hits: HashMap::new(),
+            detail_window: None,
             marker_popup: None,
             dup_filter: false,
             dup_show_dismissed: false,
@@ -1577,6 +1883,12 @@ impl NekoviewApp {
             thumb_res_rx,
             thumb_session,
             thumb_pending: HashSet::new(),
+            thumb_stale_textures: HashSet::new(),
+            thumb_trace: HashMap::new(),
+            thumb_trace_count: 0,
+            thumb_trace_sum_ms: 0.0,
+            thumb_trace_max_ms: 0.0,
+            thumb_trace_first_sent: None,
             thumb_display_requested: HashSet::new(),
             thumb_queue: VecDeque::new(),
             thumb_priority_queue: VecDeque::new(),
@@ -1584,6 +1896,9 @@ impl NekoviewApp {
             thumb_missing_queued: HashSet::new(),
             thumb_priority_queued: HashSet::new(),
             thumb_last_user_activity: std::time::Instant::now(),
+            idle_last_activity: std::time::Instant::now(),
+            idle_op_tracker: idle_thumb::OperationTracker::default(),
+            idle_thumb: idle_thumb::IdleThumb::new(),
             thumb_visible_order_range: None,
             thumb_queue_built_at: std::time::Instant::now(),
             thumb_generation_state: crate::neko_dir::ThumbnailGenerationState {
@@ -1626,19 +1941,28 @@ impl NekoviewApp {
             anim_ring_bounds: ring_bounds,
             memory_warning_open: false,
             pending_open: None,
+            open_trace: None,
+            tag_scan_job: None,
+            tag_scan_result: None,
+            tag_confirm: None,
+            tag_apply_job: None,
+            tag_trial_dialog: None,
+            tag_discard_job: None,
+            tag_trial_notified: false,
             settings_open: false,
             settings_tab: SettingsTab::Common,
             settings_draft,
             identity_worker: identity_worker::IdentityWorker::spawn(ctx.clone()),
             identity_verifying: HashSet::new(),
+            identity_priority_sent: HashSet::new(),
             identity_dirty: false,
             identity_resolve_ui: Default::default(),
             identity_progress: None,
-            identity_toast_msg: None,
             identity_pending_count: 0,
             identity_backfill_started: false,
             identity_sweep_due: std::time::Instant::now() + identity_worker::SWEEP_FIRST_DELAY,
             dev_db_ui: dev_db_tools::DevDbUiState::load(&config_root),
+            perf_fixture_ui: perf_fixture_ui::PerfFixtureUi::default(),
             translate_cfg,
             tab_positions,
             tree_sorts,
@@ -1646,7 +1970,6 @@ impl NekoviewApp {
             tag_panel_open,
             tag_panel_width: 280.0,
             tag_panel_edit_expanded: false,
-            pending_open_in_search: None,
             reveal_dialog: None,
             reveal_pending: Vec::new(),
             tag_main_options,
@@ -1659,6 +1982,7 @@ impl NekoviewApp {
             tag_preview_high_quality,
             tag_preview_texture: None,
             tag_preview_pending: None,
+            tag_preview_want: None,
             tag_manager_open: false,
             tag_search_enabled: std::collections::HashSet::new(),
             tag_search_view_open: false,
@@ -1668,7 +1992,26 @@ impl NekoviewApp {
             tag_manager_area_rect: egui::Rect::NOTHING,
             tag_manager_categories,
             tag_manager_next_tier_id,
+            tag_learned,
+            tag_model,
+            tag_rules,
+            candidate_rules,
+            tag_learn: None,
+            tag_rules_open: false,
+            tag_entry_menu_open: false,
+            tag_rules_del_ask: None,
+            tag_rules_copy_src: None,
+            tag_rules_editor: None,
+            tag_trial_active,
             tag_manager_selected_category: Some(0),
+            tag_manager_delete_confirm: None,
+            tag_master_gen_ui: None,
+            tag_master_gen_btn_rect: egui::Rect::NOTHING,
+            tag_danger_open: false,
+            tag_danger_btn_rect: egui::Rect::NOTHING,
+            tag_danger_clear_stage: 0,
+            tag_danger_recovery_ask: 0,
+            tag_manager_session_snapped: std::cell::Cell::new(false),
             tag_manager_editing_element: None,
             tag_manager_editing_buffer: String::new(),
             tag_manager_editing_focus_pending: false,
@@ -1702,6 +2045,7 @@ impl NekoviewApp {
             translate_ocr_inflight_key: None,
             translate_ocr_queue: std::collections::VecDeque::new(),
             viewer_focus_requested: false,
+            viewer_recover_requested: false,
             show_hidden,
             card_info_mode: CardInfoMode::from_state_str(card_info_mode),
             card_rating_mode: CardRatingMode::from_state_str(card_rating_mode),
@@ -1709,7 +2053,12 @@ impl NekoviewApp {
             list_cols: list_columns::ListColumns::from_state_str(explorer_list_cols),
             list_scroll_x: 0.0,
             card_date_format,
-            card_info_style: CardInfoStyle::default(),
+            card_info_style: CardInfoStyle {
+                band_color: egui::Color32::from_black_alpha(crate::card_band::band_alpha(card_band.transparency_pct)),
+                ..CardInfoStyle::default()
+            },
+            card_band,
+            card_band_dialog: Default::default(),
             card_info_hover: None,
             archive_meta_cache: HashMap::new(),
             archive_rating_cache: HashMap::new(),
@@ -1725,10 +2074,11 @@ impl NekoviewApp {
             filter_text: String::new(),
             rating_filter: crate::rating_filter::RatingFilter::default(),
             filtered_indices: Vec::new(),
-            search_history: Vec::new(),
+            // 保存された検索条件を、結果を持たない行として並べる（選ぶと条件を復元して再走査する）。
+            search_history: search_history_ui::load_restored_history(&config_root),
             search_selected: None,
             search_form: SearchFormState::default(),
-            search_form_focus: SearchFormFocus::NamePattern,
+            search_form_focus: SearchMode::default().first_field(),
             search_form_focus_request: false,
             search_date_start_calendar: calendar_gui::CalendarGui::new(local_today),
             search_date_end_calendar: calendar_gui::CalendarGui::new(local_today),
@@ -1736,6 +2086,14 @@ impl NekoviewApp {
             search_running: false,
             search_pending: None,
             search_pending_form: None,
+            search_pending_saved_at: None,
+            search_job: None,
+            cross_markers: HashMap::new(),
+            cross_hit_ids: HashMap::new(),
+            sim_cross: similar_cross::SimilarCrossState::default(),
+            sim_cross_worker: None,
+            search_resume_uid: None,
+            search_notice_open: false,
             viewing_search: None,
             explorer_cols: 1,
             explorer_scroll_offset: 0.0,
@@ -1746,12 +2104,13 @@ impl NekoviewApp {
             show_status_window: false,
             help_enabled: false,
             folder_book_access_enabled: false,
-            folder_book_access_notice_open: false,
-            folder_book_access_notice_dont_show_again: false,
+            convenience_menu_open: false,
+            convenience_menu_cursor: None,
             status_window_data: Arc::new(Mutex::new(crate::view_status::StatusData::default())),
             last_status_update: std::time::Instant::now(),
             status_update_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             egui_ctx: ctx,
+            theme_mode,
             viewer_egui_ctx: None,
             translate_egui_ctx: None,
             translate_last_seen_parent_keys: Vec::new(),
@@ -1763,7 +2122,9 @@ impl NekoviewApp {
             decode_generation: 0,
             exif_orientation_enabled_last_seen: exif_orientation_enabled,
             magnifier_on_last_seen: false,
+            fit_mode_last_seen: crate::magnifier::FitMode::Contain,
             image_filter_last_seen: image_filter_snapshot,
+            near_unity_skip_last_seen: viewer_cfg_near_unity_skip,
             tool_palette_visible_last_seen: tool_palette_visible_snapshot,
         };
         app.start_scan();
@@ -1801,6 +2162,7 @@ impl NekoviewApp {
             self.card_info_mode.as_state_str(),
             self.card_rating_mode.as_state_str(),
             &self.card_date_format,
+            &self.card_band,
             &self.config,
             &self.translate_cfg,
             &self.tab_positions,
@@ -1810,6 +2172,7 @@ impl NekoviewApp {
             &self.view_mode.as_state_str(),
             &self.list_cols.as_state_str(),
             &self.sim_threshold_pct.to_string(),
+            self.theme_mode,
         );
     }
 }
@@ -1822,17 +2185,17 @@ mod search_result_tests {
     fn push_search_result_inserts_newest_at_top() {
         let mut history: Vec<SearchResultEntry> = Vec::new();
 
-        push_search_result(&mut history, SearchResultEntry { label: "1回目".to_string(), hits: vec![], form: Default::default() });
+        push_search_result(&mut history, SearchResultEntry { label: "1回目".to_string(), hits: vec![], form: Default::default(), ..Default::default() });
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].label, "1回目");
 
-        push_search_result(&mut history, SearchResultEntry { label: "2回目".to_string(), hits: vec![], form: Default::default() });
+        push_search_result(&mut history, SearchResultEntry { label: "2回目".to_string(), hits: vec![], form: Default::default(), ..Default::default() });
         assert_eq!(history.len(), 2);
         // 新しい実行が最上位、既存分は下に送られる
         assert_eq!(history[0].label, "2回目");
         assert_eq!(history[1].label, "1回目");
 
-        push_search_result(&mut history, SearchResultEntry { label: "3回目".to_string(), hits: vec![], form: Default::default() });
+        push_search_result(&mut history, SearchResultEntry { label: "3回目".to_string(), hits: vec![], form: Default::default(), ..Default::default() });
         assert_eq!(
             history.iter().map(|e| e.label.as_str()).collect::<Vec<_>>(),
             vec!["3回目", "2回目", "1回目"],

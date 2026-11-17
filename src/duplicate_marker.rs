@@ -223,6 +223,36 @@ pub struct DirMarker {
     pub referenced_by: Vec<u64>,
 }
 
+/// 指定したファイルIDのマーカー情報を返す（横断一覧用。キー = ファイルID）。マーカーも被参照も無いIDは含めない。
+/// テーブルが無ければ空。`load_dir` と同じ規則で、被参照は消去済みの持ち主を除く。
+pub fn load_for_ids(db: &Arc<Mutex<Database>>, ids: &[u64]) -> HashMap<u64, DirMarker> {
+    let mut out = HashMap::new();
+    if ids.is_empty() {
+        return out;
+    }
+    let Ok(guard) = db.lock() else { return out };
+    let Ok(tx) = guard.begin_read() else { return out };
+    let (Ok(table), Ok(rev)) = (tx.open_table(MARKER_TABLE), tx.open_multimap_table(MARKER_TARGET_TABLE)) else {
+        return out;
+    };
+    for &id in ids {
+        let own = table.get(id).ok().flatten().and_then(|g| MarkerRecord::decode(g.value()));
+        let mut referenced_by: Vec<u64> = rev
+            .get(id)
+            .map(|values| values.flatten().map(|g| g.value()).collect())
+            .unwrap_or_default();
+        referenced_by.retain(|owner| {
+            let marker = table.get(*owner).ok().flatten().and_then(|g| MarkerRecord::decode(g.value()));
+            marker.is_some_and(|m| !m.dismissed)
+        });
+        referenced_by.sort_unstable();
+        if own.is_some() || !referenced_by.is_empty() {
+            out.insert(id, DirMarker { own, referenced_by });
+        }
+    }
+    out
+}
+
 /// `dir` 直下のファイルのマーカーを一括で返す（キー = ファイル名）。マーカーも被参照も無いファイルは含めない。
 /// テーブルが無ければ（旧DB・マーカー未検出）、IDを引かずに空を返す。
 pub fn load_dir(db: &Arc<Mutex<Database>>, dir: &Path) -> HashMap<String, DirMarker> {

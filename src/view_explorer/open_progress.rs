@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use crate::fs::archive::{self, ArchiveMemoryCheck, ArchiveOpenProgress, ImageEntry};
+use crate::neko_dir::{DetailFlag, SourceRating};
 
 /// 非同期オープン中の局面。
 #[derive(Clone, Copy)]
@@ -28,7 +29,7 @@ pub enum OpenPollResult {
     /// まだ読み込み中。
     Pending,
     /// 読み込み・見積もり完了。有効な画像アーカイブだった。
-    Ready { entries: Vec<ImageEntry>, check: ArchiveMemoryCheck },
+    Ready { entries: Vec<ImageEntry>, check: ArchiveMemoryCheck, detail: DetailFlag, rating: SourceRating },
     /// 読み込み完了したが画像が1件も無かった（無効アーカイブ扱い）。
     Empty,
     /// ユーザーがキャンセルした。
@@ -45,10 +46,26 @@ pub struct MemoryBudgetParams {
     pub file_budget_bytes: usize,
 }
 
+/// 計測ログ（`[perf/open]`）用の短いファイル名。
+pub(super) fn trace_name(path: &std::path::Path) -> String {
+    crate::config::short_log_name(path.file_name().and_then(|n| n.to_str()).unwrap_or("?"))
+}
+
+/// 「ダブルクリック→ビューアーに1枚目が出るまで」の計測用の時刻メモ（速度調査用。挙動には影響しない）。
+/// `poll_workers` が1枚目のページ到着・FileCache到着を拾ってログに出す。
+pub(super) struct OpenTrace {
+    pub path: PathBuf,
+    pub t_click: std::time::Instant,
+    /// `open_viewer` を呼び終えた時刻。まだなら None。
+    pub t_viewer: Option<std::time::Instant>,
+    /// ページ到着ログを出した回数（最初の数件だけ出す）。
+    pub pages_logged: usize,
+}
+
 enum WorkerOutcome {
     Cancelled,
     Empty,
-    Ready { entries: Vec<ImageEntry>, check: ArchiveMemoryCheck },
+    Ready { entries: Vec<ImageEntry>, check: ArchiveMemoryCheck, detail: DetailFlag, rating: SourceRating },
 }
 
 /// エクスプローラーからダブルクリックされたアーカイブの非同期オープン処理。
@@ -75,16 +92,24 @@ impl PendingOpen {
         let worker_progress = Arc::clone(&progress);
         let worker_cancel = Arc::clone(&cancel);
         thread::spawn(move || {
+            // 開く処理の間は、FileCache の丸読みや手すきサムネ生成にディスクを譲らせる。
+            let _fg = crate::cache::ForegroundIoGuard::begin();
+            // サムネバー（前に開いた本のものを含む）の丸読みが、新しい読みを始めずに譲るようにする。
+            let _page_io = crate::cache::PageIoGuard::begin();
             let mut on_progress = |p: ArchiveOpenProgress| -> bool {
                 *worker_progress.lock().unwrap() = Some(ArchiveOpenPhase::Listing(p));
                 !worker_cancel.load(Ordering::Relaxed)
             };
-            let outcome = match archive::list_images_with_progress(&worker_path, &mut on_progress) {
+            let t_list = std::time::Instant::now();
+            let listed = archive::list_images_with_progress(&worker_path, &mut on_progress);
+            let list_ms = t_list.elapsed().as_secs_f64() * 1000.0;
+            let outcome = match listed {
                 None => WorkerOutcome::Cancelled,
                 Some(entries) if entries.is_empty() => WorkerOutcome::Empty,
                 Some(_entries) if worker_cancel.load(Ordering::Relaxed) => WorkerOutcome::Cancelled,
                 Some(entries) => {
                     *worker_progress.lock().unwrap() = Some(ArchiveOpenPhase::Estimating);
+                    let t_est = std::time::Instant::now();
                     let check = archive::estimate_archive_memory(
                         &worker_path,
                         &entries,
@@ -93,7 +118,22 @@ impl PendingOpen {
                         budget.max_decode_edge,
                         budget.file_budget_bytes,
                     );
-                    WorkerOutcome::Ready { entries, check }
+                    let est_ms = t_est.elapsed().as_secs_f64() * 1000.0;
+                    // 詳細テキストの有無もここで確認する（zip/cbzのみ。他形式は未確認のまま）。
+                    let t_detail = std::time::Instant::now();
+                    let read = archive::meta::read_detail(&worker_path);
+                    let detail = DetailFlag::from_read(read.as_ref(), archive::meta::detail_supported(&worker_path));
+                    let rating = SourceRating::from_read(read.as_ref());
+                    crate::log_perf!(
+                        "[perf/open] ワーカー {} entries={} 一覧={:.1}ms 見積もり={:.1}ms 詳細={:.1}ms 合計={:.1}ms",
+                        trace_name(&worker_path),
+                        entries.len(),
+                        list_ms,
+                        est_ms,
+                        t_detail.elapsed().as_secs_f64() * 1000.0,
+                        t_list.elapsed().as_secs_f64() * 1000.0,
+                    );
+                    WorkerOutcome::Ready { entries, check, detail, rating }
                 }
             };
             // 受信側が既に破棄されていても（キャンセル後の取りこぼし）エラーは無視する。
@@ -121,7 +161,7 @@ impl PendingOpen {
     pub fn poll(&mut self) -> OpenPollResult {
         match self.result_rx.try_recv() {
             Ok(WorkerOutcome::Empty) => OpenPollResult::Empty,
-            Ok(WorkerOutcome::Ready { entries, check }) => OpenPollResult::Ready { entries, check },
+            Ok(WorkerOutcome::Ready { entries, check, detail, rating }) => OpenPollResult::Ready { entries, check, detail, rating },
             Ok(WorkerOutcome::Cancelled) => {
                 if self.cancelled_by_user {
                     OpenPollResult::Cancelled
@@ -151,6 +191,7 @@ impl super::NekoviewApp {
             max_decode_edge: self.config.max_decode_edge,
             file_budget_bytes: self.file_cache.max_bytes(),
         };
+        self.open_trace = Some(OpenTrace { path: path.clone(), t_click: std::time::Instant::now(), t_viewer: None, pages_logged: 0 });
         self.pending_open = Some(PendingOpen::spawn(path, budget));
     }
 
@@ -173,8 +214,25 @@ impl super::NekoviewApp {
                 let name = super::panels::truncate_filename(&path);
                 self.set_toast(crate::i18n::t().invalid_zip(&name));
             }
-            OpenPollResult::Ready { entries, check } => {
+            OpenPollResult::Ready { entries, check, detail, rating } => {
                 let path = self.pending_open.take().expect("pending_open just polled").path;
+                let t_ready = std::time::Instant::now();
+                if let Some(tr) = self.open_trace.as_ref().filter(|t| t.path == path) {
+                    crate::log_perf!(
+                        "[perf/open] {} クリック→ワーカー結果受信={:.1}ms",
+                        trace_name(&path),
+                        tr.t_click.elapsed().as_secs_f64() * 1000.0,
+                    );
+                }
+                // TXTページは、設定でページ数に含める場合だけ数える（既定は含めない）。
+                let count_text = archive::text_page::options().count_in_pages;
+                let pages = entries
+                    .iter()
+                    .filter(|e| count_text || !archive::text_page::is_text_entry_name(&e.entry_name))
+                    .count();
+                let t_meta = std::time::Instant::now();
+                self.record_archive_meta(&path, pages, detail, rating);
+                crate::log_perf!("[perf/open] {} DB記録(メイン)={:.1}ms", trace_name(&path), t_meta.elapsed().as_secs_f64() * 1000.0);
                 if self.apply_memory_check(&path, check) {
                     let is_virtual_book = path.is_dir();
                     let state = crate::view_reader::ViewerState::from_image_entries(
@@ -184,11 +242,41 @@ impl super::NekoviewApp {
                         self.config.default_slot,
                         is_virtual_book,
                     );
+                    let t_open = std::time::Instant::now();
+                    let name = trace_name(state.archive_path());
                     self.open_viewer(state);
+                    crate::log_perf!(
+                        "[perf/open] {} open_viewer(メイン)={:.1}ms 受信からここまで={:.1}ms",
+                        name,
+                        t_open.elapsed().as_secs_f64() * 1000.0,
+                        t_ready.elapsed().as_secs_f64() * 1000.0,
+                    );
+                    if let Some(tr) = self.open_trace.as_mut() {
+                        tr.t_viewer = Some(std::time::Instant::now());
+                    }
                 }
                 // OverBudgetの場合はapply_memory_check内でmemory_warning_openが立つ。
             }
         }
+    }
+
+    /// ビューアーを開いた時点のページ数・詳細有無を、そのファイルのフォルダの cache.redb に記録する。
+    /// 仮想フォルダ・お気に入り・検索などから開いた場合も、ファイル自身のフォルダへ書く。
+    /// 書けなくても（DBが開けない等）オープンは止めない。
+    fn record_archive_meta(&mut self, path: &std::path::Path, page_count: usize, detail: DetailFlag, rating: SourceRating) {
+        let (Some(dir), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else { return };
+        let db = if dir == self.current_dir {
+            self.cache_db.clone()
+        } else {
+            crate::neko_dir::neko_dir_for(dir, &self.config)
+                .and_then(|nd| crate::neko_dir::open_cache_db(&nd, dir))
+        };
+        let Some(db) = db else { return };
+        let mtime = crate::neko_dir::file_mtime(path);
+        let size = crate::neko_dir::file_size(path);
+        crate::neko_dir::write_archive_meta_full(&db, name, mtime, size, page_count, detail, rating);
+        // 次の描画でそのフォルダの記録を読み直す（リストの列にすぐ反映される）。
+        self.archive_info.invalidate_dir(dir);
     }
 
     /// アーカイブオープン中央オーバーレイを描画する。

@@ -202,14 +202,14 @@ impl CalendarGui {
                     });
 
                 ui.horizontal(|ui| {
-                    if ui.button(lang.calendar_ok()).clicked() {
-                        outcome = self.model.confirm();
+                    if ui.button(lang.calendar_cancel()).clicked() {
+                        outcome = self.model.cancel();
                     }
                     if ui.button(lang.calendar_clear()).clicked() {
                         outcome = self.model.clear();
                     }
-                    if ui.button(lang.calendar_cancel()).clicked() {
-                        outcome = self.model.cancel();
+                    if ui.button(lang.calendar_ok()).clicked() {
+                        outcome = self.model.confirm();
                     }
                 });
             });

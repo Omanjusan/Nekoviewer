@@ -92,6 +92,18 @@ pub fn draw_document_icon(painter: &Painter, rect: Rect, hovered: bool) {
     painter.line_segment([tf(8.0, 17.0), tf(13.0, 17.0)], line_stroke);
 }
 
+/// 詳細列の種別バッジ（白い角丸の札に XML / JSON / TXT の文字）。色は書類アイコンと同じ流儀で、`hovered` のときだけ強調する。
+pub fn draw_kind_badge(painter: &Painter, rect: Rect, label: &str, hovered: bool) {
+    let (outline, text) = if hovered {
+        (NAV_ICON_COLOR, NAV_ICON_COLOR)
+    } else {
+        (Color32::from_rgb(86, 96, 112), Color32::from_rgb(70, 78, 92))
+    };
+    painter.rect_filled(rect, 3.0, Color32::WHITE);
+    painter.rect_stroke(rect, 3.0, Stroke::new(1.0, outline), egui::StrokeKind::Inside);
+    painter.text(rect.center(), egui::Align2::CENTER_CENTER, label, egui::FontId::proportional(9.0), text);
+}
+
 /// text を font_id で計測し、max_width に収まらなければ末尾を "…" 付きでカットする。
 /// egui の実測フォントメトリクスを使うため、フォント・文字種によらず正確に収まる。
 pub fn truncate_to_width(ui: &egui::Ui, text: &str, font_id: egui::FontId, max_width: f32) -> String {

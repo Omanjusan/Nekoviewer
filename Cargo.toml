@@ -1,6 +1,6 @@
 [package]
 name = "nekoviewer"
-version = "1.11.0"
+version = "1.12.0"
 edition = "2024"
 license = "MIT"
 
@@ -51,10 +51,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
 time = { version = "0.3.55", features = ["local-offset"] }
+# TXTページの文字描画（グリフのラスタライズ）用。epaint 経由で既にロック済みの版に合わせる。
+ab_glyph = "0.2"
 
 [dev-dependencies]
-# マーカー候補グリフの収録・塗りつぶし検証テスト用（epaint 経由で既にロック済みの版に合わせる）
-ab_glyph = "0.2"
 
 [features]
 # zip/cbz は画像・コミックビューアの基幹形式のため常時コンパイル（feature 化しない）。
@@ -62,11 +62,22 @@ ab_glyph = "0.2"
 default = ["fmt-7z", "fmt-tar", "tar-zstd"]
 fmt-7z = ["dep:sevenz-rust2"]
 fmt-tar = ["dep:tar"]
+# 自動テスト用の制御口（NEKO_TEST_CONTROL / NEKO_FAKE_MONITORS）。通常ビルドには入れない。
+test-control = []
 # tar.zst 対応。ruzstd は純 Rust の zstd 実装で C 依存を引き込まないため、単一 musl 配布と
 # 両立できる。tar バックエンドが前提のため fmt-tar を暗黙有効化する。
 tar-zstd = ["fmt-tar", "dep:ruzstd"]
 # tar.xz は liblzma（C 依存）を要し単一 musl 配布と相性が悪いため既定で無効。現状は枠のみ。
 tar-xz = []
+
+# 速度計測用（perf_fixture）。リリース相当の最適化(opt-level 3)のまま、再ビルドだけを速くする。
+# `cargo run --profile fastrel` で使う。[profile.release] は変えないので、make release・CI・
+# AppImage・Flatpak の成果物には影響しない（出力先も target/fastrel/ で別）。
+[profile.fastrel]
+inherits = "release"
+incremental = true
+codegen-units = 256
+lto = "off"
 
 [profile.dev.package.fast_image_resize]
 opt-level = 3
