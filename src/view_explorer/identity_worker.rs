@@ -24,8 +24,11 @@ use crate::identity_pending::PendingKind;
 const CHUNK_SIZE: usize = 10;
 /// 進捗（処理済み件数）を、これだけ進むごとに通知する（検証済みが無くても送る）。
 const PROGRESS_STEP: usize = 100;
-/// 処理中トーストを出し始めるまでの待ち。これより早く終われば、トーストは出さない。
-const TOAST_DELAY: Duration = Duration::from_secs(2);
+/// サムネイル状況ラベルへ、ID取得状況を書き添え始めるまでの待ち。フォルダ表示からこれだけ経つまでは何も出さない
+/// （速く終わる処理で「取得済」が一瞬だけ見えるちらつきを避ける）。
+const GAUGE_DELAY: Duration = Duration::from_secs(3);
+/// 「残りX件」の表示を丸める単位（LAZY。切り上げて表示する）。
+const REMAINING_STEP: usize = 50;
 /// 書き込み中で後回しにしたファイルの再試行間隔と回数。
 const RETRY_DELAY: Duration = Duration::from_secs(4);
 const MAX_RETRY_ROUNDS: usize = 3;
@@ -516,25 +519,41 @@ fn note_pending(
     }
 }
 
-/// フォルダ表示時のID解決の進捗。処理が `TOAST_DELAY` を過ぎても終わらない時だけ、処理中トーストを出す。
+/// フォルダ表示時のID解決の進捗。ラベルの「ID取得状況」の元になる。
+/// 処理が終わっても `done` を立てて残す（「取得済」の表示に使う。次のフォルダ表示で作り直される）。
 pub(super) struct IdentityProgress {
     total: usize,
     processed: usize,
+    done: bool,
     started: Instant,
+}
+
+/// 残り件数を `REMAINING_STEP` 件刻みに切り上げる。処理中は最低でも1刻み分（0件とは出さない）。
+fn round_up_remaining(remaining: usize) -> usize {
+    remaining.max(1).div_ceil(REMAINING_STEP) * REMAINING_STEP
 }
 
 impl IdentityProgress {
     fn new(total: usize) -> Self {
-        Self { total, processed: 0, started: Instant::now() }
+        Self { total, processed: 0, done: false, started: Instant::now() }
     }
 
-    /// 開始から待ち時間が過ぎたか（過ぎていれば、まだ終わっていない処理のトーストを出す）。
-    fn toast_due(&self, now: Instant) -> bool {
-        now.duration_since(self.started) >= TOAST_DELAY
+    /// 開始から待ち時間が過ぎたか。過ぎるまではID取得状況を出さない。
+    fn gauge_due(&self, now: Instant) -> bool {
+        now.duration_since(self.started) >= GAUGE_DELAY
     }
 
-    fn message(&self) -> String {
-        crate::i18n::t().identity_toast(self.processed.min(self.total), self.total)
+    /// ラベルに書き添えるID取得状況。待ち時間内は `None`。
+    fn gauge(&self, now: Instant) -> Option<crate::i18n::IdGaugeText> {
+        use crate::i18n::IdGaugeText;
+        if !self.gauge_due(now) {
+            return None;
+        }
+        Some(if self.done {
+            IdGaugeText::Done
+        } else {
+            IdGaugeText::Running { remaining: round_up_remaining(self.total.saturating_sub(self.processed)) }
+        })
     }
 }
 
@@ -627,21 +646,21 @@ impl NekoviewApp {
         }
     }
 
-    /// 処理中トーストを、進捗に合わせて出し入れする。待ち時間内、または完了後は出さない。
-    fn update_identity_toast(&mut self) {
-        let desired = match &self.identity_progress {
-            Some(p) if p.toast_due(Instant::now()) => Some(p.message()),
-            Some(p) => {
-                // 待ち時間が明けるフレームを確実に作る（入力が無くても再描画する）。
-                let remaining = TOAST_DELAY.saturating_sub(Instant::now().duration_since(p.started));
+    /// ラベルに書き添えるID取得状況（ID層が止まっている時・待ち時間内・対象なしの時は `None`）。
+    pub(super) fn identity_gauge(&self) -> Option<crate::i18n::IdGaugeText> {
+        if !crate::file_identity::is_enabled() {
+            return None;
+        }
+        self.identity_progress.as_ref()?.gauge(Instant::now())
+    }
+
+    /// 待ち時間が明けるフレームを確実に作る（入力が無くても再描画する）。毎フレーム呼ぶ。
+    fn schedule_identity_gauge_repaint(&self) {
+        if let Some(p) = &self.identity_progress {
+            if !p.gauge_due(Instant::now()) {
+                let remaining = GAUGE_DELAY.saturating_sub(Instant::now().duration_since(p.started));
                 self.egui_ctx.request_repaint_after(remaining);
-                None
             }
-            None => None,
-        };
-        if desired != self.identity_toast_msg {
-            self.set_sticky_toast(desired.clone());
-            self.identity_toast_msg = desired;
         }
     }
 
@@ -729,9 +748,11 @@ impl NekoviewApp {
                     // 解決が済んだので、このフォルダの同内容ファイル（導入前から重複していたものなど）を探す。
                     self.request_marker_detect();
                     self.request_thumb_hash();
-                    // 後回しのまま残った・失敗したものも含め、検証中表示と処理中トーストを残さない。
+                    // 後回しのまま残った・失敗したものも含め、検証中表示を残さない。ID取得状況は「取得済」にする。
                     self.identity_verifying.clear();
-                    self.identity_progress = None;
+                    if let Some(p) = &mut self.identity_progress {
+                        p.done = true;
+                    }
                     if std::mem::take(&mut self.identity_dirty) {
                         // 評価以外（お気に入りの先頭固定など）の保存状態も付き替わるので、並び順の軸に
                         // 関わらず、並びとフィルタを一度だけ作り直す。
@@ -741,7 +762,7 @@ impl NekoviewApp {
                 }
             }
         }
-        self.update_identity_toast();
+        self.schedule_identity_gauge_repaint();
     }
 }
 
@@ -1160,21 +1181,24 @@ mod tests {
     }
 
     #[test]
-    fn toast_is_due_only_after_the_initial_wait() {
-        let p = IdentityProgress::new(10);
-        assert!(!p.toast_due(Instant::now()), "待ち時間内は出さない（速く終わる処理では出ない）");
-        let later = p.started + TOAST_DELAY;
-        assert!(p.toast_due(later), "待ち時間を過ぎても終わらなければ出す");
-        assert!(!p.toast_due(p.started + TOAST_DELAY - Duration::from_millis(1)));
+    fn gauge_is_hidden_until_the_delay_passes() {
+        use crate::i18n::IdGaugeText::{Done, Running};
+        let mut p = IdentityProgress::new(120);
+        assert_eq!(p.gauge(Instant::now()), None, "待ち時間内は出さない（速く終わる処理では出ない）");
+        assert_eq!(p.gauge(p.started + GAUGE_DELAY - Duration::from_millis(1)), None);
+        assert_eq!(p.gauge(p.started + GAUGE_DELAY), Some(Running { remaining: 150 }));
+        p.done = true;
+        assert_eq!(p.gauge(p.started + GAUGE_DELAY), Some(Done));
+        assert_eq!(p.gauge(p.started), None, "完了していても待ち時間内は出さない");
     }
 
     #[test]
-    fn toast_message_never_exceeds_total() {
-        let mut p = IdentityProgress::new(5);
-        p.processed = 9;
-        assert!(p.message().contains("5 / 5"), "{}", p.message());
-        p.processed = 2;
-        assert!(p.message().contains("2 / 5"));
+    fn remaining_is_rounded_up_in_steps() {
+        assert_eq!(round_up_remaining(237), 250);
+        assert_eq!(round_up_remaining(250), 250);
+        assert_eq!(round_up_remaining(251), 300);
+        assert_eq!(round_up_remaining(1), 50);
+        assert_eq!(round_up_remaining(0), 50, "処理中に0件とは出さない");
     }
 
     #[test]

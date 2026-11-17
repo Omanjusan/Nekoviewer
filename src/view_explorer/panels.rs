@@ -881,7 +881,7 @@ impl NekoviewApp {
         let errors = self.thumb_failed.iter()
             .filter(|path| path.parent().is_some_and(|parent| parent == self.current_dir))
             .count();
-        i18n::t().thumbnail_status(current, total, errors, replacing_old)
+        i18n::t().thumbnail_status(current, total, errors, replacing_old, self.identity_gauge())
     }
 
     /// 左ペインのタブを切り替える唯一の入口。folder_pane_tab の変更は必ずこの関数を通し、

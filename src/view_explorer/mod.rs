@@ -1180,10 +1180,8 @@ pub struct NekoviewApp {
     identity_dirty: bool,
     /// 重複・曖昧の解決UI（現状はレイアウトのモック。仮データ）。
     identity_resolve_ui: identity_resolution_ui::ResolveUiState,
-    /// ID解決の進捗（処理が長引いた時だけ、処理中トーストを出す）。
+    /// ID解決の進捗。サムネイル状況ラベルのID取得状況（取得中/取得済）の元になる。
     identity_progress: Option<identity_worker::IdentityProgress>,
-    /// 処理中トーストとして出している文言（出し入れの変化検知用）。
-    identity_toast_msg: Option<String>,
     /// 未解決（重複・曖昧）の総数。解決の完了ごとに更新する（解決UIの本実装で、ボタンの数字に使う）。
     identity_pending_count: usize,
     /// 旧レコードのバックフィル依頼を出したか（起動後1回）。
@@ -1911,7 +1909,6 @@ impl NekoviewApp {
             identity_dirty: false,
             identity_resolve_ui: Default::default(),
             identity_progress: None,
-            identity_toast_msg: None,
             identity_pending_count: 0,
             identity_backfill_started: false,
             identity_sweep_due: std::time::Instant::now() + identity_worker::SWEEP_FIRST_DELAY,

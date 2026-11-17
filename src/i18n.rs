@@ -761,15 +761,6 @@ impl Lang {
         }
     }
 
-    /// ファイルID解決（新規・移動直後のファイルの照合）が長引いた時に出す、処理中トースト。
-    pub fn identity_toast(self, done: usize, total: usize) -> String {
-        match self {
-            Lang::Japanese => format!("ファイルを検証しています… {done} / {total}"),
-            Lang::English  => format!("Verifying files… {done} / {total}"),
-            Lang::Chinese  => format!("正在验证文件… {done} / {total}"),
-        }
-    }
-
     /// 管理データ内の重複・曖昧で、引き継ぎ元を自動では決められなかった時の通知（件数は新しく増えた分）。
     pub fn identity_pending_toast(self, n: usize) -> String {
         match self {
@@ -3449,9 +3440,9 @@ impl Lang {
 
     pub fn search_notice_body(self) -> &'static str {
         match self {
-            Lang::Japanese => "ここでの一致・類似マーカーは計算量が膨大になるのを避け、結果を素早く出すため保存済みマーカーを表示するだけで新たな検知は行わず、解決UIにも移動できません。実フォルダ・仮想フォルダの現地移動メニューがあるので現地へ移動してから解決をしてください。",
-            Lang::English  => "To avoid a huge amount of computation and keep results fast, the match / similar markers here only show markers that are already saved. No new detection is performed, and you cannot jump to the resolution UI from here. Use the menu to go to the actual location in the Folders or Virtual Folders tab, and resolve them there.",
-            Lang::Chinese  => "为避免计算量过大并优先快速给出结果，此处的一致/相似标记只显示已保存的标记，不会进行新的检测，也无法从这里跳转到处理界面。请使用菜单跳转到文件夹或虚拟文件夹标签页中的实际位置，然后在那里处理。",
+            Lang::Japanese => "ここでの一致・類似マーカーは計算量が膨大になるのを避け、結果を素早く出すため保存済みマーカーを表示するだけで新たな検知は行わず、解決UIにも移動できません。実フォルダ・仮想フォルダの現地移動メニューがあるので現地へ移動してから解決をしてください。\n\nこのモードは、本アプリの全データベースを走査します。データベースが未構築のフォルダは、期待どおりの結果が出ないことがあります。\nデータベースは「サムネイル」と「ファイルID」の2種類に大別され、検索に使われるのはファイルIDです。サムネイルが完成しているフォルダは、おおむねファイルIDも生成済みと考えてよいです（旧バージョンのサムネイルのみのデータベースを除く）。\nまずは、漫画や画像アーカイブのあるフォルダを一通り閲覧することをおすすめします。フォルダを閲覧した時点で、そのフォルダの管理データベースが更新されます。アプリのデータベース構成が更新された後も、フォルダを閲覧し直すことで、新しい形式に更新されます。\nエクスプローラー上部のサムネイル取得数の横に、ファイルIDの取得状況（ID取得中/ID取得済）が表示されます。これを参考に、データベースを完成させてください。",
+            Lang::English  => "To avoid a huge amount of computation and keep results fast, the match / similar markers here only show markers that are already saved. No new detection is performed, and you cannot jump to the resolution UI from here. Use the menu to go to the actual location in the Folders or Virtual Folders tab, and resolve them there.\n\nThis mode scans all of the app's databases. For folders whose databases have not been built yet, you may not get the results you expect.\nThe databases fall into two broad kinds, \"thumbnails\" and \"file IDs\", and search relies on the file IDs. A folder whose thumbnails are complete can generally be assumed to have its file IDs generated as well (except for databases from older versions that contain thumbnails only).\nFirst, we recommend browsing through the folders that contain manga or image archives. The folder's management database is updated at the moment you browse it. Even after the app's database structure is updated, browsing the folders again brings them up to the new format.\nThe file ID status (fetching / ready) is shown next to the thumbnail count at the top of the Explorer. Use it as a guide to complete the databases.",
+            Lang::Chinese  => "为避免计算量过大并优先快速给出结果，此处的一致/相似标记只显示已保存的标记，不会进行新的检测，也无法从这里跳转到处理界面。请使用菜单跳转到文件夹或虚拟文件夹标签页中的实际位置，然后在那里处理。\n\n此模式会扫描本应用的全部数据库。尚未建立数据库的文件夹，可能无法得到预期的结果。\n数据库大致分为“缩略图”和“文件ID”两种，搜索使用的是文件ID。缩略图已完成的文件夹，通常可视为文件ID也已生成（仅包含缩略图的旧版本数据库除外）。\n建议首先浏览一遍包含漫画或图片压缩包的文件夹。浏览文件夹的同时，该文件夹的管理数据库会被更新。应用的数据库结构更新后，再次浏览文件夹，也会更新为新的格式。\n资源管理器顶部的缩略图数量旁会显示文件ID的获取状态（获取中/已获取）。请以此为参考，完成数据库的建立。",
         }
     }
 
@@ -4285,6 +4276,7 @@ For files without metadata, setting the main category etc. by hand and training 
         total: usize,
         errors: usize,
         replacing_old: bool,
+        id_gauge: Option<IdGaugeText>,
     ) -> String {
         let mut text = match self {
             Lang::Japanese => format!("サムネイル {current}/{total}"),
@@ -4304,6 +4296,20 @@ For files without metadata, setting the main category etc. by hand and training 
                 Lang::English  => " Updating to the new format",
                 Lang::Chinese  => " 正在更新为新格式",
             });
+        }
+        // ファイルID取得状況は最右に書き添える。
+        match id_gauge {
+            None => {}
+            Some(IdGaugeText::Done) => text.push_str(match self {
+                Lang::Japanese => "（ID取得済）",
+                Lang::English  => " (IDs ready)",
+                Lang::Chinese  => "（ID已获取）",
+            }),
+            Some(IdGaugeText::Running { remaining }) => text.push_str(&match self {
+                Lang::Japanese => format!("（ID取得中/残り{remaining}件）"),
+                Lang::English  => format!(" (Fetching IDs / {remaining} left)"),
+                Lang::Chinese  => format!("（ID获取中/剩余{remaining}项）"),
+            }),
         }
         text
     }
@@ -11440,6 +11446,15 @@ mod calendar_tests {
     }
 }
 
+/// エクスプローラー上部のサムネイル状況ラベルに書き添える、ファイルID取得状況。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IdGaugeText {
+    /// 取得済み。
+    Done,
+    /// 取得中。`remaining` は50件刻みに切り上げた残り件数。
+    Running { remaining: usize },
+}
+
 #[cfg(test)]
 mod thumbnail_status_tests {
     use super::Lang;
@@ -11447,7 +11462,7 @@ mod thumbnail_status_tests {
     #[test]
     fn japanese_status_keeps_error_before_update_suffix() {
         assert_eq!(
-            Lang::Japanese.thumbnail_status(77, 80, 3, true),
+            Lang::Japanese.thumbnail_status(77, 80, 3, true, None),
             "サムネイル 77/80 エラー 3 新形式に更新中",
         );
     }
@@ -11455,8 +11470,29 @@ mod thumbnail_status_tests {
     #[test]
     fn normal_status_has_no_extra_suffix() {
         assert_eq!(
-            Lang::Japanese.thumbnail_status(80, 80, 0, false),
+            Lang::Japanese.thumbnail_status(80, 80, 0, false, None),
             "サムネイル 80/80",
+        );
+    }
+
+    #[test]
+    fn id_gauge_is_appended_at_the_far_right() {
+        use super::IdGaugeText::{Done, Running};
+        assert_eq!(
+            Lang::Japanese.thumbnail_status(80, 80, 0, false, Some(Done)),
+            "サムネイル 80/80（ID取得済）",
+        );
+        assert_eq!(
+            Lang::Japanese.thumbnail_status(77, 80, 3, true, Some(Running { remaining: 50 })),
+            "サムネイル 77/80 エラー 3 新形式に更新中（ID取得中/残り50件）",
+        );
+        assert_eq!(
+            Lang::English.thumbnail_status(80, 80, 0, false, Some(Running { remaining: 100 })),
+            "Thumbnails 80/80 (Fetching IDs / 100 left)",
+        );
+        assert_eq!(
+            Lang::Chinese.thumbnail_status(80, 80, 0, false, Some(Done)),
+            "缩略图 80/80（ID已获取）",
         );
     }
 }
