@@ -1650,10 +1650,10 @@ const PAGE_IO_QUIET_MS: u64 = 100;
 const PAGE_IO_WAIT_CAP: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// ページ用デコードワーカーが1ジョブ処理している間だけ生きる印。
-struct PageIoGuard;
+pub(crate) struct PageIoGuard;
 
 impl PageIoGuard {
-    fn begin() -> Self {
+    pub(crate) fn begin() -> Self {
         PAGE_IO_ACTIVE.fetch_add(1, Ordering::SeqCst);
         Self
     }
@@ -1663,6 +1663,42 @@ impl Drop for PageIoGuard {
     fn drop(&mut self) {
         PAGE_IO_LAST_END_MS.store(fg_now_ms(), Ordering::SeqCst);
         PAGE_IO_ACTIVE.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// サムネバー（アーカイブ内サムネ）が、ディスクから同時に丸読みする最大数。HDDでは並行しても帯域は増えない。
+const THUMB_DISK_READ_MAX: usize = 2;
+static THUMB_DISK_READ_LIMITER: ReadLimiter = ReadLimiter::new(THUMB_DISK_READ_MAX);
+
+/// 同時に許す数を絞る簡単なセマフォ。取得した `ReadPermit` が生きている間だけ1枠を使う。
+struct ReadLimiter {
+    used: Mutex<usize>,
+    freed: Condvar,
+    max: usize,
+}
+
+struct ReadPermit<'a>(&'a ReadLimiter);
+
+impl ReadLimiter {
+    const fn new(max: usize) -> Self {
+        Self { used: Mutex::new(0), freed: Condvar::new(), max }
+    }
+
+    /// 空きができるまで待って、1枠取る。
+    fn acquire(&self) -> ReadPermit<'_> {
+        let mut used = self.used.lock().unwrap();
+        while *used >= self.max {
+            used = self.freed.wait(used).unwrap();
+        }
+        *used += 1;
+        ReadPermit(self)
+    }
+}
+
+impl Drop for ReadPermit<'_> {
+    fn drop(&mut self) {
+        *self.0.used.lock().unwrap() -= 1;
+        self.0.freed.notify_one();
     }
 }
 
@@ -2188,10 +2224,17 @@ pub fn spawn_entry_thumb_worker(filter: image::imageops::FilterType, num_threads
                 };
 
                 let target = Some((req.edge, req.edge));
+                // ディスクから読むジョブだけ、同時数を絞り、ページ読みを優先する。FileCache のメモリから作れる
+                // ジョブ（file_cache_entry あり）はディスクを使わないので、どちらも不要。
+                let needs_disk = req.file_cache_entry.is_none();
+                // 同時に丸読みする数を絞る（HDDでは並行しても帯域は増えず、シークが散るだけ）。
+                let _read_permit = needs_disk.then(|| THUMB_DISK_READ_LIMITER.acquire());
                 // ページ読みを優先する（サムネバーの丸読みで、いま見ているページが遅れないように）。
-                let waited = wait_page_jobs_idle(PAGE_IO_QUIET_MS, PAGE_IO_WAIT_CAP);
-                if waited >= std::time::Duration::from_millis(50) {
-                    log_perf!("[perf/open] サムネ(アーカイブ内) index={} ページ読みを優先して待機={:.1}ms", req.original_index, waited.as_secs_f64() * 1000.0);
+                if needs_disk {
+                    let waited = wait_page_jobs_idle(PAGE_IO_QUIET_MS, PAGE_IO_WAIT_CAP);
+                    if waited >= std::time::Duration::from_millis(50) {
+                        log_perf!("[perf/open] サムネ(アーカイブ内) index={} ページ読みを優先して待機={:.1}ms", req.original_index, waited.as_secs_f64() * 1000.0);
+                    }
                 }
                 let _fg = ForegroundIoGuard::begin();
                 // サムネ用途でもframe0の保持を保証し、ビューアー用リング設定と独立させる。
@@ -3729,6 +3772,24 @@ mod file_cache_yield_tests {
         assert_eq!(read_file_yielding(&empty).unwrap().0.len(), 0);
         assert!(read_file_yielding(&dir.join("none.bin")).is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 同時数の上限: 枠が埋まると3本目は待ち、1枠返すと進む。
+    #[test]
+    fn read_limiter_blocks_beyond_max_and_resumes_on_release() {
+        let lim = ReadLimiter::new(2);
+        let a = lim.acquire();
+        let _b = lim.acquire();
+        std::thread::scope(|s| {
+            let handle = s.spawn(|| {
+                let _c = lim.acquire();
+            });
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            assert!(!handle.is_finished(), "枠が埋まっている間は3本目が待つ");
+            drop(a);
+            handle.join().unwrap();
+        });
+        assert_eq!(*lim.used.lock().unwrap(), 1, "取った枠はすべて返る（_b の分だけ残る）");
     }
 
     /// ページ読み中は待ち、終わって静かな時間がたてば抜ける。上限を超えたら待ちきらずに抜ける。
