@@ -130,6 +130,39 @@ impl PartialOrd for HeapEntry {
     }
 }
 
+/// `finish` の結果の内訳。結果を受け取らずに捨てたとき、理由を perf ログに出すために使う。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FinishOutcome {
+    /// 結果を受け取ってよい。
+    Accepted,
+    /// 実行中に「不要」として取り消された（ページを通り過ぎた・窓から外れた等）。
+    Cancelled,
+    /// 取り消しの印は無いが、世代が受け付け対象から外れている。
+    StaleGeneration,
+    /// 実行中の記録に無い（二重に終了を通知した等）。
+    Unknown,
+}
+
+impl FinishOutcome {
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::Accepted => "受け取り",
+            Self::Cancelled => "取り消し済み",
+            Self::StaleGeneration => "世代外",
+            Self::Unknown => "記録なし",
+        }
+    }
+}
+
+/// 実行中に取り消されたページを、perf ログに出す（取り消しの原因の切り分け用）。
+fn log_running_cancelled(reason: &str, mut pages: Vec<usize>) {
+    if pages.is_empty() {
+        return;
+    }
+    pages.sort_unstable();
+    crate::log_perf!("[perf/open] ページ取り消し(実行中) {} index={:?}", reason, pages);
+}
+
 struct QueueState<T> {
     generations: AcceptedGenerations,
     queued: HashMap<DecodeJobKey, QueuedJob<T>>,
@@ -161,6 +194,13 @@ impl<T> QueueState<T> {
                     })
             })
             .collect();
+    }
+
+    /// 同じキーで、取り消し済みなのにまだ実行中のジョブがあるか（再要求すると重複デコードになる）。
+    fn has_cancelled_running(&self, key: &DecodeJobKey) -> bool {
+        self.running
+            .values()
+            .any(|job| &job.key == key && job.cancelled.load(AtomicOrdering::Acquire))
     }
 
     fn has_live_running(&self, key: &DecodeJobKey) -> bool {
@@ -279,13 +319,18 @@ impl<T> DecodeJobQueue<T> {
             }
             keep
         });
+        let mut newly_cancelled = Vec::new();
         for job in state.running.values() {
-            if !generations.accepts(job.key.generation) {
-                job.cancelled.store(true, AtomicOrdering::Release);
+            if !generations.accepts(job.key.generation)
+                && !job.cancelled.swap(true, AtomicOrdering::AcqRel)
+            {
+                newly_cancelled.push(job.key.page_index);
             }
         }
         state.rebuild_heap();
         self.shared.wake.notify_all();
+        drop(state);
+        log_running_cancelled("世代切替", newly_cancelled);
     }
 
     /// 既存の必要集合を維持したまま1件を追加・更新する。
@@ -298,6 +343,9 @@ impl<T> DecodeJobQueue<T> {
         {
             return false;
         }
+        // 取り消し済みなのにまだ走っているジョブがある状態での再要求は、同じページの重複デコードになる。
+        let over_cancelled = state.has_cancelled_running(&desired_job.key);
+        let requested_page = desired_job.key.page_index;
 
         let key = desired_job.key.clone();
         if let Some(queued) = state.queued.get_mut(&key) {
@@ -324,6 +372,10 @@ impl<T> DecodeJobQueue<T> {
         }
         state.rebuild_heap();
         self.shared.wake.notify_one();
+        drop(state);
+        if over_cancelled {
+            crate::log_perf!("[perf/open] ページ再要求 index={} 取り消し済みの実行中ジョブあり（重複デコードになる）", requested_page);
+        }
         true
     }
 
@@ -347,12 +399,15 @@ impl<T> DecodeJobQueue<T> {
             }
             keep
         });
+        let mut newly_cancelled = Vec::new();
         for job in state.running.values() {
-            if !desired.contains(&job.key) {
-                job.cancelled.store(true, AtomicOrdering::Release);
+            if !desired.contains(&job.key) && !job.cancelled.swap(true, AtomicOrdering::AcqRel) {
+                newly_cancelled.push(job.key.page_index);
             }
         }
         state.rebuild_heap();
+        drop(state);
+        log_running_cancelled("不要になった", newly_cancelled);
     }
 
     /// 現在必要なジョブ集合で待機キューを置き換える。
@@ -437,15 +492,24 @@ impl<T> DecodeJobQueue<T> {
 
     /// 成功・失敗を問わず実行中管理を解除し、結果を採用してよい場合だけtrueを返す。
     pub fn finish(&self, id: u64) -> bool {
+        self.finish_detail(id) == FinishOutcome::Accepted
+    }
+
+    /// `finish` と同じ処理で、受け取れない理由まで返す。
+    pub fn finish_detail(&self, id: u64) -> FinishOutcome {
         let mut state = self.shared.state.lock().unwrap();
         let Some(job) = state.running.remove(&id) else {
-            return false;
+            return FinishOutcome::Unknown;
         };
-        let accepted = !job.cancelled.load(AtomicOrdering::Acquire)
-            && state.generations.accepts(job.key.generation)
-        ;
+        let outcome = if job.cancelled.load(AtomicOrdering::Acquire) {
+            FinishOutcome::Cancelled
+        } else if !state.generations.accepts(job.key.generation) {
+            FinishOutcome::StaleGeneration
+        } else {
+            FinishOutcome::Accepted
+        };
         self.shared.wake.notify_all();
-        accepted
+        outcome
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -505,6 +569,54 @@ mod tests {
             assert!(queue.finish(job.id));
         }
         pages
+    }
+
+    #[test]
+    fn finish_detail_reports_why_a_result_is_not_accepted() {
+        let queue = DecodeJobQueue::new(1);
+        // 受け取れる
+        assert!(queue.submit(job(1, 5, PagePriorityClass::Visible, 0)));
+        let j = queue.try_take().unwrap();
+        assert_eq!(queue.finish_detail(j.id), FinishOutcome::Accepted);
+        // 実行中に不要になった → 取り消し済み
+        assert!(queue.submit(job(1, 6, PagePriorityClass::Visible, 0)));
+        let j = queue.try_take().unwrap();
+        queue.retain_desired_keys(&HashSet::new());
+        assert_eq!(queue.finish_detail(j.id), FinishOutcome::Cancelled);
+        assert!(!queue.finish(j.id), "二度目は記録なし");
+        assert_eq!(queue.finish_detail(j.id), FinishOutcome::Unknown);
+        // 世代が切り替わった → 取り消し済み（印が先に立つ）
+        assert!(queue.submit(job(1, 7, PagePriorityClass::Visible, 0)));
+        let j = queue.try_take().unwrap();
+        queue.set_generations(2, None);
+        assert_eq!(queue.finish_detail(j.id), FinishOutcome::Cancelled);
+    }
+
+    #[test]
+    fn re_request_over_a_cancelled_running_job_is_detected_as_duplicate_decode() {
+        let queue = DecodeJobQueue::new(1);
+        let desired = job(1, 9, PagePriorityClass::Visible, 0);
+        let key = desired.key.clone();
+        assert!(queue.submit(desired));
+        let running = queue.try_take().unwrap();
+        // 走っている間は、通常どおり「生きている実行中」なので再要求は受け付けない
+        assert!(!queue.submit(job(1, 9, PagePriorityClass::Visible, 0)));
+        {
+            let state = queue.shared.state.lock().unwrap();
+            assert!(!state.has_cancelled_running(&key));
+        }
+        // 不要になって取り消された → まだ走っているが、再要求は通り、重複デコードの状態になる
+        queue.retain_desired_keys(&HashSet::new());
+        {
+            let state = queue.shared.state.lock().unwrap();
+            assert!(state.has_cancelled_running(&key));
+        }
+        assert!(queue.submit(job(1, 9, PagePriorityClass::Ahead, 1)), "再要求は通る（これが重複デコード）");
+        // 古いジョブの結果は捨てられ、新しいジョブは通常どおり進む
+        assert_eq!(queue.finish_detail(running.id), FinishOutcome::Cancelled);
+        let again = queue.try_take().unwrap();
+        assert_eq!(again.key.page_index, 9);
+        assert_eq!(queue.finish_detail(again.id), FinishOutcome::Accepted);
     }
 
     #[test]

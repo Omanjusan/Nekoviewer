@@ -429,7 +429,16 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                     last_resize_info_text(),
                 );
 
-                if worker_queue.finish(job_id) {
+                let finished = worker_queue.finish_detail(job_id);
+                if finished != crate::decode_jobs::FinishOutcome::Accepted {
+                    crate::log_perf!(
+                        "[perf/open] ページ結果破棄 index={} 所要={:.1}ms 理由={}",
+                        req.index,
+                        t_job.elapsed().as_secs_f64() * 1000.0,
+                        finished.describe(),
+                    );
+                }
+                if finished == crate::decode_jobs::FinishOutcome::Accepted {
                     let outcome = match content {
                         Some(content) => DecodeJobOutcome::Ready(content),
                         None => DecodeJobOutcome::Failed,
