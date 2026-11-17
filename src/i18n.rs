@@ -11636,6 +11636,15 @@ pub fn join_bilingual(ja: &str, zh: &str) -> String {
     }
 }
 
+/// 言語 `l` の文言を返す（日中（テスト）の併記はしない。`render` の中で使う）。
+pub fn pick(l: Lang, ja: &'static str, en: &'static str, zh: &'static str) -> &'static str {
+    match l {
+        Lang::Japanese => ja,
+        Lang::English => en,
+        Lang::Chinese => zh,
+    }
+}
+
 /// 3言語の文言から、`d` に合うものを返す（固定文言用）。日中（テスト）は、併記した文字列を1回だけ作って使い回す。
 pub fn tr_for(d: Display, ja: &'static str, en: &'static str, zh: &'static str) -> &'static str {
     match d {

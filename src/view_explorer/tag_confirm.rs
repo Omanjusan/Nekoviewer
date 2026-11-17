@@ -77,8 +77,8 @@ fn draw_link_picker(ui: &mut egui::Ui, id: &str, master: &[TagManagerCategoryUi]
     let mut touched = false;
     let link_cats = ctext::link_categories(master);
     ui.horizontal(|ui| {
-        ui.label(ctext::LINK_PICK_CATEGORY);
-        let current = cat.and_then(|i| link_cats.iter().find(|c| c.0 == i)).map_or_else(|| ctext::MOVE_PICK_PLACEHOLDER.to_string(), |c| c.1.clone());
+        ui.label(ctext::link_pick_category());
+        let current = cat.and_then(|i| link_cats.iter().find(|c| c.0 == i)).map_or_else(|| ctext::move_pick_placeholder().to_string(), |c| c.1.clone());
         egui::ComboBox::from_id_salt((id, "cat")).selected_text(current).show_ui(ui, |ui| {
             for (i, name) in &link_cats {
                 if ui.selectable_label(*cat == Some(*i), name).clicked() {
@@ -94,12 +94,12 @@ fn draw_link_picker(ui: &mut egui::Ui, id: &str, master: &[TagManagerCategoryUi]
     });
     let Some(cat_idx) = *cat else { return touched };
     ui.horizontal(|ui| {
-        ui.label(ctext::LINK_PICK_ELEMENT);
-        ui.add(egui::TextEdit::singleline(filter).desired_width(200.0).hint_text(ctext::LINK_FILTER_HINT));
+        ui.label(ctext::link_pick_element());
+        ui.add(egui::TextEdit::singleline(filter).desired_width(200.0).hint_text(ctext::link_filter_hint()));
     });
     let (elements, total) = ctext::link_elements(master, cat_idx, filter, ctext::LINK_LIST_CAP);
     if elements.is_empty() {
-        ui.weak(ctext::LINK_NO_ELEMENT);
+        ui.weak(ctext::link_no_element());
     } else {
         egui::ScrollArea::vertical().id_salt((id, "elems")).max_height(140.0).auto_shrink([false, true]).show(ui, |ui| {
             for e in &elements {
@@ -114,7 +114,7 @@ fn draw_link_picker(ui: &mut egui::Ui, id: &str, master: &[TagManagerCategoryUi]
         });
     }
     if master.get(cat_idx).is_some_and(|c| c.is_main) {
-        ui.colored_label(egui::Color32::from_rgb(230, 160, 40), ctext::LINK_MAIN_NOTE);
+        ui.colored_label(egui::Color32::from_rgb(230, 160, 40), ctext::link_main_note());
     }
     touched
 }
@@ -128,22 +128,22 @@ fn draw_intro(ui: &mut egui::Ui, st: &mut TagConfirm) {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("ℹ").color(accent).strong());
-            ui.strong(ctext::INTRO_TITLE);
-            if ui.small_button(if st.intro_open { ctext::INTRO_FOLD } else { ctext::INTRO_UNFOLD }).clicked() {
+            ui.strong(ctext::intro_title());
+            if ui.small_button(if st.intro_open { ctext::intro_fold() } else { ctext::intro_unfold() }).clicked() {
                 st.intro_open = !st.intro_open;
             }
-            if ui.small_button(ctext::FAQ_BUTTON).clicked() {
+            if ui.small_button(ctext::faq_button()).clicked() {
                 st.faq_open = true;
             }
         });
         if st.intro_open {
             egui::ScrollArea::vertical().id_salt("tag_confirm_intro").max_height(150.0).auto_shrink([false, true]).show(ui, |ui| {
-                for p in ctext::INTRO_PARAS {
+                for p in ctext::intro_paras() {
                     ui.label(p);
                 }
                 ui.add_space(4.0);
-                ui.strong(ctext::FAILED_TITLE);
-                for p in ctext::FAILED_PARAS {
+                ui.strong(ctext::failed_title());
+                for p in ctext::failed_paras() {
                     ui.label(format!("・{p}"));
                 }
             });
@@ -500,11 +500,16 @@ impl TagConfirm {
 
 /// 種類の帯の文字（「カテゴリ：作者」の形）。
 fn band_title(role: Role) -> String {
-    ctext::band_title(role_label(role), role == Role::Main)
+    ctext::band_title(|l| role_label_for(l, role), role == Role::Main)
 }
 
-fn role_label(role: Role) -> &'static str {
-    let t = i18n::t();
+/// 種類の名前（いまの表示言語。日中（テスト）では併記）。
+fn role_label(role: Role) -> String {
+    i18n::render(|l| role_label_for(l, role))
+}
+
+/// 種類の名前（言語を指定）。
+fn role_label_for(t: Lang, role: Role) -> String {
     match role {
         Role::Format => t.tag_confirm_role_format(),
         Role::Main => t.tag_confirm_role_main(),
@@ -518,6 +523,7 @@ fn role_label(role: Role) -> &'static str {
         Role::Attribute => t.tag_confirm_role_attribute(),
         Role::YearMonth => t.tag_confirm_role_year_month(),
     }
+    .to_string()
 }
 
 impl NekoviewApp {
@@ -572,8 +578,8 @@ impl NekoviewApp {
 
         let center = self.explorer_center(ctx);
         egui::Window::new(match stage {
-            Window::One => t.tag_confirm_title_one(),
-            Window::Two => t.tag_confirm_title_two(),
+            Window::One => i18n::render(|t| t.tag_confirm_title_one().to_string()),
+            Window::Two => i18n::render(|t| t.tag_confirm_title_two().to_string()),
         })
         .id(egui::Id::new("tag_confirm_window"))
         // 右タグパネル（Foreground の Area）より前面に出す。窓の重なり順は Order が先で、同じ Order の中でだけ、触った順になる。
@@ -594,18 +600,18 @@ impl NekoviewApp {
             ui.horizontal_wrapped(|ui| {
                 ui.strong(ctext::filter_heading());
                 for (v, label, n) in [
-                    (ListView::All, ctext::VIEW_ALL, counts.all),
-                    (ListView::NeedsReview, ctext::VIEW_NEEDS_REVIEW, counts.needs_review),
-                    (ListView::Planned, ctext::ADOPT_LABEL, counts.planned),
-                    (ListView::Rejected, ctext::REJECT_LABEL, counts.rejected),
+                    (ListView::All, ctext::view_all(), counts.all),
+                    (ListView::NeedsReview, ctext::view_needs_review(), counts.needs_review),
+                    (ListView::Planned, ctext::adopt_label(), counts.planned),
+                    (ListView::Rejected, ctext::reject_label(), counts.rejected),
                 ] {
                     if ui.add(egui::Button::new(format!("{label} {n}")).selected(st.view == v)).clicked() {
                         st.view = v;
                     }
                 }
                 ui.separator();
-                ui.label(t.tag_confirm_filter_label());
-                ui.add(egui::TextEdit::singleline(&mut st.filter).desired_width(180.0).hint_text(t.tag_confirm_filter_hint()));
+                ui.label(i18n::render(|t| t.tag_confirm_filter_label().to_string()));
+                ui.add(egui::TextEdit::singleline(&mut st.filter).desired_width(180.0).hint_text(i18n::render(|t| t.tag_confirm_filter_hint().to_string())));
                 if !st.filter.is_empty() && ui.small_button("✕").clicked() {
                     st.filter.clear();
                 }
@@ -621,12 +627,12 @@ impl NekoviewApp {
                     let config = egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
                     egui::containers::menu::MenuButton::new(ctext::option_button()).config(config).ui(ui, |ui| {
                         ui.label(egui::RichText::new(ctext::option_density_heading()).strong());
-                        ui.radio_value(&mut st.compact, false, ctext::DENSITY_STANDARD).on_hover_text(ctext::DENSITY_HINT);
-                        ui.radio_value(&mut st.compact, true, ctext::DENSITY_COMPACT).on_hover_text(ctext::DENSITY_HINT);
+                        ui.radio_value(&mut st.compact, false, ctext::density_standard()).on_hover_text(ctext::density_hint());
+                        ui.radio_value(&mut st.compact, true, ctext::density_compact()).on_hover_text(ctext::density_hint());
                         ui.separator();
-                        ui.checkbox(&mut default_review, ctext::DEFAULT_REVIEW_LABEL).on_hover_text(ctext::DEFAULT_REVIEW_HINT);
+                        ui.checkbox(&mut default_review, ctext::default_review_label()).on_hover_text(ctext::default_review_hint());
                         ui.separator();
-                        if ui.button(ctext::SETTINGS_BUTTON).on_hover_text(ctext::SETTINGS_HINT).clicked() {
+                        if ui.button(ctext::settings_button()).on_hover_text(ctext::settings_hint()).clicked() {
                             st.settings_open = true;
                             ui.close();
                         }
@@ -636,19 +642,19 @@ impl NekoviewApp {
             // 2行目: 一括操作（3つを、最初から並べる）。
             ui.horizontal_wrapped(|ui| {
                 ui.strong(ctext::bulk_heading());
-                if ui.button(ctext::BULK_ADOPT_ALL).clicked() {
+                if ui.button(ctext::bulk_adopt_all()).clicked() {
                     for &i in &window_idx {
                         st.set.candidates[i].adopt();
                         confirm_if_flagged(&mut st.confirmed, &st.set.candidates[i]);
                     }
                 }
-                if ui.button(ctext::BULK_REJECT_ALL).clicked() {
+                if ui.button(ctext::bulk_reject_all()).clicked() {
                     for &i in &window_idx {
                         st.set.candidates[i].unadopt();
                         confirm_if_flagged(&mut st.confirmed, &st.set.candidates[i]);
                     }
                 }
-                if ui.button(ctext::BULK_REJECT_UNCONFIRMED).clicked() {
+                if ui.button(ctext::bulk_reject_unconfirmed()).clicked() {
                     for &i in &window_idx {
                         if st.set.candidates[i].unconfirmed {
                             st.set.candidates[i].unadopt();
@@ -683,17 +689,17 @@ impl NekoviewApp {
                                 }),
                                 Row::Cluster { id, size } => band_row(ui, row_h, false, |ui| {
                                     ui.weak(ctext::cluster_header(size));
-                                    if ui.small_button(ctext::CLUSTER_ADOPT_LABEL).clicked() {
+                                    if ui.small_button(ctext::cluster_adopt_label()).clicked() {
                                         for c in st.set.candidates.iter_mut().filter(|c| c.cluster == id && c.role.window() == stage) {
                                             c.adopt();
                                         }
                                     }
-                                    if ui.small_button(ctext::CLUSTER_REJECT_LABEL).clicked() {
+                                    if ui.small_button(ctext::cluster_reject_label()).clicked() {
                                         for c in st.set.candidates.iter_mut().filter(|c| c.cluster == id && c.role.window() == stage) {
                                             c.unadopt();
                                         }
                                     }
-                                    if ui.small_button(ctext::MERGE_LABEL).clicked() {
+                                    if ui.small_button(ctext::merge_label()).clicked() {
                                         row_action = Some(RowAction::MergeCluster(id));
                                     }
                                 }),
@@ -701,7 +707,7 @@ impl NekoviewApp {
                             }
                         }
                         if rows.is_empty() {
-                            ui.weak(if st.view == ListView::NeedsReview && st.filter.is_empty() { ctext::NEEDS_REVIEW_EMPTY } else { t.tag_confirm_empty() });
+                            ui.weak(if st.view == ListView::NeedsReview && st.filter.is_empty() { ctext::needs_review_empty().to_string() } else { i18n::render(|t| t.tag_confirm_empty().to_string()) });
                         }
                     },
                 );
@@ -729,7 +735,7 @@ impl NekoviewApp {
                 // 上限のため切り捨てた分があれば知らせる。
                 if !st.truncated.is_empty() {
                     let rows: Vec<String> = st.truncated.iter().map(|&(r, n)| format!("{} {n}", role_label(r))).collect();
-                    ui.colored_label(egui::Color32::from_rgb(230, 160, 40), t.tag_confirm_truncated(&rows.join(" / ")));
+                    ui.colored_label(egui::Color32::from_rgb(230, 160, 40), i18n::render(|t| t.tag_confirm_truncated(&rows.join(" / ")).to_string()));
                 }
             });
 
@@ -740,11 +746,11 @@ impl NekoviewApp {
             let blocked = !st.limit_keep && !over_limit(&st.set.candidates, st.limit).is_empty();
             let apply_enabled = any_adopted && !blocked && self.spread_db.is_some() && self.tag_apply_job.is_none();
             let apply_hint = if blocked {
-                t.tag_confirm_limit_pending().to_string()
+                i18n::render(|t| t.tag_confirm_limit_pending().to_string()).to_string()
             } else if !any_adopted {
-                t.tag_confirm_apply_none().to_string()
+                i18n::render(|t| t.tag_confirm_apply_none().to_string()).to_string()
             } else {
-                t.tag_confirm_apply_pending().to_string()
+                i18n::render(|t| t.tag_confirm_apply_pending().to_string()).to_string()
             };
             let has_two = st.set.candidates.iter().any(|c| c.role.window() == Window::Two);
             let last_stage = stage == Window::Two || !has_two;
@@ -763,16 +769,16 @@ impl NekoviewApp {
             ui.horizontal(|ui| {
                 // 左: 適用のできる窓では、前回の自動付与分を外して付け直すかを選べる（既定はOFF）。
                 if last_stage {
-                    ui.checkbox(&mut st.reattach, t.tag_confirm_reattach()).on_hover_text(t.tag_confirm_reattach_hover());
+                    ui.checkbox(&mut st.reattach, i18n::render(|t| t.tag_confirm_reattach().to_string())).on_hover_text(i18n::render(|t| t.tag_confirm_reattach_hover().to_string()));
                 }
                 // 右: キャンセルを右端に置き、適用とは間隔を空ける（押し間違い対策）。
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button(t.archive_open_cancel()).clicked() {
+                    if ui.button(i18n::render(|t| t.archive_open_cancel().to_string())).clicked() {
                         st.cancel_confirm = true;
                     }
                     if last_stage {
                         ui.add_space(32.0);
-                        let btn = ui.add_enabled(apply_enabled, egui::Button::new(ctext::FOOTER_APPLY));
+                        let btn = ui.add_enabled(apply_enabled, egui::Button::new(ctext::footer_apply()));
                         let btn = if apply_enabled { btn } else { btn.on_disabled_hover_text(apply_hint) };
                         if btn.clicked() {
                             apply_clicked = true;
@@ -799,17 +805,17 @@ impl NekoviewApp {
             let mut sep_action: Option<SepAction> = None;
             let modal = self.explorer_modal(ctx, "tag_match_settings").show(ctx, |ui| {
                 ui.set_width(520.0);
-                ui.heading(ctext::SETTINGS_TITLE);
-                ui.weak(ctext::SETTINGS_NOTE);
+                ui.heading(ctext::settings_title());
+                ui.weak(ctext::settings_note());
                 ui.add_space(6.0);
-                ui.checkbox(&mut opts.width, t.tag_confirm_opt_width());
-                ui.checkbox(&mut opts.space, t.tag_confirm_opt_space());
-                ui.checkbox(&mut opts.hyphen_underscore, t.tag_confirm_opt_hyphen());
-                ui.checkbox(&mut opts.symbols, t.tag_confirm_opt_symbols());
-                ui.checkbox(&mut opts.romaji, t.tag_confirm_opt_romaji());
+                ui.checkbox(&mut opts.width, i18n::render(|t| t.tag_confirm_opt_width().to_string()));
+                ui.checkbox(&mut opts.space, i18n::render(|t| t.tag_confirm_opt_space().to_string()));
+                ui.checkbox(&mut opts.hyphen_underscore, i18n::render(|t| t.tag_confirm_opt_hyphen().to_string()));
+                ui.checkbox(&mut opts.symbols, i18n::render(|t| t.tag_confirm_opt_symbols().to_string()));
+                ui.checkbox(&mut opts.romaji, i18n::render(|t| t.tag_confirm_opt_romaji().to_string()));
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    ui.label(t.tag_confirm_threshold());
+                    ui.label(i18n::render(|t| t.tag_confirm_threshold().to_string()));
                     let mut shown = st.threshold_draft.unwrap_or(opts.threshold);
                     let resp = ui.add(egui::Slider::new(&mut shown, 50..=100).suffix("%"));
                     if resp.dragged() {
@@ -825,23 +831,23 @@ impl NekoviewApp {
                         ui.add(egui::Spinner::new());
                     }
                 });
-                ui.weak(ctext::THRESHOLD_NOTE);
+                ui.weak(ctext::threshold_note());
                 // 保存したカテゴリ振替ルールの一覧と削除。
                 ui.add_space(8.0);
                 ui.separator();
-                ui.strong(ctext::RULES_SECTION_TITLE);
-                ui.weak(ctext::RULES_SECTION_NOTE);
+                ui.strong(ctext::rules_section_title());
+                ui.weak(ctext::rules_section_note());
                 if self.candidate_rules.is_read_only() {
-                    ui.colored_label(egui::Color32::from_rgb(230, 160, 40), ctext::RULES_READ_ONLY);
+                    ui.colored_label(egui::Color32::from_rgb(230, 160, 40), ctext::rules_read_only());
                 }
                 if self.candidate_rules.moves.is_empty() {
-                    ui.weak(ctext::RULES_EMPTY);
+                    ui.weak(ctext::rules_empty());
                 }
                 egui::ScrollArea::vertical().id_salt("tag_move_rules").max_height(160.0).auto_shrink([false, true]).show(ui, |ui| {
                     for (i, r) in self.candidate_rules.moves.iter().enumerate() {
                         ui.horizontal(|ui| {
                             ui.label(ctext::rule_line(rule_role_name(r.role), &r.name, &r.category));
-                            if ui.small_button(ctext::RULES_DELETE_LABEL).clicked() {
+                            if ui.small_button(ctext::rules_delete_label()).clicked() {
                                 delete_rule = Some(i);
                             }
                         });
@@ -850,27 +856,27 @@ impl NekoviewApp {
                 // 上位名の区切り記号。
                 ui.add_space(8.0);
                 ui.separator();
-                ui.strong(ctext::SEPARATORS_TITLE);
-                ui.weak(ctext::SEPARATORS_NOTE);
+                ui.strong(ctext::separators_title());
+                ui.weak(ctext::separators_note());
                 let seps = self.candidate_rules.effective_separators();
                 if seps.is_empty() {
-                    ui.weak(ctext::SEPARATORS_EMPTY);
+                    ui.weak(ctext::separators_empty());
                 }
                 ui.horizontal_wrapped(|ui| {
                     for (i, sep) in seps.iter().enumerate() {
                         ui.label(egui::RichText::new(sep).strong());
-                        if ui.small_button("×").on_hover_text(ctext::RULES_DELETE_LABEL).clicked() {
+                        if ui.small_button("×").on_hover_text(ctext::rules_delete_label()).clicked() {
                             sep_action = Some(SepAction::Remove(i));
                         }
                         ui.add_space(6.0);
                     }
                 });
                 ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut st.sep_input).desired_width(80.0).hint_text(ctext::SEPARATORS_ADD_HINT));
-                    if ui.button(ctext::SEPARATORS_ADD_LABEL).clicked() {
+                    ui.add(egui::TextEdit::singleline(&mut st.sep_input).desired_width(80.0).hint_text(ctext::separators_add_hint()));
+                    if ui.button(ctext::separators_add_label()).clicked() {
                         sep_action = Some(SepAction::Add);
                     }
-                    if !self.candidate_rules.separators_are_default() && ui.button(ctext::SEPARATORS_RESET_LABEL).clicked() {
+                    if !self.candidate_rules.separators_are_default() && ui.button(ctext::separators_reset_label()).clicked() {
                         sep_action = Some(SepAction::Reset);
                     }
                 });
@@ -878,7 +884,7 @@ impl NekoviewApp {
                     ui.colored_label(egui::Color32::from_rgb(220, 60, 60), err);
                 }
                 ui.add_space(8.0);
-                if ui.button(ctext::CLOSE_LABEL).clicked() {
+                if ui.button(ctext::close_label()).clicked() {
                     close = true;
                 }
             });
@@ -967,8 +973,8 @@ impl NekoviewApp {
                 let mut back = false;
                 let modal = self.explorer_modal(ctx, "tag_rename_review").show(ctx, |ui| {
                     ui.set_width(460.0);
-                    ui.heading(t.tag_rename_review_title());
-                    ui.label(t.tag_rename_review_intro(review.renames.len()));
+                    ui.heading(i18n::render(|t| t.tag_rename_review_title().to_string()));
+                    ui.label(i18n::render(|t| t.tag_rename_review_intro(review.renames.len()).to_string()));
                     ui.add_space(4.0);
                     egui::ScrollArea::vertical().max_height(260.0).auto_shrink([false, true]).show(ui, |ui| {
                         for (old, new) in &review.renames {
@@ -977,14 +983,14 @@ impl NekoviewApp {
                     });
                     if review.conflicts > 0 {
                         ui.add_space(4.0);
-                        ui.colored_label(egui::Color32::from_rgb(230, 160, 40), t.tag_rename_review_conflicts(review.conflicts));
+                        ui.colored_label(egui::Color32::from_rgb(230, 160, 40), i18n::render(|t| t.tag_rename_review_conflicts(review.conflicts).to_string()));
                     }
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if ui.button(t.tag_confirm_back()).clicked() {
+                        if ui.button(i18n::render(|t| t.tag_confirm_back().to_string())).clicked() {
                             back = true;
                         }
-                        if ui.button(t.tag_rename_review_apply()).clicked() {
+                        if ui.button(i18n::render(|t| t.tag_rename_review_apply().to_string())).clicked() {
                             proceed = true;
                         }
                     });
@@ -1000,15 +1006,15 @@ impl NekoviewApp {
                 let pending = pending_review_total(&st.set, &st.confirmed);
                 let modal = self.explorer_modal(ctx, "tag_precheck").show(ctx, |ui| {
                     ui.set_width(460.0);
-                    ui.heading(ctext::PRECHECK_TITLE);
+                    ui.heading(ctext::precheck_title());
                     ui.add_space(4.0);
                     ui.label(ctext::precheck_body(pending));
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if ui.button(ctext::PRECHECK_BACK).clicked() {
+                        if ui.button(ctext::precheck_back()).clicked() {
                             back = true;
                         }
-                        if ui.button(ctext::PRECHECK_GO).clicked() {
+                        if ui.button(ctext::precheck_go()).clicked() {
                             precheck_go = true;
                         }
                     });
@@ -1084,23 +1090,22 @@ impl NekoviewApp {
     /// 上限超過のダイアログ。「拡張する」は上限を増やす（まだ超えていれば次のフレームでまた出る）。
     /// 「上限を維持する」は、該当ファイル数の多い要素から上限まで残して、あとを切り捨てる。
     fn draw_tag_limit_dialog(&mut self, ctx: &egui::Context, st: &mut TagConfirm, over: &[(Role, usize)]) {
-        let t = i18n::t();
-        let rows: Vec<String> = over.iter().map(|&(r, n)| t.tag_limit_row(role_label(r), n, n - st.limit)).collect();
+        let rows: Vec<String> = over.iter().map(|&(r, n)| i18n::render(|t| t.tag_limit_row(&role_label_for(t, r), n, n - st.limit).to_string())).collect();
         let db_size = std::fs::metadata(crate::dev_db_backup::db_path(&self.config.config_root))
             .map(|m| super::db_backup_ui::format_size(m.len()))
             .unwrap_or_else(|_| "-".to_owned());
         let (mut expand, mut keep) = (false, false);
         self.explorer_modal(ctx, "tag_limit_dialog").show(ctx, |ui| {
             ui.set_width(520.0);
-            ui.heading(ctext::LIMIT_TITLE);
+            ui.heading(ctext::limit_title());
             ui.add_space(4.0);
             ui.label(ctext::limit_body(st.limit, &rows.join("\n"), &db_size, LIMIT_EXPAND_STEP));
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.button(format!("{}（おすすめ）", t.tag_limit_expand(LIMIT_EXPAND_STEP))).clicked() {
+                if ui.button(format!("{}{}", i18n::render(|t| t.tag_limit_expand(LIMIT_EXPAND_STEP).to_string()), ctext::recommended_suffix())).clicked() {
                     expand = true;
                 }
-                if ui.button(t.tag_limit_keep()).clicked() {
+                if ui.button(i18n::render(|t| t.tag_limit_keep().to_string())).clicked() {
                     keep = true;
                 }
             });
@@ -1125,12 +1130,12 @@ impl NekoviewApp {
         let (mut ok, mut cancel) = (false, false);
         let modal = self.explorer_modal(ctx, "tag_merge_dialog").show(ctx, |ui| {
             ui.set_width(560.0);
-            ui.heading(ctext::MERGE_TITLE);
+            ui.heading(ctext::merge_title());
             ui.add_space(4.0);
             ui.label(ctext::merge_intro(&md.name));
             ui.add_space(6.0);
             ui.weak(i18n::t().tag_confirm_filter_label());
-            ui.add(egui::TextEdit::singleline(&mut md.filter).desired_width(240.0).hint_text(t.tag_confirm_filter_hint()));
+            ui.add(egui::TextEdit::singleline(&mut md.filter).desired_width(240.0).hint_text(i18n::render(|t| t.tag_confirm_filter_hint().to_string())));
             // 同じ種類の候補。選んだものは、絞り込みに合わなくても残す。
             let idx: Vec<usize> = (0..st.set.candidates.len())
                 .filter(|&i| {
@@ -1158,8 +1163,8 @@ impl NekoviewApp {
             ui.add_space(4.0);
             ui.label(ctext::merge_preview(&names, files.len()));
             ui.add_space(6.0);
-            ui.colored_label(egui::Color32::from_rgb(220, 60, 60), "まとめる前に知っておくこと");
-            for line in ctext::MERGE_CONSEQUENCES {
+            ui.colored_label(egui::Color32::from_rgb(220, 60, 60), ctext::merge_warning_heading());
+            for line in ctext::merge_consequences() {
                 ui.label(format!("・{line}"));
             }
             if let Some(msg) = &md.msg {
@@ -1168,10 +1173,10 @@ impl NekoviewApp {
             }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.button(t.archive_open_cancel()).clicked() {
+                if ui.button(i18n::render(|t| t.archive_open_cancel().to_string())).clicked() {
                     cancel = true;
                 }
-                if ui.add_enabled(chosen.len() >= 2, egui::Button::new(ctext::MERGE_OK_LABEL)).clicked() {
+                if ui.add_enabled(chosen.len() >= 2, egui::Button::new(ctext::merge_ok_label())).clicked() {
                     ok = true;
                 }
             });
@@ -1203,7 +1208,6 @@ impl NekoviewApp {
     /// 移した候補は「新規に登録」になる。「次回以降も」を選ぶと、まとめていない候補の名前をルールとして保存する。
     fn draw_tag_bulk_move_dialog(&mut self, ctx: &egui::Context, st: &mut TagConfirm) {
         let Some(mut bd) = st.bulk_move_dialog.take() else { return };
-        let t = i18n::t();
         let opts = self.config.tag_match;
         let role = bd.role;
         let (mut ok, mut cancel) = (false, false);
@@ -1211,12 +1215,12 @@ impl NekoviewApp {
         let targets: Vec<(usize, String)> = st.set.candidates.iter().find(|c| c.role == role).map(|c| ctext::move_targets(c, &st.master)).unwrap_or_default();
         let modal = self.explorer_modal(ctx, "tag_bulk_move_dialog").show(ctx, |ui| {
             ui.set_width(560.0);
-            ui.heading(ctext::BULK_MOVE_TITLE);
+            ui.heading(ctext::bulk_move_title());
             ui.add_space(4.0);
-            ui.label(ctext::bulk_move_intro(role.new_category_name(Lang::Japanese)));
+            ui.label(ctext::bulk_move_intro(role));
             ui.add_space(6.0);
-            ui.weak(t.tag_confirm_filter_label());
-            ui.add(egui::TextEdit::singleline(&mut bd.filter).desired_width(240.0).hint_text(t.tag_confirm_filter_hint()));
+            ui.weak(i18n::render(|t| t.tag_confirm_filter_label().to_string()));
+            ui.add(egui::TextEdit::singleline(&mut bd.filter).desired_width(240.0).hint_text(i18n::render(|t| t.tag_confirm_filter_hint().to_string())));
             let idx: Vec<usize> = (0..st.set.candidates.len())
                 .filter(|&i| {
                     let c = &st.set.candidates[i];
@@ -1225,12 +1229,12 @@ impl NekoviewApp {
                 .collect();
             // 表示中の候補を、まとめて選ぶ・外す。
             ui.horizontal(|ui| {
-                if ui.small_button("表示中をすべて選ぶ").clicked() {
+                if ui.small_button(ctext::select_shown_label()).clicked() {
                     for &i in &idx {
                         bd.selected.insert(st.set.candidates[i].key.clone());
                     }
                 }
-                if ui.small_button("すべて外す").clicked() {
+                if ui.small_button(ctext::deselect_all_label()).clicked() {
                     bd.selected.clear();
                 }
             });
@@ -1251,19 +1255,19 @@ impl NekoviewApp {
             ui.add_space(6.0);
             // 扱い方: 別のカテゴリの新しい要素として登録する／既存の要素に結びつける（別名を足す）。
             ui.horizontal(|ui| {
-                ui.radio_value(&mut bd.link_on, false, ctext::BULK_MODE_MOVE);
-                ui.radio_value(&mut bd.link_on, true, ctext::BULK_MODE_LINK);
+                ui.radio_value(&mut bd.link_on, false, ctext::bulk_mode_move());
+                ui.radio_value(&mut bd.link_on, true, ctext::bulk_mode_link());
             });
             if bd.link_on {
-                ui.weak(ctext::BULK_LINK_DESC);
+                ui.weak(ctext::bulk_link_desc());
                 draw_link_picker(ui, "tag_bulk_link", &st.master, &mut bd.link_cat, &mut bd.link_tier, &mut bd.link_filter);
-                ui.weak(ctext::LINK_NOTE);
+                ui.weak(ctext::link_note());
             } else if targets.is_empty() {
-                ui.colored_label(egui::Color32::from_rgb(200, 140, 0), ctext::MOVE_NO_TARGET);
+                ui.colored_label(egui::Color32::from_rgb(200, 140, 0), ctext::move_no_target());
             } else {
                 ui.horizontal(|ui| {
-                    ui.label(ctext::MOVE_PICK_LABEL);
-                    let current = bd.target.and_then(|i| targets.iter().find(|t| t.0 == i)).map_or_else(|| ctext::MOVE_PICK_PLACEHOLDER.to_string(), |t| t.1.clone());
+                    ui.label(ctext::move_pick_label());
+                    let current = bd.target.and_then(|i| targets.iter().find(|t| t.0 == i)).map_or_else(|| ctext::move_pick_placeholder().to_string(), |t| t.1.clone());
                     egui::ComboBox::from_id_salt("tag_bulk_move_cat").selected_text(current).show_ui(ui, |ui| {
                         for (i, name) in &targets {
                             if ui.selectable_label(bd.target == Some(*i), name).clicked() {
@@ -1272,7 +1276,7 @@ impl NekoviewApp {
                         }
                     });
                 });
-                ui.checkbox(&mut bd.remember, ctext::REMEMBER_LABEL).on_hover_text(ctext::REMEMBER_HINT);
+                ui.checkbox(&mut bd.remember, ctext::remember_label()).on_hover_text(ctext::remember_hint());
             }
             let chosen: Vec<&Candidate> = st.set.candidates.iter().filter(|c| c.role == role && bd.selected.contains(&c.key)).collect();
             let files: HashSet<usize> = chosen.iter().flat_map(|c| c.files.iter().copied()).collect();
@@ -1288,11 +1292,11 @@ impl NekoviewApp {
             }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.button(t.archive_open_cancel()).clicked() {
+                if ui.button(i18n::render(|t| t.archive_open_cancel().to_string())).clicked() {
                     cancel = true;
                 }
                 let ready = !chosen.is_empty() && if bd.link_on { bd.link_cat.is_some() && bd.link_tier.is_some() } else { bd.target.is_some() };
-                let label = if bd.link_on { ctext::BULK_LINK_OK_LABEL } else { ctext::BULK_MOVE_OK_LABEL };
+                let label = if bd.link_on { ctext::bulk_link_ok_label() } else { ctext::bulk_move_ok_label() };
                 if ui.add_enabled(ready, egui::Button::new(label)).clicked() {
                     ok = true;
                 }
@@ -1346,7 +1350,6 @@ impl NekoviewApp {
     fn draw_tag_resolve_dialog(&mut self, ctx: &egui::Context, st: &mut TagConfirm) {
         let Some(mut rd) = st.resolve_dialog.take() else { return };
         let Some(idx) = st.set.candidates.iter().position(|c| c.role == rd.role && c.key == rd.key) else { return };
-        let t = i18n::t();
         let (heading, note, options, movable, targets, move_desc, previews, can_remember, rule_exists, parent_opts, parent_title) = {
             let c = &st.set.candidates[idx];
             let rule_exists = self.candidate_rules.find_move(c.role.rule_role(), &c.name).is_some();
@@ -1371,7 +1374,7 @@ impl NekoviewApp {
         let modal = self.explorer_modal(ctx, "tag_resolve_dialog").show(ctx, |ui| {
             ui.set_width(620.0);
             ui.heading(heading);
-            ui.weak(ctext::RESOLVE_SUBTITLE);
+            ui.weak(ctext::resolve_subtitle());
             if let Some(n) = note {
                 ui.add_space(4.0);
                 ui.colored_label(amber, n);
@@ -1411,21 +1414,21 @@ impl NekoviewApp {
                                 rd.sel = Choice::New; rd.link_on = false;
                             }
                             // 枠全体にクリックを付けると、内側のプルダウン・チェックのクリックを奪うので、見出しだけを押せるようにする。
-                            if ui.add_enabled(!targets.is_empty(), egui::Label::new(egui::RichText::new(ctext::MOVE_TITLE).strong()).sense(egui::Sense::click())).clicked() {
+                            if ui.add_enabled(!targets.is_empty(), egui::Label::new(egui::RichText::new(ctext::move_title()).strong()).sense(egui::Sense::click())).clicked() {
                                 rd.move_cat = rd.move_cat.or(targets.first().map(|t| t.0));
                                 rd.sel = Choice::New; rd.link_on = false;
                             }
                         });
                         ui.label(egui::RichText::new(&move_desc).weak());
                         if targets.is_empty() {
-                            ui.colored_label(amber, ctext::MOVE_NO_TARGET);
+                            ui.colored_label(amber, ctext::move_no_target());
                         } else {
                             ui.horizontal(|ui| {
-                                ui.label(ctext::MOVE_PICK_LABEL);
+                                ui.label(ctext::move_pick_label());
                                 let current = rd
                                     .move_cat
                                     .and_then(|i| targets.iter().find(|t| t.0 == i))
-                                    .map_or_else(|| ctext::MOVE_PICK_PLACEHOLDER.to_string(), |t| t.1.clone());
+                                    .map_or_else(|| ctext::move_pick_placeholder().to_string(), |t| t.1.clone());
                                 egui::ComboBox::from_id_salt("tag_resolve_move_cat").selected_text(current).show_ui(ui, |ui| {
                                     for (i, name) in &targets {
                                         if ui.selectable_label(rd.move_cat == Some(*i), name).clicked() {
@@ -1440,10 +1443,10 @@ impl NekoviewApp {
                             }
                             // 次回以降も同じ扱いにする（ルールとして保存）。まとめた候補には出さない。
                             if can_remember && rd.move_cat.is_some() {
-                                ui.checkbox(&mut rd.remember, ctext::REMEMBER_LABEL).on_hover_text(ctext::REMEMBER_HINT);
+                                ui.checkbox(&mut rd.remember, ctext::remember_label()).on_hover_text(ctext::remember_hint());
                             }
                             if rule_exists {
-                                ui.weak(ctext::RULE_EXISTS_NOTE);
+                                ui.weak(ctext::rule_exists_note());
                             }
                         }
                     });
@@ -1460,7 +1463,7 @@ impl NekoviewApp {
                                 rd.link_on = true;
                             }
                             // 枠全体にクリックを付けると、内側の部品のクリックを奪うので、見出しだけを押せるようにする。
-                            if ui.add_enabled(!link_cats.is_empty(), egui::Label::new(egui::RichText::new(ctext::LINK_TITLE).strong()).sense(egui::Sense::click())).clicked() {
+                            if ui.add_enabled(!link_cats.is_empty(), egui::Label::new(egui::RichText::new(ctext::link_title()).strong()).sense(egui::Sense::click())).clicked() {
                                 rd.link_on = true;
                             }
                         });
@@ -1471,7 +1474,7 @@ impl NekoviewApp {
                         if let (Some(cat_idx), Some(tier)) = (rd.link_cat, rd.link_tier.filter(|_| rd.link_on)) {
                             ui.label(ctext::link_preview(&st.set.candidates[idx], &st.master, cat_idx, tier));
                         }
-                        ui.weak(ctext::LINK_NOTE);
+                        ui.weak(ctext::link_note());
                     });
                 }
                 // 上位名（COMIC1★15 に対する COMIC1）の扱い。
@@ -1499,12 +1502,12 @@ impl NekoviewApp {
             });
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.button(t.archive_open_cancel()).clicked() {
+                if ui.button(i18n::render(|t| t.archive_open_cancel().to_string())).clicked() {
                     cancel = true;
                 }
                 // 結びつけを選んでいるときは、要素を選ぶまで押せない。
                 let link_ready = !rd.link_on || (rd.link_cat.is_some() && rd.link_tier.is_some());
-                if ui.add_enabled(link_ready, egui::Button::new(ctext::RESOLVE_OK_LABEL)).clicked() {
+                if ui.add_enabled(link_ready, egui::Button::new(ctext::resolve_ok_label())).clicked() {
                     ok = true;
                 }
             });
@@ -1576,10 +1579,10 @@ impl NekoviewApp {
             }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.button(ctext::CLOSE_LABEL).clicked() {
+                if ui.button(ctext::close_label()).clicked() {
                     close = true;
                 }
-                if ui.button(ctext::RESOLVE_BUTTON_LABEL).clicked() {
+                if ui.button(ctext::resolve_button_label()).clicked() {
                     resolve = true;
                 }
             });
@@ -1604,17 +1607,17 @@ impl NekoviewApp {
         let mut close = false;
         let modal = self.explorer_modal(ctx, "tag_faq_dialog").show(ctx, |ui| {
             ui.set_width(560.0);
-            ui.heading(ctext::FAQ_TITLE);
+            ui.heading(ctext::faq_title());
             ui.add_space(4.0);
             egui::ScrollArea::vertical().id_salt("tag_faq_list").max_height(380.0).auto_shrink([false, true]).show(ui, |ui| {
-                for (q, a) in ctext::FAQ_ITEMS {
+                for (q, a) in ctext::faq_items() {
                     egui::CollapsingHeader::new(egui::RichText::new(q).strong()).id_salt(q).show(ui, |ui| {
                         ui.label(a);
                     });
                 }
             });
             ui.add_space(8.0);
-            if ui.button(ctext::CLOSE_LABEL).clicked() {
+            if ui.button(ctext::close_label()).clicked() {
                 close = true;
             }
         });
@@ -1634,15 +1637,15 @@ impl NekoviewApp {
         let mut close = false;
         let modal = self.explorer_modal(ctx, "tag_rule_hits_dialog").show(ctx, |ui| {
             ui.set_width(520.0);
-            ui.heading(ctext::RULE_HITS_TITLE);
+            ui.heading(ctext::rule_hits_title());
             ui.add_space(4.0);
             for line in &hits {
                 ui.label(format!("・{line}"));
             }
             ui.add_space(6.0);
-            ui.weak(ctext::RULE_HITS_NOTE);
+            ui.weak(ctext::rule_hits_note());
             ui.add_space(8.0);
-            if ui.button(ctext::CLOSE_LABEL).clicked() {
+            if ui.button(ctext::close_label()).clicked() {
                 close = true;
             }
         });
@@ -1659,12 +1662,12 @@ fn confirm_if_flagged(confirmed: &mut HashSet<(Role, String)>, c: &Candidate) {
     }
 }
 
-fn merge_error_text(e: &MergeError, t: Lang) -> String {
+fn merge_error_text(e: &MergeError, _t: Lang) -> String {
     match e {
-        MergeError::TooFew => t.tag_confirm_merge_err_too_few().to_string(),
-        MergeError::MixedRoles => t.tag_confirm_merge_err_mixed().to_string(),
-        MergeError::MultipleExisting { first, second } => t.tag_confirm_merge_err_multiple(first, second),
-        MergeError::AliasOverlap { alias, element } => t.tag_confirm_merge_err_overlap(alias, element),
+        MergeError::TooFew => i18n::render(|t| t.tag_confirm_merge_err_too_few().to_string()).to_string(),
+        MergeError::MixedRoles => i18n::render(|t| t.tag_confirm_merge_err_mixed().to_string()).to_string(),
+        MergeError::MultipleExisting { first, second } => i18n::render(|t| t.tag_confirm_merge_err_multiple(first, second).to_string()),
+        MergeError::AliasOverlap { alias, element } => i18n::render(|t| t.tag_confirm_merge_err_overlap(alias, element).to_string()),
     }
 }
 
@@ -1755,9 +1758,9 @@ fn draw_table_header(ui: &mut egui::Ui, total: f32) {
     let put = |x: f32, align: egui::Align2, text: &str| {
         painter.text(egui::pos2(rect.left() + x, y), align, text, font.clone(), color);
     };
-    put(CELL_PAD, egui::Align2::LEFT_CENTER, ctext::COL_TOGGLE);
-    put(cols.x_name() + CELL_PAD, egui::Align2::LEFT_CENTER, ctext::COL_NAME);
-    put(cols.x_state() + CELL_PAD, egui::Align2::LEFT_CENTER, ctext::COL_STATE);
+    put(CELL_PAD, egui::Align2::LEFT_CENTER, ctext::col_toggle());
+    put(cols.x_name() + CELL_PAD, egui::Align2::LEFT_CENTER, ctext::col_name());
+    put(cols.x_state() + CELL_PAD, egui::Align2::LEFT_CENTER, ctext::col_state());
     for x in [cols.x_name(), cols.x_state(), cols.x_ops()] {
         painter.vline(rect.left() + x, rect.y_range(), stroke);
     }
@@ -1780,7 +1783,7 @@ fn append_source(job: &mut egui::text::LayoutJob, ui: &egui::Ui, src: &ctext::So
         _ => {
             job.append(&src.name, 0.0, plain.clone());
             if src.range.is_none() {
-                job.append(ctext::SOURCE_NOT_IN_NAME, 4.0, plain.clone());
+                job.append(ctext::source_not_in_name(), 4.0, plain.clone());
             }
         }
     }
@@ -1802,7 +1805,7 @@ fn show_name_hover(resp: egui::Response, list: &(Vec<String>, usize)) -> egui::R
         return resp;
     }
     resp.on_hover_ui(|ui| {
-        ui.label(egui::RichText::new(ctext::SOURCE_HOVER_HEADING).strong());
+        ui.label(egui::RichText::new(ctext::source_hover_heading()).strong());
         for (n, name) in list.0.iter().enumerate() {
             ui.label(ctext::source_hover_line(n + 1, name));
         }
@@ -1823,7 +1826,7 @@ fn draw_candidate_row(
     inputs: &[CandidateInput],
     action: &mut Option<RowAction>,
     confirmed: &mut HashSet<(Role, String)>,
-    t: Lang,
+    _t: Lang,
     row_no: usize,
     compact: bool,
 ) {
@@ -1860,7 +1863,7 @@ fn draw_candidate_row(
         } else {
             egui::Button::new(label.weak())
         };
-        if ui.add(toggle.min_size(egui::vec2(TOGGLE_COL_W - CELL_PAD * 2.0, 0.0))).on_hover_text(ctext::TOGGLE_HINT).clicked() {
+        if ui.add(toggle.min_size(egui::vec2(TOGGLE_COL_W - CELL_PAD * 2.0, 0.0))).on_hover_text(ctext::toggle_hint()).clicked() {
             if adopted {
                 c.unadopt();
             } else {
@@ -1876,7 +1879,7 @@ fn draw_candidate_row(
     // 名前（まとめた行は先頭の別名）。新規に登録するものは太字。同一の別名・対の表記は、後ろに足す。
     let mut name_full = c.aliases.first().cloned().unwrap_or_else(|| c.name.clone());
     if !c.aliases.is_empty() {
-        name_full.push_str(&format!("（{}: {}）", ctext::MERGED_LABEL, c.aliases.join(" ＝ ")));
+        name_full.push_str(&format!("（{}: {}）", ctext::merged_label(), c.aliases.join(" ＝ ")));
     }
     if !c.alt_forms.is_empty() {
         name_full.push_str(&format!("（{}）", c.alt_forms.join(" / ")));
@@ -1920,7 +1923,7 @@ fn draw_candidate_row(
     in_cell(ui, at(cols.x_state() + CELL_PAD, cols.x_ops() - CELL_PAD, 0.0, line1_h), left, |ui| {
         if let Some(kind) = &reason {
             if is_confirmed {
-                ui.label(egui::RichText::new(ctext::CONFIRMED_LABEL).color(ui.visuals().selection.stroke.color));
+                ui.label(egui::RichText::new(ctext::confirmed_label()).color(ui.visuals().selection.stroke.color));
             } else {
                 let badge = ctext::review_badge(kind);
                 // 理由ボタンを先に確保して、印の文字は残りの幅で切り詰める。
@@ -1931,13 +1934,13 @@ fn draw_candidate_row(
                     ui.set_max_width(badge_w);
                     ui.add(egui::Label::new(egui::RichText::new(&badge).color(amber)).truncate().show_tooltip_when_elided(false)).on_hover_text(&badge);
                 });
-                if ui.small_button(ctext::WHY_BUTTON_LABEL).clicked() {
+                if ui.small_button(ctext::why_button_label()).clicked() {
                     *action = Some(RowAction::OpenWhy(i));
                 }
             }
         }
         if let Some(hint) = &parent_hint {
-            ui.weak(hint).on_hover_text("「変更…」で、上位名も登録するかを選べます");
+            ui.weak(hint).on_hover_text(ctext::parent_hint_hover());
         }
         if compact {
             ui.add(egui::Label::new(conclusion.as_str()).truncate().show_tooltip_when_elided(false)).on_hover_text(&conclusion);
@@ -1947,23 +1950,23 @@ fn draw_candidate_row(
     // 「変更…／解決する…」と「⋯」。
     in_cell(ui, at(cols.x_ops() + CELL_PAD, total - CELL_PAD, 0.0, line1_h), left, |ui| {
         let unresolved = reason.is_some() && !is_confirmed;
-        let label = if unresolved { ctext::RESOLVE_BUTTON_LABEL } else { ctext::CHANGE_BUTTON_LABEL };
+        let label = if unresolved { ctext::resolve_button_label() } else { ctext::change_button_label() };
         let button = if unresolved { egui::Button::new(label).small().fill(ui.visuals().selection.bg_fill) } else { egui::Button::new(label).small() };
         if ui.add(button).clicked() {
             *action = Some(RowAction::OpenResolve(i));
         }
         ui.menu_button("⋯", |ui| {
-            if ui.button(ctext::MERGE_LABEL).clicked() {
+            if ui.button(ctext::merge_label()).clicked() {
                 *action = Some(RowAction::OpenMerge(i));
                 ui.close();
             }
-            if ctext::can_move_category(c) && ui.button(ctext::BULK_MOVE_LABEL).clicked() {
+            if ctext::can_move_category(c) && ui.button(ctext::bulk_move_label()).clicked() {
                 *action = Some(RowAction::OpenBulkMove(i));
                 ui.close();
             }
             if !c.aliases.is_empty() {
                 ui.separator();
-                ui.weak(t.tag_confirm_primary_alias());
+                ui.weak(i18n::render(|t| t.tag_confirm_primary_alias().to_string()));
                 for (pos, a) in c.aliases.iter().enumerate() {
                     if ui.radio(pos == 0, a).clicked() {
                         *action = Some(RowAction::SetPrimary(i, pos));
@@ -1971,7 +1974,7 @@ fn draw_candidate_row(
                     }
                 }
                 ui.separator();
-                if ui.button(ctext::SPLIT_LABEL).clicked() {
+                if ui.button(ctext::split_label()).clicked() {
                     *action = Some(RowAction::Split(i));
                     ui.close();
                 }
@@ -2059,7 +2062,6 @@ impl NekoviewApp {
             }
         };
         let job = self.tag_apply_job.take().expect("job just polled");
-        let t = i18n::t();
         match out {
             Ok(report) => {
                 // 新しいマスターを取り込み、タグの選択肢と表示を作り直す。
@@ -2071,10 +2073,10 @@ impl NekoviewApp {
                 self.save_tag_manager();
                 // 選択中のファイルのタグ表示を読み直させる。
                 self.tag_binding_path = None;
-                self.set_toast(t.tag_apply_done(&report));
+                self.set_toast(i18n::render(|t| t.tag_apply_done(&report).to_string()));
             }
-            Err(ApplyError::BackupFailed) => self.set_toast(t.tag_apply_backup_failed()),
-            Err(ApplyError::RecordFailed) => self.set_toast(t.tag_apply_record_failed()),
+            Err(ApplyError::BackupFailed) => self.set_toast(i18n::render(|t| t.tag_apply_backup_failed().to_string())),
+            Err(ApplyError::RecordFailed) => self.set_toast(i18n::render(|t| t.tag_apply_record_failed().to_string())),
         }
     }
 
