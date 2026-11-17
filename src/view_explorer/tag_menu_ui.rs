@@ -31,19 +31,18 @@ impl NekoviewApp {
         ui.vertical_centered(|ui| {
             // 別窓・処理を起動する項目は、押したら自分で閉じる。
             let config = egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
-            egui::containers::menu::MenuButton::new(i18n::t().tag_panel_manager_button()).config(config).ui(ui, |ui| self.draw_tag_entry_menu_items(ui));
+            egui::containers::menu::MenuButton::new(i18n::render(|t| t.tag_panel_manager_button().to_string())).config(config).ui(ui, |ui| self.draw_tag_entry_menu_items(ui));
         });
     }
 
     fn draw_tag_entry_menu_items(&mut self, ui: &mut egui::Ui) {
-        let t = i18n::t();
         ui.set_min_width(280.0);
         let learned = self.tag_learned.len();
 
         // 1: 現フォルダに対するタグ抽出用学習
         let resp = ui
-            .add(egui::Button::new(t.tag_menu_learn_item()).right_text(egui::RichText::new(t.tag_learn_status(learned)).weak()))
-            .on_hover_text(t.tag_learn_status_hover());
+            .add(egui::Button::new(i18n::render(|t| t.tag_menu_learn_item().to_string())).right_text(egui::RichText::new(i18n::render(|t| t.tag_learn_status(learned).to_string())).weak()))
+            .on_hover_text(i18n::as_ja(|| i18n::render(|t| t.tag_learn_status_hover().to_string())));
         if resp.clicked() {
             self.open_tag_learn_window();
             ui.close();
@@ -51,9 +50,9 @@ impl NekoviewApp {
 
         // 2: 現フォルダファイルのタグ自動抽出＆付与
         let enabled = self.can_start_tag_scan();
-        let resp = ui.add_enabled(enabled, egui::Button::new(t.tag_menu_scan_item()));
-        let hint = if self.tag_trial_active { t.tag_scan_trial_hint() } else { t.tag_scan_unavailable_hint() };
-        let resp = if enabled { resp } else { resp.on_disabled_hover_text(hint) };
+        let resp = ui.add_enabled(enabled, egui::Button::new(i18n::render(|t| t.tag_menu_scan_item().to_string())));
+        let hint = if self.tag_trial_active { i18n::render(|t| t.tag_scan_trial_hint().to_string()) } else { i18n::render(|t| t.tag_scan_unavailable_hint().to_string()) };
+        let resp = if enabled { resp } else { resp.on_disabled_hover_text(i18n::as_ja(|| hint)) };
         if resp.clicked() {
             self.request_tag_scan();
             ui.close();
@@ -61,8 +60,8 @@ impl NekoviewApp {
 
         // 3: タグ抽出ルール（仮の一覧窓）
         let resp = ui
-            .add(egui::Button::new(t.tag_rules_open_button()).right_text(egui::RichText::new(t.tag_rules_count(self.tag_rules.rules.iter().filter(|r| r.enabled).count(), self.tag_rules.rules.len())).weak()))
-            .on_hover_text(t.tag_rules_open_hover());
+            .add(egui::Button::new(i18n::render(|t| t.tag_rules_open_button().to_string())).right_text(egui::RichText::new(i18n::render(|t| t.tag_rules_count(self.tag_rules.rules.iter().filter(|r| r.enabled).count(), self.tag_rules.rules.len()).to_string())).weak()))
+            .on_hover_text(i18n::as_ja(|| i18n::render(|t| t.tag_rules_open_hover().to_string())));
         if resp.clicked() {
             self.tag_rules_open = !self.tag_rules_open;
             ui.close();
@@ -71,7 +70,7 @@ impl NekoviewApp {
         ui.separator();
 
         // 4: タグ・カテゴリ編集（従来のタグ管理画面）
-        if ui.button(t.tag_menu_edit_item()).clicked() {
+        if ui.button(i18n::render(|t| t.tag_menu_edit_item().to_string())).clicked() {
             self.open_tag_manager_overlay();
             ui.close();
         }

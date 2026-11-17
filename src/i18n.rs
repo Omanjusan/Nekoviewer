@@ -5117,14 +5117,6 @@ For files without metadata, setting the main category etc. by hand and training 
         }
     }
 
-    /// タグパネル最上部の一括情報取得ボタン
-    pub fn tag_scan_button(self) -> &'static str {
-        match self {
-            Lang::Japanese => "現フォルダ内タグ情報取得",
-            Lang::English  => "Collect tag info in this folder",
-            Lang::Chinese  => "获取当前文件夹的标签信息",
-        }
-    }
 
     // ── タグ学習（日本語のみ。英・中は未実装＝None/空で、日本語にフォールバックする） ──
     // 日本語の文言がまだ確定していないため、3言語化は文言確定後に行う（英・中の分岐に値を入れるだけで済む形にしてある）。
@@ -5143,110 +5135,83 @@ For files without metadata, setting the main category etc. by hand and training 
         let ja = if n == 0 { "未学習".to_string() } else { format!("学習済 {n}件") };
         let local: Option<String> = match self {
             Lang::Japanese => None,
-            Lang::English => None,
-            Lang::Chinese => None,
+            Lang::English => Some(if n == 0 { "Not learned".to_string() } else { format!("Learned: {n}") }),
+            Lang::Chinese => Some(if n == 0 { "未学习".to_string() } else { format!("已学习 {n}条") }),
         };
         local.unwrap_or(ja)
     }
 
     pub fn tag_learn_status_hover(self) -> &'static str {
-        self.learn_pick("一括取得の判定を、振り分けたファイル名から学習した件数", "", "")
+        self.learn_pick("一括取得の判定を、振り分けたファイル名から学習した件数", "Number of file names you sorted that the bulk scan has learned from", "批量获取的判定所学习的、已归类文件名的数量")
     }
 
-    /// 学習結果を使う/使わないの切替ボタン（`on` は現在の状態）
-    pub fn tag_learn_use_toggle(self, on: bool) -> &'static str {
-        if on {
-            self.learn_pick("● 学習内容を反映する", "● Apply learned data", "● 应用学习内容")
-        } else {
-            self.learn_pick("○ 学習内容を反映しない", "○ Don't apply learned data", "○ 不应用学习内容")
-        }
-    }
 
-    pub fn tag_learn_use_hover(self) -> &'static str {
-        self.learn_pick(
-            "反映する: 学習結果で作者・グループ・イベント・言語を判定する\n反映しない: 従来のルールだけで判定する",
-            "Apply: use the learned data to judge author, group, event and language\nDon't apply: judge with the conventional rules only",
-            "应用：使用学习结果判断作者、社团、活动和语言\n不应用：仅使用原有规则判断",
-        )
-    }
 
-    pub fn tag_learn_use_disabled_hover(self) -> &'static str {
-        self.learn_pick("学習データがありません", "No learned data yet", "尚无学习数据")
-    }
 
     /// 学習窓・ラベル窓（日本語のみ。英・中は空で日本語にフォールバック）
-    pub fn tag_learn_open_button(self) -> &'static str { self.learn_pick("タグ学習…", "", "") }
-    pub fn tag_learn_window_title(self) -> &'static str { self.learn_pick("タグ抽出用データ学習", "", "") }
-    pub fn tag_learn_label_window_title(self) -> &'static str { self.learn_pick("タグ抽出用データ学習 — ラベル付け", "", "") }
-    pub fn tag_learn_use_checkbox(self) -> &'static str { self.learn_pick("学習結果を使う（OFFなら従来のルールだけで判定）", "", "") }
-    pub fn tag_learn_estimate_none(self) -> &'static str { self.learn_pick("目安の一致率: 学習データが10件以上になると表示します", "", "") }
+    pub fn tag_learn_open_button(self) -> &'static str { self.learn_pick("タグ学習…", "Tag learning…", "标签学习…") }
+    pub fn tag_learn_window_title(self) -> &'static str { self.learn_pick("タグ抽出用データ学習", "Learn data for tag extraction", "标签提取用数据学习") }
+    pub fn tag_learn_label_window_title(self) -> &'static str { self.learn_pick("タグ抽出用データ学習 — ラベル付け", "Learn data for tag extraction — labeling", "标签提取用数据学习 — 标注") }
+    pub fn tag_learn_use_checkbox(self) -> &'static str { self.learn_pick("学習結果を使う（OFFなら従来のルールだけで判定）", "Use learned results (when off, only the conventional rules decide)", "使用学习结果（关闭时仅用原有规则判定）") }
+    pub fn tag_learn_estimate_none(self) -> &'static str { self.learn_pick("目安の一致率: 学習データが10件以上になると表示します", "Estimated match rate: shown once there are 10 or more learning items", "参考匹配率：学习数据达到10条以上后显示") }
     pub fn tag_learn_estimate(self, percent: u32) -> String {
         let ja = format!("目安の一致率 約{percent}%（学習データ内の5分割検証。件数が少ないと揺れが大きい）");
-        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => None, Lang::Chinese => None };
+        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => Some(format!("Estimated match rate: about {percent}% (5-fold validation within the learning data; fluctuates a lot when there are few items)")), Lang::Chinese => Some(format!("参考匹配率 约{percent}%（学习数据内的5折验证。条数较少时波动较大）")) };
         local.unwrap_or(ja)
     }
-    pub fn tag_learn_count_heading(self) -> &'static str { self.learn_pick("追加で学習する件数（現在のフォルダから選びます）", "", "") }
+    pub fn tag_learn_count_heading(self) -> &'static str { self.learn_pick("追加で学習する件数（現在のフォルダから選びます）", "Number of additional items to learn (picked from the current folder)", "追加学习的数量（从当前文件夹中选取）") }
     pub fn tag_learn_count_label(self, n: usize) -> &'static str {
         match n {
-            10 => self.learn_pick("10件　手軽だが不安定", "", ""),
-            20 => self.learn_pick("20件　バランス", "", ""),
-            _ => self.learn_pick("30件　手堅い（手間は中程度）", "", ""),
+            10 => self.learn_pick("10件　手軽だが不安定", "10 items – quick but unstable", "10条　简便但不稳定"),
+            20 => self.learn_pick("20件　バランス", "20 items – balanced", "20条　均衡"),
+            _ => self.learn_pick("30件　手堅い（手間は中程度）", "30 items – solid (moderate effort)", "30条　稳妥（工作量适中）"),
         }
     }
     pub fn tag_learn_folder_info(self, available: usize, will_pick: usize) -> String {
         let ja = format!("このフォルダの対象: 括弧のある未学習のファイル {available}件 → {will_pick}件を選びます");
-        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => None, Lang::Chinese => None };
+        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => Some(format!("Targets in this folder: {available} unlearned files with brackets → {will_pick} will be picked")), Lang::Chinese => Some(format!("此文件夹的对象：带括号的未学习文件 {available} 个 → 将选取 {will_pick} 个")) };
         local.unwrap_or(ja)
     }
-    pub fn tag_learn_start_button(self) -> &'static str { self.learn_pick("学習を始める", "", "") }
-    pub fn tag_learn_start_disabled_hover(self) -> &'static str { self.learn_pick("括弧のある未学習のファイルが、現在のフォルダにありません", "", "") }
-    pub fn tag_learn_close_button(self) -> &'static str { self.learn_pick("閉じる", "", "") }
-    pub fn tag_learn_label_help(self) -> &'static str { self.learn_pick("ファイル名の括弧ごとに種別を確認し、違うものだけ直してください。直した行は確認済みになります。", "", "") }
+    pub fn tag_learn_start_button(self) -> &'static str { self.learn_pick("学習を始める", "Start learning", "开始学习") }
+    pub fn tag_learn_start_disabled_hover(self) -> &'static str { self.learn_pick("括弧のある未学習のファイルが、現在のフォルダにありません", "There are no unlearned files with brackets in the current folder", "当前文件夹中没有带括号的未学习文件") }
+    pub fn tag_learn_close_button(self) -> &'static str { self.learn_pick("閉じる", "Close", "关闭") }
+    pub fn tag_learn_label_help(self) -> &'static str { self.learn_pick("ファイル名の括弧ごとに種別を確認し、違うものだけ直してください。直した行は確認済みになります。", "Check the kind of each bracket in the file name and fix only the wrong ones. Rows you fix become confirmed.", "请逐个确认文件名中括号的种类，只修改不对的。修改过的行会变为已确认。") }
     pub fn tag_learn_confirmed_count(self, confirmed: usize, total: usize) -> String {
         let ja = format!("確認済 {confirmed}/{total}");
-        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => None, Lang::Chinese => None };
+        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => Some(format!("Confirmed {confirmed}/{total}")), Lang::Chinese => Some(format!("已确认 {confirmed}/{total}")) };
         local.unwrap_or(ja)
     }
-    pub fn tag_learn_confirm_all(self) -> &'static str { self.learn_pick("すべて確認済にする", "", "") }
-    pub fn tag_learn_commit_button(self) -> &'static str { self.learn_pick("学習する", "", "") }
+    pub fn tag_learn_confirm_all(self) -> &'static str { self.learn_pick("すべて確認済にする", "Mark all as confirmed", "全部标记为已确认") }
+    pub fn tag_learn_commit_button(self) -> &'static str { self.learn_pick("学習する", "Learn", "学习") }
     pub fn tag_learn_commit_hover(self, confirmed: usize, total: usize) -> String {
         let ja = if confirmed < total { format!("確認済の{confirmed}件だけで学習します（未確認の行は学習しません）") } else { "確認済のすべてで学習します".to_string() };
-        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => None, Lang::Chinese => None };
+        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => Some(if confirmed < total { format!("Learns from only the {confirmed} confirmed rows (unconfirmed rows are not learned)") } else { "Learns from all confirmed rows".to_string() }), Lang::Chinese => Some(if confirmed < total { format!("仅使用已确认的 {confirmed} 条进行学习（未确认的行不会被学习）") } else { "使用所有已确认的行进行学习".to_string() }) };
         local.unwrap_or(ja)
     }
-    pub fn tag_learn_commit_disabled_hover(self) -> &'static str { self.learn_pick("確認済の行がありません", "", "") }
-    pub fn tag_learn_cancel_button(self) -> &'static str { self.learn_pick("キャンセル", "", "") }
+    pub fn tag_learn_commit_disabled_hover(self) -> &'static str { self.learn_pick("確認済の行がありません", "No confirmed rows", "没有已确认的行") }
+    pub fn tag_learn_cancel_button(self) -> &'static str { self.learn_pick("キャンセル", "Cancel", "取消") }
     pub fn tag_learn_done_toast(self, n: usize) -> String {
         let ja = format!("{n}件を学習しました");
-        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => None, Lang::Chinese => None };
+        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => Some(format!("Learned {n} items")), Lang::Chinese => Some(format!("已学习 {n} 条")) };
         local.unwrap_or(ja)
     }
-    pub fn tag_learn_save_failed_toast(self) -> &'static str { self.learn_pick("学習データを保存できませんでした", "", "") }
-    /// 確認ウィンドウ: タグ抽出ルールの表示（日本語のみ。英・中は空で日本語にフォールバック）
-    pub fn tag_confirm_rule_hits(self, hits: &str) -> String {
-        let ja = format!("タグ抽出ルール適用: {hits}");
-        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => None, Lang::Chinese => None };
-        local.unwrap_or(ja)
-    }
-    pub fn tag_confirm_review_rule(self, rules: &str) -> String {
-        let ja = format!("要確認: ルール「{rules}」で無効");
-        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => None, Lang::Chinese => None };
-        local.unwrap_or(ja)
-    }
-    pub fn tag_confirm_review_learned(self) -> &'static str { self.learn_pick("要確認: 学習で無視と判定", "", "") }
-    pub fn tag_confirm_role_performer(self) -> &'static str { self.learn_pick("演者", "", "") }
-    pub fn tag_confirm_role_character(self) -> &'static str { self.learn_pick("キャラ", "", "") }
-    pub fn tag_confirm_role_parody(self) -> &'static str { self.learn_pick("パロディ元", "", "") }
-    pub fn tag_confirm_role_attribute(self) -> &'static str { self.learn_pick("属性", "", "") }
-    pub fn tag_confirm_role_year_month(self) -> &'static str { self.learn_pick("年月", "", "") }
+    pub fn tag_learn_save_failed_toast(self) -> &'static str { self.learn_pick("学習データを保存できませんでした", "Could not save the learning data", "无法保存学习数据") }
+
+
+    pub fn tag_confirm_review_learned(self) -> &'static str { self.learn_pick("要確認: 学習で無視と判定", "Needs review: judged to be ignored by learning", "需确认：经学习被判定为忽略") }
+    pub fn tag_confirm_role_performer(self) -> &'static str { self.learn_pick("演者", "Performer", "演员") }
+    pub fn tag_confirm_role_character(self) -> &'static str { self.learn_pick("キャラ", "Character", "角色") }
+    pub fn tag_confirm_role_parody(self) -> &'static str { self.learn_pick("パロディ元", "Parody", "原作") }
+    pub fn tag_confirm_role_attribute(self) -> &'static str { self.learn_pick("属性", "Attribute", "属性") }
+    pub fn tag_confirm_role_year_month(self) -> &'static str { self.learn_pick("年月", "Year-Month", "年月") }
     /// タグ抽出ルールの入口（仮。日本語のみ。英・中は空で日本語にフォールバック）
     /// 「タグ管理」メニューの項目（日本語のみ。英・中は空で日本語にフォールバック）
-    pub fn tag_menu_learn_item(self) -> &'static str { self.learn_pick("現フォルダに対するタグ抽出用学習…", "", "") }
-    pub fn tag_menu_learn_use(self) -> &'static str { self.learn_pick("学習内容を使う", "", "") }
-    pub fn tag_menu_scan_item(self) -> &'static str { self.learn_pick("現フォルダファイルのタグ自動抽出＆付与", "", "") }
-    pub fn tag_menu_edit_item(self) -> &'static str { self.learn_pick("タグ・カテゴリ編集", "", "") }
-    pub fn tag_rules_open_button(self) -> &'static str { self.learn_pick("（上級者向け）タグ抽出ルール定義開始", "", "") }
-    pub fn tag_rules_open_hover(self) -> &'static str { self.learn_pick("タグ取得の前処理（AI generated・cosplay などのタグ抽出ルール）の一覧を開く", "", "") }
+    pub fn tag_menu_learn_item(self) -> &'static str { self.learn_pick("現フォルダに対するタグ抽出用学習…", "Learn for tag extraction in the current folder…", "针对当前文件夹的标签提取学习…") }
+    pub fn tag_menu_learn_use(self) -> &'static str { self.learn_pick("学習内容を使う", "Use learned content", "使用学习内容") }
+    pub fn tag_menu_scan_item(self) -> &'static str { self.learn_pick("現フォルダファイルのタグ自動抽出＆付与", "Auto-extract and apply tags for files in the current folder", "自动提取并添加当前文件夹文件的标签") }
+    pub fn tag_menu_edit_item(self) -> &'static str { self.learn_pick("タグ・カテゴリ編集", "Edit tags and categories", "编辑标签和分类") }
+    pub fn tag_rules_open_button(self) -> &'static str { self.learn_pick("（上級者向け）タグ抽出ルール定義開始", "(Advanced) Define tag extraction rules", "（高级用户）开始定义标签提取规则") }
+    pub fn tag_rules_open_hover(self) -> &'static str { self.learn_pick("タグ取得の前処理（AI generated・cosplay などのタグ抽出ルール）の一覧を開く", "Open the list of preprocessing rules for tag extraction (e.g. AI generated, cosplay)", "打开标签获取预处理（AI generated、cosplay 等标签提取规则）的列表") }
     /// メニューの項目の右に出す、ルールの件数（有効 / 全部）。
     pub fn tag_rules_count(self, enabled: usize, total: usize) -> String {
         match self {
@@ -5275,13 +5240,7 @@ For files without metadata, setting the main category etc. by hand and training 
     pub fn tag_rules_edit_button(self) -> &'static str {
         match self { Lang::Japanese => "編集", Lang::English => "Edit", Lang::Chinese => "编辑" }
     }
-    pub fn tag_rules_edit_pending_hover(self) -> &'static str {
-        match self {
-            Lang::Japanese => "編集画面は準備中です",
-            Lang::English  => "The editor is not available yet",
-            Lang::Chinese  => "编辑界面准备中",
-        }
-    }
+
     pub fn tag_rules_delete_button(self) -> &'static str {
         match self { Lang::Japanese => "削除", Lang::English => "Delete", Lang::Chinese => "删除" }
     }
@@ -5663,7 +5622,7 @@ For files without metadata, setting the main category etc. by hand and training 
         match self {
             Lang::Japanese => "「無効」にした種類の言及は、候補から外れ、「未採用・要確認」で残ります。",
             Lang::English  => "Mentions of a kind set to \"Off\" are dropped from the candidates and kept as \"not adopted / needs review\".",
-            Lang::Chinese  => "设为“停用”的类别，其提及会从候选中移除，并以“未采用・需确认”保留。",
+            Lang::Chinese  => "设为“停用”的类别，其提及会从候选中移除，并以“未采用、需确认”保留。",
         }
     }
     pub fn tag_rules_effect_group_existing(self) -> &'static str {
@@ -5806,51 +5765,51 @@ For files without metadata, setting the main category etc. by hand and training 
             Lang::Chinese  => "此规则已停用，实际获取时不会生效（效果按启用状态显示）",
         }
     }
-    pub fn tag_rules_window_title(self) -> &'static str { self.learn_pick("タグ抽出ルール定義", "", "") }
-    pub fn tag_rules_empty(self) -> &'static str { self.learn_pick("ルールはありません", "", "") }
-    pub fn tag_rules_disabled(self) -> &'static str { self.learn_pick("（無効）", "", "") }
+    pub fn tag_rules_window_title(self) -> &'static str { self.learn_pick("タグ抽出ルール定義", "Tag extraction rules", "标签提取规则定义") }
+    pub fn tag_rules_empty(self) -> &'static str { self.learn_pick("ルールはありません", "No rules", "没有规则") }
+    pub fn tag_rules_disabled(self) -> &'static str { self.learn_pick("（無効）", "(disabled)", "（停用）") }
     pub fn tag_rules_summary(self, conditions: usize, match_all: bool, disable: &str, enable: &str) -> String {
         let mode = if match_all { "すべて" } else { "いずれか" };
         let dash = |s: &str| if s.is_empty() { "なし".to_string() } else { s.to_string() };
         let ja = format!("条件 {conditions}件（{mode}） / 無効: {} / 有効: {}", dash(disable), dash(enable));
-        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => None, Lang::Chinese => None };
+        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => Some({ let m = if match_all { "all" } else { "any" }; let d = |x: &str| if x.is_empty() { "none".to_string() } else { x.to_string() }; format!("Conditions: {conditions} ({m}) / Disable: {} / Enable: {}", d(disable), d(enable)) }), Lang::Chinese => Some({ let m = if match_all { "全部" } else { "任一" }; let d = |x: &str| if x.is_empty() { "无".to_string() } else { x.to_string() }; format!("条件 {conditions} 个（{m}） / 停用：{} / 启用：{}", d(disable), d(enable)) }) };
         local.unwrap_or(ja)
     }
-    pub fn tag_rules_reload_button(self) -> &'static str { self.learn_pick("再読込", "", "") }
-    pub fn tag_rules_reload_hover(self) -> &'static str { self.learn_pick("設定フォルダのルールファイルを読み直す", "", "") }
+    pub fn tag_rules_reload_button(self) -> &'static str { self.learn_pick("再読込", "Reload", "重新加载") }
+    pub fn tag_rules_reload_hover(self) -> &'static str { self.learn_pick("設定フォルダのルールファイルを読み直す", "Reload the rule file from the settings folder", "重新读取设置文件夹中的规则文件") }
     pub fn tag_rules_reloaded(self, n: usize) -> String {
         let ja = format!("タグ抽出ルールを読み込みました（{n}件）");
-        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => None, Lang::Chinese => None };
+        let local: Option<String> = match self { Lang::Japanese => None, Lang::English => Some(format!("Loaded the tag extraction rules ({n})")), Lang::Chinese => Some(format!("已加载标签提取规则（{n}条）")) };
         local.unwrap_or(ja)
     }
-    pub fn tag_rules_reload_failed(self) -> &'static str { self.learn_pick("ルールファイルを読み込めませんでした（形式が壊れているか、新しい版です）", "", "") }
-    pub fn tag_learn_view_button(self) -> &'static str { self.learn_pick("既存の学習データを見る", "", "") }
-    pub fn tag_learn_clear_button(self) -> &'static str { self.learn_pick("既存の学習データを全て消去", "", "") }
-    pub fn tag_learn_clear_confirm(self) -> &'static str { self.learn_pick("学習データをすべて消去します。元に戻せません。", "", "") }
-    pub fn tag_learn_clear_do(self) -> &'static str { self.learn_pick("消去する", "", "") }
-    pub fn tag_learn_clear_cancel(self) -> &'static str { self.learn_pick("やめる", "", "") }
-    pub fn tag_learn_viewer_title(self) -> &'static str { self.learn_pick("学習済みデータ一覧", "", "") }
-    pub fn tag_learn_viewer_empty(self) -> &'static str { self.learn_pick("学習データはありません", "", "") }
-    pub fn tag_learn_viewer_back(self) -> &'static str { self.learn_pick("戻る", "", "") }
-    pub fn tag_learn_viewer_delete(self) -> &'static str { self.learn_pick("削除", "", "") }
-    pub fn tag_learn_viewer_no_labels(self) -> &'static str { self.learn_pick("（ラベルなし＝括弧はすべて無視）", "", "") }
-    pub fn tag_learn_viewer_remove_label_hover(self) -> &'static str { self.learn_pick("このラベルだけ消す", "", "") }
-    pub fn tag_learn_intro_title(self) -> &'static str { self.learn_pick("タグ学習のご案内", "", "") }
-    pub fn tag_learn_intro_body(self) -> &'static str { self.learn_pick("学習データがありません。数十件のファイル名で判定を学習させると、作者・グループ・イベントなどの判定が改善します。", "", "") }
-    pub fn tag_learn_intro_start(self) -> &'static str { self.learn_pick("学習する", "", "") }
-    pub fn tag_learn_intro_skip(self) -> &'static str { self.learn_pick("今回は学習せず取得", "", "") }
-    pub fn tag_learn_intro_hide(self) -> &'static str { self.learn_pick("今後このご案内を表示しない", "", "") }
-    pub fn tag_learn_add_menu(self) -> &'static str { self.learn_pick("タグ学習に追加…", "", "") }
-    pub fn tag_learn_add_menu_disabled(self) -> &'static str { self.learn_pick("括弧のないファイル名は学習できません", "", "") }
+    pub fn tag_rules_reload_failed(self) -> &'static str { self.learn_pick("ルールファイルを読み込めませんでした（形式が壊れているか、新しい版です）", "Could not read the rule file (the format is broken or it is from a newer version)", "无法读取规则文件（格式已损坏，或是较新的版本）") }
+    pub fn tag_learn_view_button(self) -> &'static str { self.learn_pick("既存の学習データを見る", "View existing learning data", "查看已有的学习数据") }
+    pub fn tag_learn_clear_button(self) -> &'static str { self.learn_pick("既存の学習データを全て消去", "Delete all existing learning data", "清除所有已有的学习数据") }
+    pub fn tag_learn_clear_confirm(self) -> &'static str { self.learn_pick("学習データをすべて消去します。元に戻せません。", "All learning data will be deleted. This cannot be undone.", "将清除所有学习数据，且无法恢复。") }
+    pub fn tag_learn_clear_do(self) -> &'static str { self.learn_pick("消去する", "Delete", "清除") }
+    pub fn tag_learn_clear_cancel(self) -> &'static str { self.learn_pick("やめる", "Cancel", "取消") }
+    pub fn tag_learn_viewer_title(self) -> &'static str { self.learn_pick("学習済みデータ一覧", "Learned data list", "已学习数据列表") }
+    pub fn tag_learn_viewer_empty(self) -> &'static str { self.learn_pick("学習データはありません", "No learning data", "没有学习数据") }
+    pub fn tag_learn_viewer_back(self) -> &'static str { self.learn_pick("戻る", "Back", "返回") }
+    pub fn tag_learn_viewer_delete(self) -> &'static str { self.learn_pick("削除", "Delete", "删除") }
+    pub fn tag_learn_viewer_no_labels(self) -> &'static str { self.learn_pick("（ラベルなし＝括弧はすべて無視）", "(no labels = all brackets ignored)", "（无标注＝所有括号均被忽略）") }
+    pub fn tag_learn_viewer_remove_label_hover(self) -> &'static str { self.learn_pick("このラベルだけ消す", "Remove only this label", "仅删除此标注") }
+    pub fn tag_learn_intro_title(self) -> &'static str { self.learn_pick("タグ学習のご案内", "About tag learning", "标签学习说明") }
+    pub fn tag_learn_intro_body(self) -> &'static str { self.learn_pick("学習データがありません。数十件のファイル名で判定を学習させると、作者・グループ・イベントなどの判定が改善します。", "There is no learning data. Teaching the judgment with a few dozen file names improves the detection of authors, groups, events and so on.", "目前没有学习数据。用几十个文件名来学习判定，可以改善对作者、团体、活动等的判定。") }
+    pub fn tag_learn_intro_start(self) -> &'static str { self.learn_pick("学習する", "Learn", "学习") }
+    pub fn tag_learn_intro_skip(self) -> &'static str { self.learn_pick("今回は学習せず取得", "Scan without learning this time", "本次不学习，直接获取") }
+    pub fn tag_learn_intro_hide(self) -> &'static str { self.learn_pick("今後このご案内を表示しない", "Do not show this guide again", "今后不再显示此说明") }
+    pub fn tag_learn_add_menu(self) -> &'static str { self.learn_pick("タグ学習に追加…", "Add to tag learning…", "添加到标签学习…") }
+    pub fn tag_learn_add_menu_disabled(self) -> &'static str { self.learn_pick("括弧のないファイル名は学習できません", "File names without brackets cannot be learned", "不带括号的文件名无法学习") }
     /// ラベルの種別名（ドロップダウンの表示）
     pub fn tag_learn_label_name(self, label: crate::tag_corpus::Label) -> &'static str {
         use crate::tag_corpus::Label;
         match label {
-            Label::Author => self.learn_pick("作者", "", ""),
-            Label::Group => self.learn_pick("グループ", "", ""),
-            Label::Event => self.learn_pick("イベント", "", ""),
-            Label::Language => self.learn_pick("言語", "", ""),
-            Label::Ignore => self.learn_pick("無視", "", ""),
+            Label::Author => self.learn_pick("作者", "Author", "作者"),
+            Label::Group => self.learn_pick("グループ", "Group", "团体"),
+            Label::Event => self.learn_pick("イベント", "Event", "活动"),
+            Label::Language => self.learn_pick("言語", "Language", "语言"),
+            Label::Ignore => self.learn_pick("無視", "Ignore", "忽略"),
         }
     }
 
@@ -6133,61 +6092,12 @@ For files without metadata, setting the main category etc. by hand and training 
         }
     }
 
-    pub fn tag_confirm_adopt_all(self) -> &'static str {
-        match self {
-            Lang::Japanese => "すべて採用",
-            Lang::English  => "Adopt all",
-            Lang::Chinese  => "全部采用",
-        }
-    }
 
-    pub fn tag_confirm_unadopt_all(self) -> &'static str {
-        match self {
-            Lang::Japanese => "すべて不採用",
-            Lang::English  => "Reject all",
-            Lang::Chinese  => "全部不采用",
-        }
-    }
 
-    pub fn tag_confirm_unadopt_unconfirmed(self) -> &'static str {
-        match self {
-            Lang::Japanese => "未確定を不採用",
-            Lang::English  => "Reject unconfirmed",
-            Lang::Chinese  => "未确认全部不采用",
-        }
-    }
 
-    pub fn tag_confirm_only_unconfirmed(self) -> &'static str {
-        match self {
-            Lang::Japanese => "未確定のみ表示",
-            Lang::English  => "Show unconfirmed only",
-            Lang::Chinese  => "仅显示未确认",
-        }
-    }
 
-    pub fn tag_confirm_cluster_adopt(self) -> &'static str {
-        match self {
-            Lang::Japanese => "まとめて採用",
-            Lang::English  => "Adopt group",
-            Lang::Chinese  => "整组采用",
-        }
-    }
 
-    pub fn tag_confirm_cluster_unadopt(self) -> &'static str {
-        match self {
-            Lang::Japanese => "まとめて不採用",
-            Lang::English  => "Reject group",
-            Lang::Chinese  => "整组不采用",
-        }
-    }
 
-    pub fn tag_confirm_unconfirmed(self) -> &'static str {
-        match self {
-            Lang::Japanese => "未確定",
-            Lang::English  => "unconfirmed",
-            Lang::Chinese  => "未确认",
-        }
-    }
 
     pub fn tag_confirm_empty(self) -> &'static str {
         match self {
@@ -6197,13 +6107,6 @@ For files without metadata, setting the main category etc. by hand and training 
         }
     }
 
-    pub fn tag_confirm_next(self) -> &'static str {
-        match self {
-            Lang::Japanese => "次へ",
-            Lang::English  => "Next",
-            Lang::Chinese  => "下一步",
-        }
-    }
 
     pub fn tag_confirm_back(self) -> &'static str {
         match self {
@@ -6213,13 +6116,6 @@ For files without metadata, setting the main category etc. by hand and training 
         }
     }
 
-    pub fn tag_confirm_apply(self) -> &'static str {
-        match self {
-            Lang::Japanese => "適用",
-            Lang::English  => "Apply",
-            Lang::Chinese  => "应用",
-        }
-    }
 
     pub fn tag_confirm_apply_pending(self) -> &'static str {
         match self {
@@ -6285,21 +6181,7 @@ For files without metadata, setting the main category etc. by hand and training 
         }
     }
 
-    pub fn tag_confirm_choice_skip(self) -> &'static str {
-        match self {
-            Lang::Japanese => "付けない",
-            Lang::English  => "Do not tag",
-            Lang::Chinese  => "不添加",
-        }
-    }
 
-    pub fn tag_confirm_summary(self, adopted: usize, new_elements: usize) -> String {
-        match self {
-            Lang::Japanese => format!("採用 {adopted}件 / 新規要素 {new_elements}個"),
-            Lang::English  => format!("Adopted {adopted} / new elements {new_elements}"),
-            Lang::Chinese  => format!("采用 {adopted} 个 / 新元素 {new_elements} 个"),
-        }
-    }
 
     /// 「DB」タブ: 一括タグ取得の、カテゴリごとの新規要素数の上限
     pub fn settings_tag_new_limit_label(self) -> &'static str {
@@ -6367,29 +6249,7 @@ For files without metadata, setting the main category etc. by hand and training 
         }
     }
 
-    /// 上限超過ダイアログ: タイトル
-    pub fn tag_limit_title(self) -> &'static str {
-        match self {
-            Lang::Japanese => "新規要素が上限を超えています",
-            Lang::English  => "New elements exceed the limit",
-            Lang::Chinese  => "新元素超过上限",
-        }
-    }
 
-    /// 上限超過ダイアログ: 本文。`rows` は「カテゴリ名: 新規N個」を並べたもの、`db_size` は現在のDBサイズの表記。
-    pub fn tag_limit_body(self, limit: usize, rows: &str, db_size: &str, step: usize) -> String {
-        match self {
-            Lang::Japanese => format!(
-                "カテゴリごとの新規要素の上限（{limit}個）を超えています。\n\n{rows}\n\n現在のデータベースのサイズ: {db_size}\n\n【{step}個拡張する】上限を{step}個増やします。登録する要素が増えるぶん、データベースも大きくなります。\n【上限を維持する】該当ファイル数の多い要素から{limit}個まで登録します。残りは新規登録されず、その要素が付くはずだったファイルにはタグが付きません。"
-            ),
-            Lang::English => format!(
-                "New elements exceed the per-category limit ({limit}).\n\n{rows}\n\nCurrent database size: {db_size}\n\n[Expand by {step}] raises the limit by {step}. More elements are registered and the database grows.\n[Keep the limit] registers up to {limit} elements, starting with those used by the most files. The rest are not registered, and files that would have received them get no tag."
-            ),
-            Lang::Chinese => format!(
-                "新元素超过了每个分类的上限（{limit} 个）。\n\n{rows}\n\n当前数据库大小：{db_size}\n\n【扩展{step}个】将上限提高{step}个。注册的元素增多，数据库也会变大。\n【保持上限】从关联文件数最多的元素开始，最多注册{limit}个。其余不会新建，本应附带这些元素的文件将不会获得标签。"
-            ),
-        }
-    }
 
     /// 上限超過ダイアログ: 1カテゴリぶんの行
     pub fn tag_limit_row(self, category: &str, new_count: usize, over: usize) -> String {
@@ -6433,53 +6293,11 @@ For files without metadata, setting the main category etc. by hand and training 
         }
     }
 
-    pub fn tag_confirm_cluster_header(self, size: usize) -> String {
-        match self {
-            Lang::Japanese => format!("類似品 {size}件"),
-            Lang::English  => format!("Similar items ({size})"),
-            Lang::Chinese  => format!("相似项 {size} 个"),
-        }
-    }
 
-    pub fn tag_confirm_file_count(self, n: usize) -> String {
-        match self {
-            Lang::Japanese => format!("{n}件"),
-            Lang::English  => format!("{n} file(s)"),
-            Lang::Chinese  => format!("{n} 个文件"),
-        }
-    }
 
-    pub fn tag_confirm_existing(self, name: &str) -> String {
-        match self {
-            Lang::Japanese => format!("→ 既存: {name}"),
-            Lang::English  => format!("→ existing: {name}"),
-            Lang::Chinese  => format!("→ 已有：{name}"),
-        }
-    }
 
-    pub fn tag_confirm_new_category(self, category: &str) -> String {
-        match self {
-            Lang::Japanese => format!("→ 新規（カテゴリ「{category}」を作成）"),
-            Lang::English  => format!("→ new (creates category \"{category}\")"),
-            Lang::Chinese  => format!("→ 新建（创建类别“{category}”）"),
-        }
-    }
 
-    pub fn tag_confirm_choice_new(self, name: &str) -> String {
-        match self {
-            Lang::Japanese => format!("新規作成: {name}"),
-            Lang::English  => format!("Create new: {name}"),
-            Lang::Chinese  => format!("新建：{name}"),
-        }
-    }
 
-    pub fn tag_confirm_choice_alias(self, element: &str, name: &str) -> String {
-        match self {
-            Lang::Japanese => format!("別名に追加: {element} ← {name}"),
-            Lang::English  => format!("Add as alias: {element} ← {name}"),
-            Lang::Chinese  => format!("添加为别名：{element} ← {name}"),
-        }
-    }
 
     pub fn tag_confirm_filter_label(self) -> &'static str {
         match self {
@@ -6497,61 +6315,12 @@ For files without metadata, setting the main category etc. by hand and training 
         }
     }
 
-    pub fn tag_confirm_merge_button(self, n: usize) -> String {
-        match self {
-            Lang::Japanese => format!("まとめる（{n}件）を確定"),
-            Lang::English  => format!("Merge {n} selected"),
-            Lang::Chinese  => format!("合并所选（{n}项）"),
-        }
-    }
 
-    pub fn tag_confirm_merge_hover(self) -> &'static str {
-        match self {
-            Lang::Japanese => "「まとめる」にチェックした同じ種類の行を、別名つきの1要素にまとめる",
-            Lang::English  => "Merge the checked rows of the same kind into one element with aliases",
-            Lang::Chinese  => "将勾选的同类行合并为一个带别名的元素",
-        }
-    }
 
-    pub fn tag_confirm_merge_clear(self) -> &'static str {
-        match self {
-            Lang::Japanese => "チェックを外す",
-            Lang::English  => "Clear checks",
-            Lang::Chinese  => "清除勾选",
-        }
-    }
 
-    pub fn tag_confirm_merge_check_hover(self) -> &'static str {
-        match self {
-            Lang::Japanese => "まとめる対象にする",
-            Lang::English  => "Select for merging",
-            Lang::Chinese  => "选为合并对象",
-        }
-    }
 
-    pub fn tag_confirm_cluster_merge(self) -> &'static str {
-        match self {
-            Lang::Japanese => "束をまとめる",
-            Lang::English  => "Merge group",
-            Lang::Chinese  => "合并整组",
-        }
-    }
 
-    pub fn tag_confirm_merged_hover(self, n: usize) -> String {
-        match self {
-            Lang::Japanese => format!("別名{n}個をまとめた1要素"),
-            Lang::English  => format!("One element with {n} aliases"),
-            Lang::Chinese  => format!("含 {n} 个别名的单个元素"),
-        }
-    }
 
-    pub fn tag_confirm_merged_menu(self) -> &'static str {
-        match self {
-            Lang::Japanese => "別名…",
-            Lang::English  => "Aliases…",
-            Lang::Chinese  => "别名…",
-        }
-    }
 
     pub fn tag_confirm_primary_alias(self) -> &'static str {
         match self {
@@ -6561,13 +6330,6 @@ For files without metadata, setting the main category etc. by hand and training 
         }
     }
 
-    pub fn tag_confirm_split(self) -> &'static str {
-        match self {
-            Lang::Japanese => "まとめを分解",
-            Lang::English  => "Split apart",
-            Lang::Chinese  => "拆分",
-        }
-    }
 
     pub fn tag_confirm_merge_err_too_few(self) -> &'static str {
         match self {
@@ -11594,21 +11356,26 @@ pub fn t() -> Lang {
 }
 
 thread_local! {
-    /// `as_ja` の中だけ true。
-    static FORCE_JA: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// `with_display` の中だけ Some。このスレッドにしか効かない。
+    static FORCE: std::cell::Cell<Option<Display>> = const { std::cell::Cell::new(None) };
+}
+
+/// `f` の中で作る文言を、いまの表示にかかわらず `d` にする（テストや、日中（テスト）のホバー用）。
+pub fn with_display<R>(d: Display, f: impl FnOnce() -> R) -> R {
+    let before = FORCE.with(|c| c.replace(Some(d)));
+    let r = f();
+    FORCE.with(|c| c.set(before));
+    r
 }
 
 /// `f` の中で作る文言を、いまの表示にかかわらず日本語にする（日中（テスト）のホバー用）。
 pub fn as_ja<R>(f: impl FnOnce() -> R) -> R {
-    let before = FORCE_JA.with(|c| c.replace(true));
-    let r = f();
-    FORCE_JA.with(|c| c.set(before));
-    r
+    with_display(Display::Ja, f)
 }
 
 pub fn display() -> Display {
-    if FORCE_JA.with(|c| c.get()) {
-        return Display::Ja;
+    if let Some(d) = FORCE.with(|c| c.get()) {
+        return d;
     }
     if BILINGUAL.load(Ordering::Relaxed) {
         return Display::JaZh;
@@ -11694,7 +11461,7 @@ mod display_tests {
         assert_eq!(inside, Display::Ja);
         let nested = as_ja(|| as_ja(|| display()));
         assert_eq!(nested, Display::Ja);
-        FORCE_JA.with(|c| assert!(!c.get()));
+        FORCE.with(|c| assert!(c.get().is_none()));
     }
 
     #[test]

@@ -280,20 +280,19 @@ impl NekoviewApp {
         if result.dir != self.current_dir {
             return;
         }
-        let t = i18n::t();
         if result.cancelled {
-            self.set_toast(t.tag_scan_cancelled(result.items.len(), result.total));
+            self.set_toast(i18n::render(|t| t.tag_scan_cancelled(result.items.len(), result.total).to_string()));
         } else {
             // 上限（カテゴリごとの新規要素数）を超えていても、結果は捨てない。確認ウィンドウの上で、拡張するか維持（切り捨て）かを選ぶ。
             let (found, absent, other) = result.info_counts();
-            let mut text = t.tag_scan_done(result.items.len(), found, absent, other);
+            let mut text = i18n::render(|t| t.tag_scan_done(result.items.len(), found, absent, other).to_string());
             if let Some(set) = &result.candidates {
                 let c = |r: Role| set.count_by_role(r);
                 text.push('\n');
-                text.push_str(&t.tag_candidates_summary(
+                text.push_str(&i18n::render(|t| t.tag_candidates_summary(
                     [c(Role::Format), c(Role::Main), c(Role::Language), c(Role::Event), c(Role::Author), c(Role::Group)],
                     (set.limits.window1_new, set.limits.window2_new),
-                ));
+                ).to_string()));
             }
             self.set_toast(text);
             // 候補があれば、確認ウィンドウ（1枚目）を開く。
@@ -350,10 +349,10 @@ impl NekoviewApp {
                 ui.add(
                     egui::ProgressBar::new(fraction)
                         .desired_width(280.0)
-                        .text(i18n::t().tag_scan_progress(done, total)),
+                        .text(i18n::render(|t| t.tag_scan_progress(done, total).to_string())),
                 );
                 ui.add_space(12.0);
-                if ui.button(i18n::t().archive_open_cancel()).clicked() {
+                if ui.button(i18n::render(|t| t.archive_open_cancel().to_string())).clicked() {
                     cancel_clicked = true;
                 }
             });

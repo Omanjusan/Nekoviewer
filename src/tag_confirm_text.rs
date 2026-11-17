@@ -182,7 +182,7 @@ pub(crate) fn col_name() -> &'static str {
 }
 /// 要確認の印と、何をどこにどうするかの結論文が入る列の見出し。
 pub(crate) fn col_state() -> &'static str {
-    i18n::tr("内容・要確認", "Details / needs review", "内容・需确认")
+    i18n::tr("内容・要確認", "Details / needs review", "内容 / 需确认")
 }
 
 /// 種類の帯（行をまたいで中央に出す見出し）の前置き。
@@ -321,7 +321,7 @@ pub(crate) fn footer_next_label() -> String {
     i18n::render(|l| match l {
         Lang::Japanese => "次へ：2/2 作者・グループの解決ページへ進む".to_string(),
         Lang::English => "Next: go to 2/2 – authors and groups".to_string(),
-        Lang::Chinese => "下一步：前往 2/2 作者・团体 的确认页".to_string(),
+        Lang::Chinese => "下一步：前往 2/2 作者、团体 的确认页".to_string(),
     })
 }
 
@@ -330,7 +330,7 @@ pub(crate) fn footer_back_label() -> String {
     i18n::render(|l| match l {
         Lang::Japanese => "戻る：1/2 形式・カテゴリ・言語・イベントの解決ページへ戻る".to_string(),
         Lang::English => "Back: return to 1/2 – format, category, language, event".to_string(),
-        Lang::Chinese => "返回：回到 1/2 格式・分类・语言・活动 的确认页".to_string(),
+        Lang::Chinese => "返回：回到 1/2 格式、分类、语言、活动 的确认页".to_string(),
     })
 }
 
@@ -1950,5 +1950,188 @@ mod tests {
         let similar = review_long(&cases[1].0, &cases[1].1, &m);
         assert!(similar[0].1.contains("『Kouji』と名前がよく似ています（92%）"));
         assert!(similar[1].1.contains("「タグ不採用」（ファイルにタグ付けしない）"));
+    }
+}
+
+#[cfg(test)]
+mod i18n_coverage {
+    use super::*;
+    use crate::i18n::{with_display, Display};
+
+    fn has_kana(s: &str) -> bool {
+        s.chars().any(|c| ('\u{3040}'..='\u{30ff}').contains(&c))
+    }
+
+    /// 引数なしの文言は、3言語で空でなく、英語・中国語に仮名が混ざらず、日本語と別の文になっている。
+    #[test]
+    fn plain_texts_are_translated_in_all_three_languages() {
+        let all: Vec<(&str, fn() -> &'static str)> = vec![
+        ("adopt_label", adopt_label),
+        ("reject_label", reject_label),
+        ("resolve_subtitle", resolve_subtitle),
+        ("merge_label", merge_label),
+        ("split_label", split_label),
+        ("merge_title", merge_title),
+        ("merge_ok_label", merge_ok_label),
+        ("merged_label", merged_label),
+        ("cluster_adopt_label", cluster_adopt_label),
+        ("cluster_reject_label", cluster_reject_label),
+        ("toggle_hint", toggle_hint),
+        ("col_toggle", col_toggle),
+        ("col_name", col_name),
+        ("col_state", col_state),
+        ("density_standard", density_standard),
+        ("density_compact", density_compact),
+        ("density_hint", density_hint),
+        ("intro_title", intro_title),
+        ("intro_fold", intro_fold),
+        ("intro_unfold", intro_unfold),
+        ("failed_title", failed_title),
+        ("faq_button", faq_button),
+        ("faq_title", faq_title),
+        ("cancel_confirm_title", cancel_confirm_title),
+        ("cancel_confirm_body", cancel_confirm_body),
+        ("cancel_confirm_continue", cancel_confirm_continue),
+        ("cancel_confirm_go", cancel_confirm_go),
+        ("footer_apply", footer_apply),
+        ("precheck_title", precheck_title),
+        ("precheck_back", precheck_back),
+        ("precheck_go", precheck_go),
+        ("limit_title", limit_title),
+        ("source_not_in_name", source_not_in_name),
+        ("source_hover_heading", source_hover_heading),
+        ("resolve_button_label", resolve_button_label),
+        ("change_button_label", change_button_label),
+        ("why_button_label", why_button_label),
+        ("confirmed_label", confirmed_label),
+        ("resolve_ok_label", resolve_ok_label),
+        ("close_label", close_label),
+        ("view_all", view_all),
+        ("view_needs_review", view_needs_review),
+        ("default_review_label", default_review_label),
+        ("default_review_hint", default_review_hint),
+        ("needs_review_empty", needs_review_empty),
+        ("recommended_suffix", recommended_suffix),
+        ("merge_warning_heading", merge_warning_heading),
+        ("select_shown_label", select_shown_label),
+        ("deselect_all_label", deselect_all_label),
+        ("parent_hint_hover", parent_hint_hover),
+        ("filter_heading", filter_heading),
+        ("bulk_heading", bulk_heading),
+        ("option_button", option_button),
+        ("option_density_heading", option_density_heading),
+        ("bulk_adopt_all", bulk_adopt_all),
+        ("bulk_reject_all", bulk_reject_all),
+        ("bulk_reject_unconfirmed", bulk_reject_unconfirmed),
+        ("settings_button", settings_button),
+        ("settings_hint", settings_hint),
+        ("settings_title", settings_title),
+        ("settings_note", settings_note),
+        ("threshold_note", threshold_note),
+        ("rule_hits_title", rule_hits_title),
+        ("rule_hits_note", rule_hits_note),
+        ("separators_title", separators_title),
+        ("separators_note", separators_note),
+        ("separators_add_label", separators_add_label),
+        ("separators_add_hint", separators_add_hint),
+        ("separators_reset_label", separators_reset_label),
+        ("separators_empty", separators_empty),
+        ("remember_label", remember_label),
+        ("remember_hint", remember_hint),
+        ("rule_exists_note", rule_exists_note),
+        ("rules_section_title", rules_section_title),
+        ("rules_section_note", rules_section_note),
+        ("rules_empty", rules_empty),
+        ("rules_delete_label", rules_delete_label),
+        ("rules_read_only", rules_read_only),
+        ("move_title", move_title),
+        ("move_pick_label", move_pick_label),
+        ("move_pick_placeholder", move_pick_placeholder),
+        ("move_no_target", move_no_target),
+        ("bulk_move_label", bulk_move_label),
+        ("bulk_move_title", bulk_move_title),
+        ("bulk_move_ok_label", bulk_move_ok_label),
+        ("link_title", link_title),
+        ("link_pick_category", link_pick_category),
+        ("link_pick_element", link_pick_element),
+        ("link_filter_hint", link_filter_hint),
+        ("link_no_element", link_no_element),
+        ("link_note", link_note),
+        ("link_main_note", link_main_note),
+        ("bulk_mode_move", bulk_mode_move),
+        ("bulk_mode_link", bulk_mode_link),
+        ("bulk_link_desc", bulk_link_desc),
+        ("bulk_link_ok_label", bulk_link_ok_label),
+        ];
+        // 3言語で同じになってよいもの（記号だけ・固有名のみ）。
+        let same_ok = ["source_separator", "separators_add_hint"];
+        for (name, f) in all {
+            let ja = with_display(Display::Ja, f);
+            let en = with_display(Display::En, f);
+            let zh = with_display(Display::Zh, f);
+            assert!(!ja.is_empty() && !en.is_empty() && !zh.is_empty(), "{name}: 空の文言がある");
+            assert!(!has_kana(en), "{name}: 英語に仮名が混ざっている: {en}");
+            assert!(!has_kana(zh), "{name}: 中国語に仮名が混ざっている: {zh}");
+            if !same_ok.contains(&name) {
+                assert_ne!(ja, en, "{name}: 英語が日本語と同じ");
+                assert_ne!(ja, zh, "{name}: 中国語が日本語と同じ");
+            }
+        }
+    }
+
+    #[test]
+    fn text_lists_are_translated_in_all_three_languages() {
+        for d in [Display::En, Display::Zh] {
+            with_display(d, || {
+                for p in intro_paras().iter().chain(failed_paras().iter()).chain(merge_consequences().iter()) {
+                    assert!(!has_kana(p), "仮名が混ざっている: {p}");
+                }
+                for (q, a) in faq_items() {
+                    assert!(!has_kana(q) && !has_kana(a), "よくある質問に仮名が混ざっている: {q}");
+                }
+            });
+        }
+    }
+
+    /// 数や名前を埋め込む文言も、英語・中国語に仮名が混ざらない（名前の引数は、仮名を含まないものを渡す）。
+    #[test]
+    fn formatted_texts_have_no_kana_in_en_and_zh() {
+        for d in [Display::En, Display::Zh] {
+            with_display(d, || {
+                let outs = vec![
+                    file_count(3),
+                    file_count_short(3),
+                    cluster_header(4),
+                    source_others(5),
+                    why_title("X"),
+                    summary(1, 2, 3),
+                    rule_hits_button(2),
+                    rule_hit_line("r", 4),
+                    precheck_body(3),
+                    limit_body(10, "rows", "5 MB", 100),
+                    merge_intro("X"),
+                    merge_preview(&["a", "b"], 3),
+                    merge_preview(&["a"], 3),
+                    parent_heading("P"),
+                    missing_rules_notice(&["a".to_string()]),
+                    bulk_move_intro(Role::Event),
+                    bulk_move_preview(0, 0, None),
+                    bulk_move_preview(2, 5, None),
+                    bulk_move_preview(2, 5, Some("Cat")),
+                    bulk_link_preview(0, 0, None, &[]),
+                    bulk_link_preview(2, 5, None, &[]),
+                    link_more(3),
+                    footer_next_label(),
+                    footer_back_label(),
+                    band_title(|_| "X".to_string(), true),
+                    band_title(|_| "X".to_string(), false),
+                    toggle_label(true),
+                    toggle_label(false),
+                ];
+                for o in outs {
+                    assert!(!has_kana(&o), "{d:?}: 仮名が混ざっている: {o}");
+                }
+            });
+        }
     }
 }

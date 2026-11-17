@@ -77,11 +77,10 @@ impl NekoviewApp {
 
     /// ファイルの右クリックメニュー: 「タグ学習に追加…」。このファイル1件のラベル窓を開く。
     pub(super) fn draw_tag_learn_menu_item(&mut self, ui: &mut egui::Ui, hover: &std::path::Path) {
-        let t = i18n::t();
         let Some(name) = hover.file_name().and_then(|n| n.to_str()).map(str::to_string) else { return };
         let learnable = !tokenize(&name).is_empty();
-        let resp = ui.add_enabled(learnable, egui::Button::new(t.tag_learn_add_menu()));
-        let resp = if learnable { resp } else { resp.on_disabled_hover_text(t.tag_learn_add_menu_disabled()) };
+        let resp = ui.add_enabled(learnable, egui::Button::new(i18n::render(|t| t.tag_learn_add_menu().to_string())));
+        let resp = if learnable { resp } else { resp.on_disabled_hover_text(i18n::as_ja(|| i18n::render(|t| t.tag_learn_add_menu_disabled().to_string()))) };
         if resp.clicked() {
             if let Some(st) = TagLearn::single(self, &name) {
                 self.tag_learn = Some(st);
@@ -93,7 +92,6 @@ impl NekoviewApp {
     /// タグ学習窓（案内・ハブ・ラベル窓・学習データ閲覧窓）。
     pub(super) fn draw_tag_learn(&mut self, ctx: &egui::Context) {
         let Some(mut st) = self.tag_learn.take() else { return };
-        let t = i18n::t();
         // フォルダが変わったら、元のファイル名を取り直す（ハブのときだけ）。
         if st.dir != self.current_dir && matches!(st.stage, LearnStage::Hub | LearnStage::Intro) {
             st.refresh(self);
@@ -120,10 +118,10 @@ impl NekoviewApp {
         let mut use_learning = self.config.tag_learning_use;
         let mut hide_intro = self.config.tag_learn_intro_hidden;
         let title = match st.stage {
-            LearnStage::Intro => t.tag_learn_intro_title(),
-            LearnStage::Hub => t.tag_learn_window_title(),
-            LearnStage::Labeling(_) => t.tag_learn_label_window_title(),
-            LearnStage::Viewer => t.tag_learn_viewer_title(),
+            LearnStage::Intro => i18n::render(|t| t.tag_learn_intro_title().to_string()),
+            LearnStage::Hub => i18n::render(|t| t.tag_learn_window_title().to_string()),
+            LearnStage::Labeling(_) => i18n::render(|t| t.tag_learn_label_window_title().to_string()),
+            LearnStage::Viewer => i18n::render(|t| t.tag_learn_viewer_title().to_string()),
         };
         let resizable = matches!(st.stage, LearnStage::Labeling(_) | LearnStage::Viewer);
         let center = self.explorer_center(ctx);
@@ -137,62 +135,62 @@ impl NekoviewApp {
             .fixed_pos(center)
             .show(ctx, |ui| match &mut st.stage {
                 LearnStage::Intro => {
-                    ui.label(t.tag_learn_intro_body());
+                    ui.label(i18n::render(|t| t.tag_learn_intro_body().to_string()));
                     ui.add_space(4.0);
-                    ui.label(t.tag_learn_count_heading());
+                    ui.label(i18n::render(|t| t.tag_learn_count_heading().to_string()));
                     for n in [10usize, 20, 30] {
-                        ui.radio_value(&mut st.sample_count, n, t.tag_learn_count_label(n));
+                        ui.radio_value(&mut st.sample_count, n, i18n::render(|t| t.tag_learn_count_label(n).to_string()));
                     }
-                    ui.weak(t.tag_learn_folder_info(st.available, st.sample_count.min(st.available)));
+                    ui.weak(i18n::render(|t| t.tag_learn_folder_info(st.available, st.sample_count.min(st.available)).to_string()));
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        let resp = ui.add_enabled(st.available > 0, egui::Button::new(t.tag_learn_intro_start()));
-                        let resp = if st.available > 0 { resp } else { resp.on_disabled_hover_text(t.tag_learn_start_disabled_hover()) };
+                        let resp = ui.add_enabled(st.available > 0, egui::Button::new(i18n::render(|t| t.tag_learn_intro_start().to_string())));
+                        let resp = if st.available > 0 { resp } else { resp.on_disabled_hover_text(i18n::as_ja(|| i18n::render(|t| t.tag_learn_start_disabled_hover().to_string()))) };
                         start = resp.clicked();
-                        skip_scan = ui.button(t.tag_learn_intro_skip()).clicked();
+                        skip_scan = ui.button(i18n::render(|t| t.tag_learn_intro_skip().to_string())).clicked();
                     });
-                    ui.checkbox(&mut hide_intro, t.tag_learn_intro_hide());
+                    ui.checkbox(&mut hide_intro, i18n::render(|t| t.tag_learn_intro_hide().to_string()));
                 }
                 LearnStage::Hub => {
                     ui.horizontal_wrapped(|ui| {
-                        ui.label(t.tag_learn_status(learned_len));
-                        to_viewer = ui.add_enabled(learned_len > 0, egui::Button::new(t.tag_learn_view_button())).clicked();
+                        ui.label(i18n::render(|t| t.tag_learn_status(learned_len).to_string()));
+                        to_viewer = ui.add_enabled(learned_len > 0, egui::Button::new(i18n::render(|t| t.tag_learn_view_button().to_string()))).clicked();
                         if st.confirm_clear {
-                            ui.colored_label(egui::Color32::from_rgb(230, 160, 40), t.tag_learn_clear_confirm());
-                            if ui.button(t.tag_learn_clear_do()).clicked() {
+                            ui.colored_label(egui::Color32::from_rgb(230, 160, 40), i18n::render(|t| t.tag_learn_clear_confirm().to_string()));
+                            if ui.button(i18n::render(|t| t.tag_learn_clear_do().to_string())).clicked() {
                                 clear_all = true;
                                 st.confirm_clear = false;
                             }
-                            if ui.button(t.tag_learn_clear_cancel()).clicked() {
+                            if ui.button(i18n::render(|t| t.tag_learn_clear_cancel().to_string())).clicked() {
                                 st.confirm_clear = false;
                             }
-                        } else if ui.add_enabled(learned_len > 0, egui::Button::new(t.tag_learn_clear_button())).clicked() {
+                        } else if ui.add_enabled(learned_len > 0, egui::Button::new(i18n::render(|t| t.tag_learn_clear_button().to_string()))).clicked() {
                             st.confirm_clear = true;
                         }
                     });
                     match st.estimate.and_then(|e| e.1) {
-                        Some(p) => ui.weak(t.tag_learn_estimate(p)),
-                        None => ui.weak(t.tag_learn_estimate_none()),
+                        Some(p) => ui.weak(i18n::render(|t| t.tag_learn_estimate(p).to_string())),
+                        None => ui.weak(i18n::render(|t| t.tag_learn_estimate_none().to_string())),
                     };
-                    ui.checkbox(&mut use_learning, t.tag_learn_use_checkbox());
+                    ui.checkbox(&mut use_learning, i18n::render(|t| t.tag_learn_use_checkbox().to_string()));
                     ui.separator();
-                    ui.label(t.tag_learn_count_heading());
+                    ui.label(i18n::render(|t| t.tag_learn_count_heading().to_string()));
                     for n in [10usize, 20, 30] {
-                        ui.radio_value(&mut st.sample_count, n, t.tag_learn_count_label(n));
+                        ui.radio_value(&mut st.sample_count, n, i18n::render(|t| t.tag_learn_count_label(n).to_string()));
                     }
-                    ui.weak(t.tag_learn_folder_info(st.available, st.sample_count.min(st.available)));
+                    ui.weak(i18n::render(|t| t.tag_learn_folder_info(st.available, st.sample_count.min(st.available)).to_string()));
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
-                        let resp = ui.add_enabled(st.available > 0, egui::Button::new(t.tag_learn_start_button()));
-                        let resp = if st.available > 0 { resp } else { resp.on_disabled_hover_text(t.tag_learn_start_disabled_hover()) };
+                        let resp = ui.add_enabled(st.available > 0, egui::Button::new(i18n::render(|t| t.tag_learn_start_button().to_string())));
+                        let resp = if st.available > 0 { resp } else { resp.on_disabled_hover_text(i18n::as_ja(|| i18n::render(|t| t.tag_learn_start_disabled_hover().to_string()))) };
                         start = resp.clicked();
-                        close_clicked = ui.button(t.tag_learn_close_button()).clicked();
+                        close_clicked = ui.button(i18n::render(|t| t.tag_learn_close_button().to_string())).clicked();
                     });
                 }
                 LearnStage::Viewer => {
                     let entries = &self.tag_learned.entries;
                     if entries.is_empty() {
-                        ui.label(t.tag_learn_viewer_empty());
+                        ui.label(i18n::render(|t| t.tag_learn_viewer_empty().to_string()));
                     }
                     let row_h = ui.text_style_height(&egui::TextStyle::Body) * 2.0 + ui.spacing().item_spacing.y * 3.0 + 6.0;
                     egui::ScrollArea::vertical().max_height(400.0).auto_shrink([false, true]).show_rows(ui, row_h, entries.len(), |ui, range| {
@@ -201,18 +199,18 @@ impl NekoviewApp {
                             let e = &entries[entries.len() - 1 - i];
                             ui.horizontal(|ui| {
                                 ui.label(&e.file_name);
-                                if ui.small_button(t.tag_learn_viewer_delete()).clicked() {
+                                if ui.small_button(i18n::render(|t| t.tag_learn_viewer_delete().to_string())).clicked() {
                                     remove_entry = Some(e.file_name.clone());
                                 }
                             });
                             ui.horizontal(|ui| {
                                 ui.add_space(16.0);
                                 if e.labels.is_empty() {
-                                    ui.weak(t.tag_learn_viewer_no_labels());
+                                    ui.weak(i18n::render(|t| t.tag_learn_viewer_no_labels().to_string()));
                                 }
                                 for (li, (label, text)) in e.labels.iter().enumerate() {
-                                    let resp = ui.small_button(format!("{text} = {} ×", t.tag_learn_label_name(*label)));
-                                    if resp.on_hover_text(t.tag_learn_viewer_remove_label_hover()).clicked() {
+                                    let resp = ui.small_button(format!("{text} = {} ×", i18n::render(|t| t.tag_learn_label_name(*label).to_string())));
+                                    if resp.on_hover_text(i18n::as_ja(|| i18n::render(|t| t.tag_learn_viewer_remove_label_hover().to_string()))).clicked() {
                                         remove_label = Some((e.file_name.clone(), li));
                                     }
                                 }
@@ -222,11 +220,11 @@ impl NekoviewApp {
                     });
                 }
                 LearnStage::Labeling(rows) => {
-                    ui.label(t.tag_learn_label_help());
+                    ui.label(i18n::render(|t| t.tag_learn_label_help().to_string()));
                     let confirmed = rows.iter().filter(|r| r.confirmed).count();
                     ui.horizontal(|ui| {
-                        ui.strong(t.tag_learn_confirmed_count(confirmed, rows.len()));
-                        if ui.button(t.tag_learn_confirm_all()).clicked() {
+                        ui.strong(i18n::render(|t| t.tag_learn_confirmed_count(confirmed, rows.len()).to_string()));
+                        if ui.button(i18n::render(|t| t.tag_learn_confirm_all().to_string())).clicked() {
                             rows.iter_mut().for_each(|r| r.confirmed = true);
                         }
                     });
@@ -243,11 +241,11 @@ impl NekoviewApp {
                                     let before = *label;
                                     ui.strong(&token.text);
                                     egui::ComboBox::from_id_salt(("tag_learn_label", ri, ti))
-                                        .selected_text(t.tag_learn_label_name(*label))
+                                        .selected_text(i18n::render(|t| t.tag_learn_label_name(*label).to_string()))
                                         .width(90.0)
                                         .show_ui(ui, |ui| {
                                             for l in [Label::Author, Label::Group, Label::Event, Label::Language, Label::Ignore] {
-                                                ui.selectable_value(label, l, t.tag_learn_label_name(l));
+                                                ui.selectable_value(label, l, i18n::render(|t| t.tag_learn_label_name(l).to_string()));
                                             }
                                         });
                                     if *label != before {
@@ -260,14 +258,14 @@ impl NekoviewApp {
                         }
                     });
                     ui.horizontal(|ui| {
-                        let resp = ui.add_enabled(confirmed > 0, egui::Button::new(t.tag_learn_commit_button()));
+                        let resp = ui.add_enabled(confirmed > 0, egui::Button::new(i18n::render(|t| t.tag_learn_commit_button().to_string())));
                         let resp = if confirmed > 0 {
-                            resp.on_hover_text(t.tag_learn_commit_hover(confirmed, rows.len()))
+                            resp.on_hover_text(i18n::as_ja(|| i18n::render(|t| t.tag_learn_commit_hover(confirmed, rows.len()).to_string())))
                         } else {
-                            resp.on_disabled_hover_text(t.tag_learn_commit_disabled_hover())
+                            resp.on_disabled_hover_text(i18n::as_ja(|| i18n::render(|t| t.tag_learn_commit_disabled_hover().to_string())))
                         };
                         commit = resp.clicked();
-                        cancel_labeling = ui.button(t.tag_learn_cancel_button()).clicked();
+                        cancel_labeling = ui.button(i18n::render(|t| t.tag_learn_cancel_button().to_string())).clicked();
                     });
                 }
             });
@@ -291,7 +289,7 @@ impl NekoviewApp {
         }
         if edited {
             if !self.tag_learned.save(&self.config.config_root) {
-                self.set_toast(t.tag_learn_save_failed_toast());
+                self.set_toast(i18n::render(|t| t.tag_learn_save_failed_toast().to_string()));
             }
             self.rebuild_tag_model();
             st.refresh(self);
@@ -326,9 +324,9 @@ impl NekoviewApp {
                         self.config.tag_learning_use = true;
                         self.persist_state();
                     }
-                    self.set_toast(t.tag_learn_done_toast(n));
+                    self.set_toast(i18n::render(|t| t.tag_learn_done_toast(n).to_string()));
                 } else {
-                    self.set_toast(t.tag_learn_save_failed_toast());
+                    self.set_toast(i18n::render(|t| t.tag_learn_save_failed_toast().to_string()));
                 }
             }
             // 1件追加（右クリック）と、案内からの学習は、終わったら窓を閉じる。案内からのときは、続けて取得する。

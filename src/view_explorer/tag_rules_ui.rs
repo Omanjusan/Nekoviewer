@@ -4,34 +4,33 @@
 //! （①名前 → ②条件 → ③結果 → ④確認＋ためし判定）。編集は下書きに対して行い、④の「保存して一覧へ」で保存する。
 //! 条件の「対象」は選ばせない（文字列・形の条件は、ファイル名・見出し行・Category・題名を自動ですべて見る）。
 
-use crate::i18n;
+use crate::i18n::{self, Lang};
 use crate::tag_rules::{CondTarget, Condition, NameShape, RuleInput, RuleRole, TagRule, TextMatch};
 use crate::tag_similarity::MatchOptions;
 
 use super::NekoviewApp;
 
 /// ルール一覧に出す、種類の表示名。
-fn role_label(role: RuleRole) -> &'static str {
-    let t = i18n::t();
+fn role_label(role: RuleRole) -> String {
     match role {
-        RuleRole::Format => t.tag_confirm_role_format(),
-        RuleRole::Main => t.tag_confirm_role_main(),
-        RuleRole::Language => t.tag_confirm_role_language(),
-        RuleRole::Event => t.tag_confirm_role_event(),
-        RuleRole::Author => t.tag_confirm_role_author(),
-        RuleRole::Group => t.tag_confirm_role_group(),
-        RuleRole::Performer => t.tag_confirm_role_performer(),
-        RuleRole::Character => t.tag_confirm_role_character(),
-        RuleRole::Parody => t.tag_confirm_role_parody(),
-        RuleRole::Attribute => t.tag_confirm_role_attribute(),
-        RuleRole::YearMonth => t.tag_confirm_role_year_month(),
+        RuleRole::Format => i18n::render(|t| t.tag_confirm_role_format().to_string()),
+        RuleRole::Main => i18n::render(|t| t.tag_confirm_role_main().to_string()),
+        RuleRole::Language => i18n::render(|t| t.tag_confirm_role_language().to_string()),
+        RuleRole::Event => i18n::render(|t| t.tag_confirm_role_event().to_string()),
+        RuleRole::Author => i18n::render(|t| t.tag_confirm_role_author().to_string()),
+        RuleRole::Group => i18n::render(|t| t.tag_confirm_role_group().to_string()),
+        RuleRole::Performer => i18n::render(|t| t.tag_confirm_role_performer().to_string()),
+        RuleRole::Character => i18n::render(|t| t.tag_confirm_role_character().to_string()),
+        RuleRole::Parody => i18n::render(|t| t.tag_confirm_role_parody().to_string()),
+        RuleRole::Attribute => i18n::render(|t| t.tag_confirm_role_attribute().to_string()),
+        RuleRole::YearMonth => i18n::render(|t| t.tag_confirm_role_year_month().to_string()),
     }
 }
 
 /// ルール1件の概要（「条件 N件（いずれか） / 無効: … / 有効: …」）。
 fn summary(rule: &TagRule) -> String {
     let join = |set: &std::collections::BTreeSet<RuleRole>| set.iter().map(|r| role_label(*r)).collect::<Vec<_>>().join("・");
-    i18n::t().tag_rules_summary(rule.conditions.len(), rule.match_all, &join(&rule.effect.disable), &join(&rule.effect.enable))
+    i18n::render(|t| t.tag_rules_summary(rule.conditions.len(), rule.match_all, &join(&rule.effect.disable), &join(&rule.effect.enable)).to_string())
 }
 
 /// 条件の対象のすべて（新しく作る条件は、これを見る）。
@@ -97,24 +96,23 @@ impl RuleEditor {
     }
 
     /// 入力の誤り（（ステップの番号, 理由））。他のルールの名前と重なる名前は、誤り。
-    fn errors(&self, other_names: &[String]) -> Vec<(usize, &'static str)> {
-        let t = i18n::t();
+    fn errors(&self, other_names: &[String]) -> Vec<(usize, String)> {
         let mut out = Vec::new();
         let name = self.draft.name.trim();
         if name.is_empty() {
-            out.push((0, t.tag_rules_err_name_empty()));
+            out.push((0, i18n::render(|t| t.tag_rules_err_name_empty().to_string())));
         } else if other_names.iter().any(|n| n.trim() == name) {
-            out.push((0, t.tag_rules_err_name_dup()));
+            out.push((0, i18n::render(|t| t.tag_rules_err_name_dup().to_string())));
         }
         if self.draft.conditions.is_empty() {
-            out.push((1, t.tag_rules_err_no_condition()));
+            out.push((1, i18n::render(|t| t.tag_rules_err_no_condition().to_string())));
         }
         if self.draft.conditions.iter().any(|c| matches!(c, Condition::Text { text, .. } if text.trim().is_empty())) {
-            out.push((1, t.tag_rules_err_text_empty()));
+            out.push((1, i18n::render(|t| t.tag_rules_err_text_empty().to_string())));
         }
         // 有効なルールは、効果を1つ以上持つ（効果が空でいいのは、無効のルールだけ）。
         if self.draft.enabled && self.draft.effect.disable.is_empty() && self.draft.effect.enable.is_empty() {
-            out.push((2, t.tag_rules_err_effect_empty()));
+            out.push((2, i18n::render(|t| t.tag_rules_err_effect_empty().to_string())));
         }
         out
     }
@@ -131,8 +129,11 @@ struct EditorOut {
     discard: bool,
 }
 
-fn how_label(h: TextMatch) -> &'static str {
-    let t = i18n::t();
+fn how_label(h: TextMatch) -> String {
+    i18n::render(|t| how_label_for(t, h).to_string())
+}
+
+fn how_label_for(t: Lang, h: TextMatch) -> &'static str {
     match h {
         TextMatch::Contains => t.tag_rules_how_contains(),
         TextMatch::Prefix => t.tag_rules_how_prefix(),
@@ -182,10 +183,9 @@ fn set_effect_state(rule: &mut TagRule, role: RuleRole, state: u8) {
 
 /// 条件の1行の説明（ためし判定で、当たった条件を示す）。
 fn describe_condition(c: &Condition) -> String {
-    let t = i18n::t();
     match c {
-        Condition::Text { text, how, .. } => t.tag_rules_describe_text(text, how_label(*how)),
-        Condition::Shape { shape, .. } => t.tag_rules_describe_shape(shape_label(*shape)),
+        Condition::Text { text, how, .. } => i18n::render(|t| t.tag_rules_describe_text(text, how_label_for(t, *how)).to_string()),
+        Condition::Shape { shape, .. } => i18n::render(|t| t.tag_rules_describe_shape(shape_label(*shape)).to_string()),
     }
 }
 
@@ -211,12 +211,11 @@ fn trial_input(ed: &RuleEditor) -> Option<RuleInput> {
 
 /// ③結果: 種類ごとに、当てはまったときの効果を選ぶ。
 fn draw_effects_step(ui: &mut egui::Ui, ed: &mut RuleEditor) {
-    let t = i18n::t();
-    ui.strong(t.tag_rules_effect_heading());
-    ui.weak(t.tag_rules_effect_hint());
-    let groups: [(&str, Vec<RuleRole>, bool); 2] = [
-        (t.tag_rules_effect_group_existing(), RuleRole::EXISTING.iter().chain(RuleRole::FROM_AUTHORITY.iter()).copied().collect(), false),
-        (t.tag_rules_effect_group_new(), RuleRole::OPT_IN.to_vec(), true),
+    ui.strong(i18n::render(|t| t.tag_rules_effect_heading().to_string()));
+    ui.weak(i18n::render(|t| t.tag_rules_effect_hint().to_string()));
+    let groups: [(String, Vec<RuleRole>, bool); 2] = [
+        (i18n::render(|t| t.tag_rules_effect_group_existing().to_string()), RuleRole::EXISTING.iter().chain(RuleRole::FROM_AUTHORITY.iter()).copied().collect(), false),
+        (i18n::render(|t| t.tag_rules_effect_group_new().to_string()), RuleRole::OPT_IN.to_vec(), true),
     ];
     for (caption, roles, opt_in) in groups {
         ui.add_space(4.0);
@@ -229,12 +228,12 @@ fn draw_effects_step(ui: &mut egui::Ui, ed: &mut RuleEditor) {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // 右から並べる（見た目は「そのまま｜有効｜無効」の順に、左から）。
                     if opt_in {
-                        ui.selectable_value(&mut state, 1, t.tag_rules_eff_disable());
-                        ui.selectable_value(&mut state, 2, t.tag_rules_eff_enable());
+                        ui.selectable_value(&mut state, 1, i18n::render(|t| t.tag_rules_eff_disable().to_string()));
+                        ui.selectable_value(&mut state, 2, i18n::render(|t| t.tag_rules_eff_enable().to_string()));
                     } else {
-                        ui.selectable_value(&mut state, 1, t.tag_rules_eff_disable());
+                        ui.selectable_value(&mut state, 1, i18n::render(|t| t.tag_rules_eff_disable().to_string()));
                     }
-                    ui.selectable_value(&mut state, 0, t.tag_rules_eff_none());
+                    ui.selectable_value(&mut state, 0, i18n::render(|t| t.tag_rules_eff_none().to_string()));
                 });
                 // 「有効」を持つ種類（演者など）以外では、2択のまま。JSON由来の効かない「有効」は、触れずに保持する。
                 if state != before {
@@ -244,15 +243,14 @@ fn draw_effects_step(ui: &mut egui::Ui, ed: &mut RuleEditor) {
             });
         }
         if opt_in {
-            ui.weak(t.tag_rules_effect_new_hint());
+            ui.weak(i18n::render(|t| t.tag_rules_effect_new_hint().to_string()));
         }
     }
 }
 
 /// ④確認: ルールのまとめと、ためし判定。
 fn draw_review_step(ui: &mut egui::Ui, ed: &mut RuleEditor, opts: &MatchOptions) {
-    let t = i18n::t();
-    ui.strong(t.tag_rules_review_heading());
+    ui.strong(i18n::render(|t| t.tag_rules_review_heading().to_string()));
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.set_width(ui.available_width());
         let name = ed.draft.name.trim();
@@ -260,13 +258,13 @@ fn draw_review_step(ui: &mut egui::Ui, ed: &mut RuleEditor, opts: &MatchOptions)
         ui.weak(summary(&ed.draft));
     });
     ui.add_space(4.0);
-    ui.strong(t.tag_rules_trial_heading());
-    ui.weak(t.tag_rules_trial_hint());
-    ui.add(egui::TextEdit::singleline(&mut ed.trial_file).hint_text(t.tag_rules_trial_file_hint()).desired_width(f32::INFINITY));
-    ui.add(egui::TextEdit::multiline(&mut ed.trial_titles).hint_text(t.tag_rules_trial_titles_hint()).desired_rows(2).desired_width(f32::INFINITY));
-    ui.add(egui::TextEdit::singleline(&mut ed.trial_category).hint_text(t.tag_rules_trial_category_hint()).desired_width(f32::INFINITY));
+    ui.strong(i18n::render(|t| t.tag_rules_trial_heading().to_string()));
+    ui.weak(i18n::render(|t| t.tag_rules_trial_hint().to_string()));
+    ui.add(egui::TextEdit::singleline(&mut ed.trial_file).hint_text(i18n::render(|t| t.tag_rules_trial_file_hint().to_string())).desired_width(f32::INFINITY));
+    ui.add(egui::TextEdit::multiline(&mut ed.trial_titles).hint_text(i18n::render(|t| t.tag_rules_trial_titles_hint().to_string())).desired_rows(2).desired_width(f32::INFINITY));
+    ui.add(egui::TextEdit::singleline(&mut ed.trial_category).hint_text(i18n::render(|t| t.tag_rules_trial_category_hint().to_string())).desired_width(f32::INFINITY));
     let Some(input) = trial_input(ed) else {
-        ui.weak(t.tag_rules_trial_need_file());
+        ui.weak(i18n::render(|t| t.tag_rules_trial_need_file().to_string()));
         return;
     };
     // 無効のルールでも、条件に当てはまるかは試せる（効果の表示は、有効にしたと仮定して出す）。
@@ -276,9 +274,9 @@ fn draw_review_step(ui: &mut egui::Ui, ed: &mut RuleEditor, opts: &MatchOptions)
     egui::Frame::group(ui.style()).show(ui, |ui| {
         ui.set_width(ui.available_width());
         let (text, color) = if hit {
-            (t.tag_rules_trial_hit(), egui::Color32::from_rgb(70, 170, 100))
+            (i18n::render(|t| t.tag_rules_trial_hit().to_string()), egui::Color32::from_rgb(70, 170, 100))
         } else {
-            (t.tag_rules_trial_miss(), ui.visuals().weak_text_color())
+            (i18n::render(|t| t.tag_rules_trial_miss().to_string()), ui.visuals().weak_text_color())
         };
         ui.label(egui::RichText::new(text).strong().color(color));
         for c in &rule.conditions {
@@ -288,24 +286,23 @@ fn draw_review_step(ui: &mut egui::Ui, ed: &mut RuleEditor, opts: &MatchOptions)
         if hit {
             let join = |set: &std::collections::BTreeSet<RuleRole>| set.iter().map(|r| role_label(*r)).collect::<Vec<_>>().join("・");
             if rule.effect.disable.is_empty() && rule.effect.enable.is_empty() {
-                ui.weak(t.tag_rules_trial_no_effect());
+                ui.weak(i18n::render(|t| t.tag_rules_trial_no_effect().to_string()));
             }
             if !rule.effect.disable.is_empty() {
-                ui.label(t.tag_rules_trial_effect_disable(&join(&rule.effect.disable)));
+                ui.label(i18n::render(|t| t.tag_rules_trial_effect_disable(&join(&rule.effect.disable)).to_string()));
             }
             if !rule.effect.enable.is_empty() {
-                ui.label(t.tag_rules_trial_effect_enable(&join(&rule.effect.enable)));
+                ui.label(i18n::render(|t| t.tag_rules_trial_effect_enable(&join(&rule.effect.enable)).to_string()));
             }
         }
         if !ed.draft.enabled {
-            ui.weak(t.tag_rules_trial_disabled_note());
+            ui.weak(i18n::render(|t| t.tag_rules_trial_disabled_note().to_string()));
         }
     });
 }
 
 /// 編集画面（ステップ式）を描く。
-fn draw_rule_editor(ui: &mut egui::Ui, ed: &mut RuleEditor, errors: &[(usize, &'static str)], opts: &MatchOptions) -> EditorOut {
-    let t = i18n::t();
+fn draw_rule_editor(ui: &mut egui::Ui, ed: &mut RuleEditor, errors: &[(usize, String)], opts: &MatchOptions) -> EditorOut {
     let red = egui::Color32::from_rgb(230, 90, 80);
     let mut out = EditorOut::default();
 
@@ -313,12 +310,12 @@ fn draw_rule_editor(ui: &mut egui::Ui, ed: &mut RuleEditor, errors: &[(usize, &'
     if ed.leave_ask.is_some() {
         egui::Frame::group(ui.style()).stroke(egui::Stroke::new(1.0, red)).show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.colored_label(red, t.tag_rules_leave_ask());
+            ui.colored_label(red, i18n::render(|t| t.tag_rules_leave_ask().to_string()));
             ui.horizontal(|ui| {
-                if ui.button(egui::RichText::new(t.tag_rules_leave_discard()).color(red)).clicked() {
+                if ui.button(egui::RichText::new(i18n::render(|t| t.tag_rules_leave_discard().to_string())).color(red)).clicked() {
                     out.discard = true;
                 }
-                if ui.button(t.tag_rules_leave_stay()).clicked() {
+                if ui.button(i18n::render(|t| t.tag_rules_leave_stay().to_string())).clicked() {
                     ed.leave_ask = None;
                 }
             });
@@ -329,30 +326,30 @@ fn draw_rule_editor(ui: &mut egui::Ui, ed: &mut RuleEditor, errors: &[(usize, &'
     ui.horizontal(|ui| {
         for i in 0..STEPS {
             let bad = errors.iter().any(|(s, _)| *s == i);
-            let label = format!("{}{}", if bad { "❗ " } else { "" }, t.tag_rules_step_name(i));
+            let label = format!("{}{}", if bad { "❗ " } else { "" }, i18n::render(|t| t.tag_rules_step_name(i).to_string()));
             let text = if bad { egui::RichText::new(label).color(red) } else { egui::RichText::new(label) };
             if i < READY_STEPS {
                 if ui.selectable_label(ed.step == i, text).clicked() {
                     ed.step = i;
                 }
             } else {
-                ui.add_enabled(false, egui::Button::new(text)).on_disabled_hover_text(t.tag_rules_step_pending_hover());
+                ui.add_enabled(false, egui::Button::new(text)).on_disabled_hover_text(i18n::as_ja(|| i18n::render(|t| t.tag_rules_step_pending_hover().to_string())));
             }
         }
     });
     ui.separator();
 
-    let step_errors: Vec<&'static str> = errors.iter().filter(|(s, _)| *s == ed.step).map(|(_, e)| *e).collect();
+    let step_errors: Vec<&String> = errors.iter().filter(|(s, _)| *s == ed.step).map(|(_, e)| e).collect();
     egui::ScrollArea::vertical().max_height(300.0).auto_shrink([false, true]).show(ui, |ui| {
         if ed.step == 0 {
-            ui.strong(t.tag_rules_name_heading());
-            ui.weak(t.tag_rules_name_hint());
+            ui.strong(i18n::render(|t| t.tag_rules_name_heading().to_string()));
+            ui.weak(i18n::render(|t| t.tag_rules_name_hint().to_string()));
             if ui.add(egui::TextEdit::singleline(&mut ed.draft.name).desired_width(f32::INFINITY)).changed() {
                 ed.dirty = true;
             }
         } else if ed.step == 1 {
-            ui.strong(t.tag_rules_cond_heading());
-            ui.weak(t.tag_rules_cond_hint());
+            ui.strong(i18n::render(|t| t.tag_rules_cond_heading().to_string()));
+            ui.weak(i18n::render(|t| t.tag_rules_cond_hint().to_string()));
             let mut remove: Option<usize> = None;
             for (i, c) in ed.draft.conditions.iter_mut().enumerate() {
                 egui::Frame::group(ui.style()).show(ui, |ui| {
@@ -360,7 +357,7 @@ fn draw_rule_editor(ui: &mut egui::Ui, ed: &mut RuleEditor, errors: &[(usize, &'
                     ui.horizontal(|ui| {
                         match c {
                             Condition::Text { text, how, .. } => {
-                                if ui.add(egui::TextEdit::singleline(text).hint_text(t.tag_rules_text_hint()).desired_width(220.0)).changed() {
+                                if ui.add(egui::TextEdit::singleline(text).hint_text(i18n::render(|t| t.tag_rules_text_hint().to_string())).desired_width(220.0)).changed() {
                                     ed.dirty = true;
                                 }
                                 egui::ComboBox::from_id_salt(("tag_rule_how", i)).selected_text(how_label(*how)).show_ui(ui, |ui| {
@@ -372,7 +369,7 @@ fn draw_rule_editor(ui: &mut egui::Ui, ed: &mut RuleEditor, errors: &[(usize, &'
                                 });
                             }
                             Condition::Shape { shape, .. } => {
-                                ui.label(t.tag_rules_shape_prefix());
+                                ui.label(i18n::render(|t| t.tag_rules_shape_prefix().to_string()));
                                 egui::ComboBox::from_id_salt(("tag_rule_shape", i)).selected_text(shape_label(*shape)).show_ui(ui, |ui| {
                                     for sh in [NameShape::Dash2, NameShape::Dash2Paren, NameShape::Dash3] {
                                         if ui.selectable_value(shape, sh, shape_label(sh)).changed() {
@@ -380,10 +377,10 @@ fn draw_rule_editor(ui: &mut egui::Ui, ed: &mut RuleEditor, errors: &[(usize, &'
                                         }
                                     }
                                 });
-                                ui.label(t.tag_rules_shape_suffix());
+                                ui.label(i18n::render(|t| t.tag_rules_shape_suffix().to_string()));
                             }
                         }
-                        if ui.button(t.tag_rules_delete_button()).clicked() {
+                        if ui.button(i18n::render(|t| t.tag_rules_delete_button().to_string())).clicked() {
                             remove = Some(i);
                         }
                     });
@@ -394,8 +391,8 @@ fn draw_rule_editor(ui: &mut egui::Ui, ed: &mut RuleEditor, errors: &[(usize, &'
                     if !is_all_targets(targets) {
                         ui.horizontal(|ui| {
                             let names: Vec<&str> = targets.iter().map(|x| target_label(*x)).collect();
-                            ui.weak(t.tag_rules_limited(&names.join("・")));
-                            if ui.small_button(t.tag_rules_unlimit()).clicked() {
+                            ui.weak(i18n::render(|t| t.tag_rules_limited(&names.join("・")).to_string()));
+                            if ui.small_button(i18n::render(|t| t.tag_rules_unlimit().to_string())).clicked() {
                                 *targets = ALL_TARGETS.to_vec();
                                 ed.dirty = true;
                             }
@@ -408,22 +405,22 @@ fn draw_rule_editor(ui: &mut egui::Ui, ed: &mut RuleEditor, errors: &[(usize, &'
                 ed.dirty = true;
             }
             ui.horizontal(|ui| {
-                if ui.button(t.tag_rules_add_text()).clicked() {
+                if ui.button(i18n::render(|t| t.tag_rules_add_text().to_string())).clicked() {
                     ed.draft.conditions.push(Condition::Text { targets: ALL_TARGETS.to_vec(), how: TextMatch::Contains, text: String::new() });
                     ed.dirty = true;
                 }
-                if ui.button(t.tag_rules_add_shape()).clicked() {
+                if ui.button(i18n::render(|t| t.tag_rules_add_shape().to_string())).clicked() {
                     ed.draft.conditions.push(Condition::Shape { targets: ALL_TARGETS.to_vec(), shape: NameShape::Dash2Paren });
                     ed.dirty = true;
                 }
             });
             if ed.draft.conditions.len() > 1 {
                 ui.horizontal(|ui| {
-                    ui.weak(t.tag_rules_mode_label());
-                    if ui.radio_value(&mut ed.draft.match_all, false, t.tag_rules_mode_any()).changed() {
+                    ui.weak(i18n::render(|t| t.tag_rules_mode_label().to_string()));
+                    if ui.radio_value(&mut ed.draft.match_all, false, i18n::render(|t| t.tag_rules_mode_any().to_string())).changed() {
                         ed.dirty = true;
                     }
-                    if ui.radio_value(&mut ed.draft.match_all, true, t.tag_rules_mode_all()).changed() {
+                    if ui.radio_value(&mut ed.draft.match_all, true, i18n::render(|t| t.tag_rules_mode_all().to_string())).changed() {
                         ed.dirty = true;
                     }
                 });
@@ -440,22 +437,22 @@ fn draw_rule_editor(ui: &mut egui::Ui, ed: &mut RuleEditor, errors: &[(usize, &'
 
     ui.separator();
     ui.horizontal(|ui| {
-        if ui.button(t.tag_rules_back_to_list()).clicked() {
+        if ui.button(i18n::render(|t| t.tag_rules_back_to_list().to_string())).clicked() {
             out.back_to_list = true;
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             // 最後のステップ（④確認）で保存する。
             if ed.step + 1 >= READY_STEPS {
                 let ok = errors.is_empty();
-                let btn = ui.add_enabled(ok, egui::Button::new(t.tag_rules_save_and_back()));
-                let btn = if ok { btn } else { btn.on_disabled_hover_text(t.tag_rules_save_blocked_hover()) };
+                let btn = ui.add_enabled(ok, egui::Button::new(i18n::render(|t| t.tag_rules_save_and_back().to_string())));
+                let btn = if ok { btn } else { btn.on_disabled_hover_text(i18n::as_ja(|| i18n::render(|t| t.tag_rules_save_blocked_hover().to_string()))) };
                 if btn.clicked() {
                     out.save = true;
                 }
-            } else if ui.button(t.tag_rules_next()).clicked() {
+            } else if ui.button(i18n::render(|t| t.tag_rules_next().to_string())).clicked() {
                 ed.step += 1;
             }
-            if ui.add_enabled(ed.step > 0, egui::Button::new(t.tag_rules_prev())).clicked() {
+            if ui.add_enabled(ed.step > 0, egui::Button::new(i18n::render(|t| t.tag_rules_prev().to_string()))).clicked() {
                 ed.step -= 1;
             }
         });
@@ -499,7 +496,7 @@ impl NekoviewApp {
             self.tag_rules = new;
             true
         } else {
-            self.set_toast(i18n::t().tag_rules_save_failed());
+            self.set_toast(i18n::render(|t| t.tag_rules_save_failed().to_string()));
             false
         }
     }
@@ -511,7 +508,7 @@ impl NekoviewApp {
         rule.name = rule.name.trim().to_string();
         let ok = if ed.is_new { new.add(rule).is_ok() } else { new.update(rule).is_ok() };
         if !ok {
-            self.set_toast(i18n::t().tag_rules_save_failed());
+            self.set_toast(i18n::render(|t| t.tag_rules_save_failed().to_string()));
             return false;
         }
         self.commit_tag_rules(new)
@@ -522,7 +519,6 @@ impl NekoviewApp {
         if !self.tag_rules_open {
             return;
         }
-        let t = i18n::t();
         let mut open = true;
         let mut action: Option<RuleAction> = None;
         let mut editor = self.tag_rules_editor.take();
@@ -539,8 +535,8 @@ impl NekoviewApp {
         let copy_src = self.tag_rules_copy_src.filter(|id| self.tag_rules.rules.iter().any(|r| r.id == *id)).or_else(|| self.tag_rules.rules.first().map(|r| r.id));
         let mut copy_pick = copy_src;
         let title = match &editor {
-            Some(ed) => format!("{} — {}", t.tag_rules_window_title(), if ed.draft.name.trim().is_empty() { "…" } else { ed.draft.name.trim() }),
-            None => t.tag_rules_window_title().to_string(),
+            Some(ed) => format!("{} — {}", i18n::render(|t| t.tag_rules_window_title().to_string()), if ed.draft.name.trim().is_empty() { "…" } else { ed.draft.name.trim() }),
+            None => i18n::render(|t| t.tag_rules_window_title().to_string()).to_string(),
         };
         egui::Window::new(title)
             .id(egui::Id::new("tag_rules_window"))
@@ -558,10 +554,10 @@ impl NekoviewApp {
                     editor_out = draw_rule_editor(ui, ed, &errors, &opts);
                     return;
                 }
-                ui.weak(t.tag_rules_list_hint());
+                ui.weak(i18n::render(|t| t.tag_rules_list_hint().to_string()));
                 ui.add_space(4.0);
                 if self.tag_rules.rules.is_empty() {
-                    ui.label(t.tag_rules_empty());
+                    ui.label(i18n::render(|t| t.tag_rules_empty().to_string()));
                 }
                 egui::ScrollArea::vertical().max_height(280.0).auto_shrink([false, true]).show(ui, |ui| {
                     for rule in &self.tag_rules.rules {
@@ -572,22 +568,22 @@ impl NekoviewApp {
                                 ui.label(if rule.enabled { name.strong() } else { name.weak() });
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                     if self.tag_rules_del_ask == Some(rule.id) {
-                                        if ui.button(t.tag_rules_delete_cancel()).clicked() {
+                                        if ui.button(i18n::render(|t| t.tag_rules_delete_cancel().to_string())).clicked() {
                                             action = Some(RuleAction::AskDelete(None));
                                         }
-                                        if ui.button(egui::RichText::new(t.tag_rules_delete_do()).color(warn)).clicked() {
+                                        if ui.button(egui::RichText::new(i18n::render(|t| t.tag_rules_delete_do().to_string())).color(warn)).clicked() {
                                             action = Some(RuleAction::Delete(rule.id));
                                         }
-                                        ui.colored_label(warn, t.tag_rules_delete_ask());
+                                        ui.colored_label(warn, i18n::render(|t| t.tag_rules_delete_ask().to_string()));
                                     } else {
-                                        if ui.button(egui::RichText::new(t.tag_rules_delete_button()).color(warn)).clicked() {
+                                        if ui.button(egui::RichText::new(i18n::render(|t| t.tag_rules_delete_button().to_string())).color(warn)).clicked() {
                                             action = Some(RuleAction::AskDelete(Some(rule.id)));
                                         }
-                                        if ui.button(t.tag_rules_edit_button()).clicked() {
+                                        if ui.button(i18n::render(|t| t.tag_rules_edit_button().to_string())).clicked() {
                                             action = Some(RuleAction::Edit(rule.id));
                                         }
                                         let on = rule.enabled;
-                                        if ui.add(egui::Button::selectable(on, t.tag_rules_toggle(on))).clicked() {
+                                        if ui.add(egui::Button::selectable(on, i18n::render(|t| t.tag_rules_toggle(on).to_string()))).clicked() {
                                             action = Some(RuleAction::Toggle(rule.id));
                                         }
                                     }
@@ -600,7 +596,7 @@ impl NekoviewApp {
                 ui.add_space(6.0);
                 egui::Frame::group(ui.style()).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    ui.strong(t.tag_rules_copy_heading());
+                    ui.strong(i18n::render(|t| t.tag_rules_copy_heading().to_string()));
                     ui.horizontal(|ui| {
                         let selected = self.tag_rules.rules.iter().find(|r| Some(r.id) == copy_pick).map(|r| r.name.clone()).unwrap_or_default();
                         egui::ComboBox::from_id_salt("tag_rules_copy_src").selected_text(selected).width(280.0).show_ui(ui, |ui| {
@@ -609,21 +605,21 @@ impl NekoviewApp {
                             }
                         });
                         let can_copy = copy_pick.is_some();
-                        if ui.add_enabled(can_copy, egui::Button::new(t.tag_rules_copy_button())).clicked() {
+                        if ui.add_enabled(can_copy, egui::Button::new(i18n::render(|t| t.tag_rules_copy_button().to_string()))).clicked() {
                             action = Some(RuleAction::Copy);
                         }
                     });
-                    ui.weak(t.tag_rules_copy_hint());
+                    ui.weak(i18n::render(|t| t.tag_rules_copy_hint().to_string()));
                 });
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    if ui.button(t.tag_rules_new_button()).clicked() {
+                    if ui.button(i18n::render(|t| t.tag_rules_new_button().to_string())).clicked() {
                         action = Some(RuleAction::New);
                     }
-                    if ui.button(t.tag_rules_restore_button()).on_hover_text(t.tag_rules_restore_hover()).clicked() {
+                    if ui.button(i18n::render(|t| t.tag_rules_restore_button().to_string())).on_hover_text(i18n::as_ja(|| i18n::render(|t| t.tag_rules_restore_hover().to_string()))).clicked() {
                         action = Some(RuleAction::RestoreInitial);
                     }
-                    if ui.button(t.tag_rules_reload_button()).on_hover_text(t.tag_rules_reload_hover()).clicked() {
+                    if ui.button(i18n::render(|t| t.tag_rules_reload_button().to_string())).on_hover_text(i18n::as_ja(|| i18n::render(|t| t.tag_rules_reload_hover().to_string()))).clicked() {
                         action = Some(RuleAction::Reload);
                     }
                 });
@@ -641,7 +637,7 @@ impl NekoviewApp {
             } else if editor_out.save {
                 let ed_ref = editor.as_ref().expect("editor");
                 if self.save_rule_draft(ed_ref) {
-                    self.set_toast(t.tag_rules_saved());
+                    self.set_toast(i18n::render(|t| t.tag_rules_saved().to_string()));
                     editor = None;
                 }
             } else if editor_out.discard {
@@ -672,7 +668,6 @@ impl NekoviewApp {
     }
 
     fn apply_rule_action(&mut self, action: RuleAction) {
-        let t = i18n::t();
         match action {
             RuleAction::AskDelete(id) => self.tag_rules_del_ask = id,
             RuleAction::Toggle(id) => {
@@ -682,7 +677,7 @@ impl NekoviewApp {
                 rule.enabled = !rule.enabled;
                 // 有効にするには効果が要る（効果が空のひな形は、無効のまま）。
                 if new.update(rule).is_err() {
-                    self.set_toast(t.tag_rules_enable_needs_effect());
+                    self.set_toast(i18n::render(|t| t.tag_rules_enable_needs_effect().to_string()));
                     return;
                 }
                 self.commit_tag_rules(new);
@@ -701,7 +696,7 @@ impl NekoviewApp {
                 }
             }
             RuleAction::New => {
-                let base = t.tag_rules_new_name();
+                let base = i18n::render(|t| t.tag_rules_new_name().to_string());
                 let mut name = base.to_string();
                 let mut n = 2;
                 while self.tag_rules.rules.iter().any(|r| r.name == name) {
@@ -715,10 +710,10 @@ impl NekoviewApp {
                 let Some(src) = self.tag_rules_copy_src.and_then(|id| self.tag_rules.rules.iter().find(|r| r.id == id)).cloned() else { return };
                 let mut new = self.tag_rules.clone();
                 let mut copy = src.clone();
-                copy.name = unique_copy_name(&new, &src.name, t.tag_rules_copy_suffix());
+                copy.name = unique_copy_name(&new, &src.name, &i18n::render(|t| t.tag_rules_copy_suffix().to_string()));
                 let Ok(id) = new.add(copy) else { return };
                 if self.commit_tag_rules(new) {
-                    self.set_toast(t.tag_rules_copied(&src.name));
+                    self.set_toast(i18n::render(|t| t.tag_rules_copied(&src.name).to_string()));
                     // 「コピーして編集」: コピーを、そのまま編集画面で開く。
                     if let Some(rule) = self.tag_rules.rules.iter().find(|r| r.id == id).cloned() {
                         self.tag_rules_del_ask = None;
@@ -730,9 +725,9 @@ impl NekoviewApp {
                 let mut new = self.tag_rules.clone();
                 let n = new.add_missing_initial();
                 if n == 0 {
-                    self.set_toast(t.tag_rules_restore_none());
+                    self.set_toast(i18n::render(|t| t.tag_rules_restore_none().to_string()));
                 } else if self.commit_tag_rules(new) {
-                    self.set_toast(t.tag_rules_restored(n));
+                    self.set_toast(i18n::render(|t| t.tag_rules_restored(n).to_string()));
                 }
             }
             RuleAction::Reload => match crate::tag_rules::RuleSet::load(&self.config.config_root) {
@@ -740,12 +735,12 @@ impl NekoviewApp {
                     let n = set.rules.len();
                     self.tag_rules = set;
                     self.tag_rules_del_ask = None;
-                    self.set_toast(t.tag_rules_reloaded(n));
+                    self.set_toast(i18n::render(|t| t.tag_rules_reloaded(n).to_string()));
                 }
-                None if crate::tag_rules::RuleSet::file_exists(&self.config.config_root) => self.set_toast(t.tag_rules_reload_failed()),
+                None if crate::tag_rules::RuleSet::file_exists(&self.config.config_root) => self.set_toast(i18n::render(|t| t.tag_rules_reload_failed().to_string())),
                 None => {
                     self.tag_rules = crate::tag_rules::RuleSet::default();
-                    self.set_toast(t.tag_rules_reloaded(0));
+                    self.set_toast(i18n::render(|t| t.tag_rules_reloaded(0).to_string()));
                 }
             },
         }
