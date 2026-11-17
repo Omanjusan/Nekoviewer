@@ -24,6 +24,7 @@ use crate::tag_similarity::MatchOptions;
 use crate::tag_source::{format_tag_for, parse_info_txt, FormatTag, InfoTxt};
 use crate::view_explorer::TagManagerCategoryUi;
 
+use super::tag_scan_perf::{self, ScanPerf};
 use super::NekoviewApp;
 
 /// info.txt の調査結果。
@@ -95,13 +96,32 @@ impl TagScanResult {
 }
 
 /// 1件を調べる。ファイルが読めなくても落とさず、対象外として返す。
+#[cfg(test)]
 fn scan_one(path: &Path, db: Option<&Arc<Mutex<Database>>>) -> ScanItem {
+    scan_one_timed(path, db).0
+}
+
+/// `scan_one` の計測つき版（段階別の時間は `tag_scan_perf` が集計する。結果は同じ）。
+fn scan_one_timed(path: &Path, db: Option<&Arc<Mutex<Database>>>) -> (ScanItem, ScanPerf) {
+    let t_all = std::time::Instant::now();
+    let mut perf = ScanPerf::default();
+    let t = std::time::Instant::now();
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     let is_dir = path.is_dir();
     let format = format_tag_for(name, is_dir);
     let (mtime, size) = (crate::neko_dir::file_mtime(path), crate::neko_dir::file_size(path));
+    perf.stat = t.elapsed();
     // zip/cbz は1回だけ開いて、info.txt・ComicInfo.xml・meta.json・付属テキストなどをまとめて読む。
-    let bundle = if is_dir { None } else { crate::fs::archive::meta::read_bundle(path) };
+    let t = std::time::Instant::now();
+    let bundle = if is_dir {
+        None
+    } else {
+        let (b, magic, zip) = crate::fs::archive::meta::read_bundle_timed(path);
+        perf.magic = magic;
+        perf.zip = zip;
+        b
+    };
+    perf.bundle = t.elapsed().saturating_sub(perf.magic);
     let sources = bundle.as_ref().map(|b| &b.tag);
     let detail = crate::neko_dir::DetailFlag::from_read(
         bundle.as_ref().map(|b| &b.detail),
@@ -121,14 +141,19 @@ fn scan_one(path: &Path, db: Option<&Arc<Mutex<Database>>>) -> ScanItem {
         },
     };
     let meta = sources.and_then(|s| ArchiveMeta::from_sources(s.comic_info.as_ref(), s.meta_json.as_deref()));
+    let t = std::time::Instant::now();
     let existing_tags = match (db, path.parent()) {
         (Some(db), Some(dir)) if !name.is_empty() => crate::spread_state::read_archive_tags(db, dir, name),
         _ => Vec::new(),
     };
-    ScanItem { path: path.to_path_buf(), format, info, meta, existing_tags, detail, rating, page_count, mtime, size }
+    perf.db = t.elapsed();
+    let item = ScanItem { path: path.to_path_buf(), format, info, meta, existing_tags, detail, rating, page_count, mtime, size };
+    perf.total = t_all.elapsed();
+    (item, perf)
 }
 
 /// `targets` を順に調べる。`done` に処理済みの件数を反映し、`cancel` が立ったら打ち切る。
+#[cfg(test)]
 pub(super) fn run_scan(
     dir: PathBuf,
     targets: &[PathBuf],
@@ -136,17 +161,31 @@ pub(super) fn run_scan(
     done: &AtomicUsize,
     cancel: &AtomicBool,
 ) -> TagScanResult {
+    run_scan_timed(dir, targets, db, done, cancel).0
+}
+
+/// `run_scan` の計測つき版。1件ごとの計測値も返す。
+fn run_scan_timed(
+    dir: PathBuf,
+    targets: &[PathBuf],
+    db: Option<&Arc<Mutex<Database>>>,
+    done: &AtomicUsize,
+    cancel: &AtomicBool,
+) -> (TagScanResult, Vec<ScanPerf>) {
     let mut items = Vec::with_capacity(targets.len());
+    let mut perfs = Vec::with_capacity(targets.len());
     let mut cancelled = false;
     for path in targets {
         if cancel.load(Ordering::Relaxed) {
             cancelled = true;
             break;
         }
-        items.push(scan_one(path, db));
+        let (item, perf) = scan_one_timed(path, db);
+        items.push(item);
+        perfs.push(perf);
         done.fetch_add(1, Ordering::Relaxed);
     }
-    TagScanResult { dir, items, cancelled, total: targets.len(), candidates: None }
+    (TagScanResult { dir, items, cancelled, total: targets.len(), candidates: None }, perfs)
 }
 
 /// 走査結果から候補を作って結果に付ける（キャンセル済みなら何もしない）。
@@ -201,8 +240,17 @@ impl TagScanJob {
         let total = targets.len();
         let (w_dir, w_done, w_cancel) = (dir.clone(), Arc::clone(&done), Arc::clone(&cancel));
         std::thread::spawn(move || {
-            let mut result = run_scan(w_dir, &targets, db.as_ref(), &w_done, &w_cancel);
+            let t_scan = std::time::Instant::now();
+            let (mut result, perfs) = run_scan_timed(w_dir, &targets, db.as_ref(), &w_done, &w_cancel);
+            let scan_wall = t_scan.elapsed();
+            let t_cand = std::time::Instant::now();
             attach_candidates(&mut result, &master, &opts, lang, name_lang, model.as_deref(), &rules);
+            let cand_wall = result.candidates.as_ref().map(|_| t_cand.elapsed());
+            if crate::config::log().perf {
+                for line in tag_scan_perf::render(&perfs, scan_wall, cand_wall) {
+                    eprintln!("{line}");
+                }
+            }
             // 受信側が破棄済み（アプリ終了）でもエラーは無視する。
             let _ = tx.send(result);
         });
@@ -306,7 +354,9 @@ impl NekoviewApp {
             if let Some(set) = result.candidates.clone() {
                 let inputs = inputs_from_items(&result.items);
                 let paths = result.items.iter().map(|i| i.path.clone()).collect();
+                let t_open = std::time::Instant::now();
                 self.open_tag_confirm(set, inputs, paths, self.tag_manager_categories.clone());
+                crate::log_perf!("[perf/tag-scan] open_tag_confirm(UIスレッド)={:.1}ms", t_open.elapsed().as_secs_f64() * 1000.0);
             }
             self.tag_scan_result = Some(result);
         }

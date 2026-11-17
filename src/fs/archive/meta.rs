@@ -353,6 +353,47 @@ fn is_meta_json_name(name: &str) -> bool {
     base_name(name).eq_ignore_ascii_case("meta.json")
 }
 
+/// `read_zip_bundle_timed` の計測値（速度調査用。挙動には影響しない）。
+#[derive(Clone, Debug, Default)]
+pub struct ZipTiming {
+    pub file_size: u64,
+    /// エントリ総数（中央ディレクトリの件数）。
+    pub entries: usize,
+    /// 中央ディレクトリの開始位置。`file_size - cd_start` が末尾側の読み量の目安。
+    pub cd_start: u64,
+    /// `File::open` とサイズ取得（ディレクトリ・inodeの引き）。
+    pub open: std::time::Duration,
+    /// 末尾の生read（perfログONのときだけ測る。OFFなら0）。
+    pub tail: std::time::Duration,
+    /// `ZipArchive::new`（末尾の探索と中央ディレクトリの解析）。
+    pub parse: std::time::Duration,
+    /// 全エントリ名の分類。
+    pub list: std::time::Duration,
+    /// info.txt などの本体読み。
+    pub read: std::time::Duration,
+    /// 本体を読んだエントリの範囲（ローカルヘッダ先頭, データ末尾）。
+    pub ranges: Vec<(u64, u64)>,
+}
+
+/// 末尾 `TAIL_PROBE_BYTES` を1回読む時間（速度調査用）。読めなくても無視する。
+fn probe_tail(file: &std::fs::File, file_size: u64) -> std::time::Duration {
+    use std::io::{Seek, SeekFrom};
+    const TAIL_PROBE_BYTES: u64 = 64 * 1024;
+    let t = std::time::Instant::now();
+    let mut f = file;
+    let from = file_size.saturating_sub(TAIL_PROBE_BYTES);
+    if f.seek(SeekFrom::Start(from)).is_ok() {
+        let mut buf = Vec::with_capacity(TAIL_PROBE_BYTES as usize);
+        let _ = f.take(TAIL_PROBE_BYTES).read_to_end(&mut buf);
+    }
+    let _ = f.seek(SeekFrom::Start(0));
+    t.elapsed()
+}
+
+fn entry_range(e: &::zip::read::ZipFile<'_>) -> (u64, u64) {
+    (e.header_start(), e.data_start().saturating_add(e.compressed_size()))
+}
+
 /// zip/cbz を1回だけ開いて読んだ、詳細表示とタグ取得の両方の元。
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct ZipBundle {
@@ -370,8 +411,22 @@ pub struct ZipBundle {
 /// 暗号化・壊れたエントリは「無し」として扱う（走査全体を止めない）。
 /// 名前の分類はzipの中央ディレクトリ（名前一覧）だけで行い、本体を読むのは対象のエントリだけ。
 pub fn read_zip_bundle(path: &Path) -> Option<ZipBundle> {
+    read_zip_bundle_timed(path).map(|(b, _)| b)
+}
+
+/// `read_zip_bundle` の計測つき版（速度調査用）。結果は同じで、段階ごとの時間と、読んだエントリの位置を一緒に返す。
+pub fn read_zip_bundle_timed(path: &Path) -> Option<(ZipBundle, ZipTiming)> {
+    let t_open = std::time::Instant::now();
     let file = std::fs::File::open(path).ok()?;
+    let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let open = t_open.elapsed();
+    // perfログがONのときだけ、末尾を生で1回読んで時間を分ける（読んだ分はOSのキャッシュに載り、直後の解析は速くなる。
+    // 「ディスクの読み待ち」と「zipクレートの解析」を切り分けるための計測。結果は変わらない）。
+    let tail = if crate::config::log().perf { probe_tail(&file, file_size) } else { std::time::Duration::ZERO };
+    let t_parse = std::time::Instant::now();
     let mut archive = ::zip::ZipArchive::new(file).ok()?;
+    let mut timing = ZipTiming { file_size, entries: archive.len(), cd_start: archive.central_directory_start(), open, tail, parse: t_parse.elapsed(), ..Default::default() };
+    let t_list = std::time::Instant::now();
 
     let comment_raw = archive.comment();
     let comment_raw = &comment_raw[..comment_raw.len().min(COMMENT_LIMIT)];
@@ -402,26 +457,32 @@ pub fn read_zip_bundle(path: &Path) -> Option<ZipBundle> {
         }
     }
 
+    timing.list = t_list.elapsed();
+    let t_read = std::time::Instant::now();
     if let Some(i) = info_idx
         && let Ok(entry) = archive.by_index(i)
     {
+        timing.ranges.push(entry_range(&entry));
         out.tag.info_txt = read_limited(entry, DETAIL_READ_LIMIT).map(|b| decode_text_bytes(&b));
         out.detail.info_rating = out.tag.info_txt.as_deref().and_then(parse_info_rating);
     }
     if let Some(i) = comic_idx
         && let Ok(entry) = archive.by_index(i)
     {
+        timing.ranges.push(entry_range(&entry));
         out.tag.comic_info = read_limited(entry, DETAIL_READ_LIMIT).and_then(|b| parse_comic_info(&b));
         out.detail.comic_info = out.tag.comic_info.clone();
     }
     if let Some(i) = json_idx
         && let Ok(entry) = archive.by_index(i)
     {
+        timing.ranges.push(entry_range(&entry));
         out.tag.meta_json = read_limited(entry, META_JSON_LIMIT).map(|b| decode_text_bytes(&b));
         out.detail.meta_json = out.tag.meta_json.clone();
     }
     for i in nfo_idxs {
         let Ok(entry) = archive.by_index(i) else { continue };
+        timing.ranges.push(entry_range(&entry));
         let name = super::zip::decode_zip_name(entry.name_raw());
         if let Some(bytes) = read_limited(entry, DETAIL_READ_LIMIT) {
             let text = decode_text_bytes(&bytes).trim().to_owned();
@@ -430,7 +491,8 @@ pub fn read_zip_bundle(path: &Path) -> Option<ZipBundle> {
             }
         }
     }
-    Some(out)
+    timing.read = t_read.elapsed();
+    Some((out, timing))
 }
 
 /// zip/cbz のタグ取得の元（`read_zip_bundle` の一部）。zipとして開けなければ None。
@@ -439,10 +501,18 @@ pub fn read_zip_tag_sources(path: &Path) -> Option<TagSourceFiles> {
 }
 
 /// 形式を判定して、詳細テキスト・タグ取得の元・画像数をまとめて読む。当面は zip/cbz のみ対応（他形式は None＝対象外）。
-pub fn read_bundle(path: &Path) -> Option<ZipBundle> {
-    match detect_format(path) {
-        ArchiveFormat::Zip => read_zip_bundle(path),
-        _ => None,
+///
+/// マジック判定にかかった時間と、zipの計測値（zipとして開けたとき）も一緒に返す（速度調査用。呼び出し側は読み捨ててよい）。
+pub fn read_bundle_timed(path: &Path) -> (Option<ZipBundle>, std::time::Duration, Option<ZipTiming>) {
+    let t = std::time::Instant::now();
+    let fmt = detect_format(path);
+    let magic = t.elapsed();
+    match fmt {
+        ArchiveFormat::Zip => match read_zip_bundle_timed(path) {
+            Some((b, tm)) => (Some(b), magic, Some(tm)),
+            None => (None, magic, None),
+        },
+        _ => (None, magic, None),
     }
 }
 

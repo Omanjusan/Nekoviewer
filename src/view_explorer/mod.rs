@@ -1553,6 +1553,7 @@ pub struct NekoviewApp {
 
 mod archive_info_cache;
 mod tag_scan;
+mod tag_scan_perf;
 mod tag_confirm;
 mod tag_trial_ui;
 mod tag_master_gen_ui;
