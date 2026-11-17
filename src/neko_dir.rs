@@ -179,9 +179,25 @@ pub fn dir_for_db(db: &Arc<Mutex<Database>>) -> Option<PathBuf> {
     Some(PathBuf::from(guard.value()))
 }
 
+/// 移行も回収も要らない状態かを、読み取りだけで判定する（要らなければ書き込み・全キー走査を省く）。
+/// スキーマ版が現行で、中断されたprocessingが残っていなければ true。
+/// 状態表は小さい行だけなので軽い。THUMBS_TABLEはJPEG本体を抱えており、全キー走査はファイル全体の
+/// 読み出しになる（コールドの数十MBのDBで数十ms）ため、通常の起動ではここで済ませる。
+fn schema_is_settled(db: &Database) -> bool {
+    let Ok(tx) = db.begin_read() else { return false };
+    let version_ok = tx.open_table(META_TABLE).ok()
+        .and_then(|meta| meta.get(SCHEMA_VERSION_KEY).ok().flatten().map(|v| v.value()))
+        == Some(SCHEMA_VERSION);
+    if !version_ok { return false; }
+    let Ok(states) = tx.open_table(THUMB_STATES_TABLE) else { return false };
+    let Ok(iter) = states.iter() else { return false };
+    !iter.flatten().any(|item| decode_thumbnail_state(item.1.value()).status == ThumbnailStatus::Processing)
+}
+
 /// 旧形式のJPEGを保持したままv2状態へ移行する。
 /// 中断されたprocessingもここで回収し、次回訪問時に再生成できる状態へ戻す。
 fn enforce_schema_version(db: &Database) {
+    if schema_is_settled(db) { return; }
     let Ok(tx) = db.begin_write() else { return };
     let now = unix_timestamp_secs();
     let thumb_keys: Vec<String> = {
@@ -473,6 +489,65 @@ mod tests {
         let _ = std::fs::remove_dir_all(&neko_dir);
     }
 
+    /// 現行スキーマで中断processingが無いDBは「落ち着いている」とみなし、全キー走査の書き込みを省く。
+    /// processingが残っているとき・版が古いときは省かず、従来の回収・移行へ回す。
+    #[test]
+    fn schema_is_settled_only_when_current_and_without_processing() {
+        let db_path = unique_test_db_path("schema_settled");
+        let db = Database::create(&db_path).unwrap();
+        {
+            let tx = db.begin_write().unwrap();
+            tx.open_table(THUMBS_TABLE).unwrap()
+                .insert("a.zip", (100, b"jpeg".as_slice())).unwrap();
+            tx.open_table(THUMB_STATES_TABLE).unwrap().insert(
+                "a.zip",
+                encode_thumbnail_state(ThumbnailRecordState {
+                    status: ThumbnailStatus::Processing,
+                    token: 1,
+                    generated_at: 0,
+                    updated_at: 1,
+                    target_edge: 384,
+                    target_filter: TRIANGLE,
+                    target_mtime: 100,
+                }),
+            ).unwrap();
+            tx.commit().unwrap();
+        }
+        assert!(!schema_is_settled(&db), "版未設定は落ち着いていない");
+        enforce_schema_version(&db);
+        assert!(schema_is_settled(&db), "移行・回収後は落ち着く");
+
+        // 現行版でも、processingが残っていれば省かずに回収する。
+        {
+            let tx = db.begin_write().unwrap();
+            tx.open_table(THUMB_STATES_TABLE).unwrap().insert(
+                "a.zip",
+                encode_thumbnail_state(ThumbnailRecordState {
+                    status: ThumbnailStatus::Processing,
+                    token: 2,
+                    generated_at: 0,
+                    updated_at: 1,
+                    target_edge: 384,
+                    target_filter: TRIANGLE,
+                    target_mtime: 100,
+                }),
+            ).unwrap();
+            tx.commit().unwrap();
+        }
+        assert!(!schema_is_settled(&db), "processingが残っていれば落ち着いていない");
+        enforce_schema_version(&db);
+        let tx = db.begin_read().unwrap();
+        let states = tx.open_table(THUMB_STATES_TABLE).unwrap();
+        assert_eq!(
+            decode_thumbnail_state(states.get("a.zip").unwrap().unwrap().value()).status,
+            ThumbnailStatus::Stale,
+        );
+        drop(states);
+        drop(tx);
+        drop(db);
+        let _ = std::fs::remove_dir_all(db_path.parent().unwrap());
+    }
+
     #[test]
     fn interrupted_processing_is_recovered_without_deleting_blob() {
         let db_path = unique_test_db_path("processing_recovery");
@@ -518,9 +593,8 @@ mod tests {
     fn successful_pwd_sync_adds_missing_and_keeps_thumbnails_of_deleted_files() {
         let neko_dir = unique_test_neko_dir("thumb_pwd_sync");
         let db = open_cache_db(&neko_dir, Path::new("/tmp/fake_thumb_pwd_sync")).unwrap();
-        write_thumb(&db, "deleted.zip", 100, b"old");
+        test_seed_current(&db, "deleted.zip", 100, b"old", "");
         write_file_record(&db, "deleted.zip", 100, 10);
-        enforce_schema_version(&db.lock().unwrap());
 
         assert!(sync_thumbnail_records(
             &db,
