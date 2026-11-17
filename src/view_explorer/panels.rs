@@ -52,6 +52,13 @@ const TAG_PANEL_PREVIEW_MAX_HEIGHT: f32 = 500.0;
 /// タグパネル高画質プレビュー: 専用の生成長辺上限(px)。グリッドのサムネ設定
 /// （`config.thumb_size`）とは独立した固定値。
 const TAG_PREVIEW_DECODE_EDGE: u32 = 1200;
+/// 選択してから高画質プレビューの生成を始めるまでの待ち（デバウンス）。ダブルクリックで本を開くとき、
+/// 1回目のクリックの選択でプレビューの先頭画像読みが始まり、開く処理と同じアーカイブを冷たいディスクから
+/// 取り合っていた（計測: 一覧の読みが 760〜860ms、ページ送りが 470〜1770ms に延びた）。
+/// 待つ間はグリッド用サムネで表示する。矢印キーで選択を動かしている間も、通り過ぎる行の生成を省ける。
+const TAG_PREVIEW_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(400);
+/// アーカイブを開く処理・ページ読みが終わってから、高画質プレビューの生成を始めるまでに空ける静けさ。
+const TAG_PREVIEW_FG_QUIET: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// メインタグ選択UI: 行の高さ。
 const TAG_MAIN_ROW_HEIGHT: f32 = 40.0;
@@ -2193,7 +2200,9 @@ impl NekoviewApp {
             match matched {
                 Some(t) => t,
                 None => {
-                    self.request_tag_preview(&path);
+                    if self.tag_preview_ready_to_request(ui.ctx(), &path) {
+                        self.request_tag_preview(&path);
+                    }
                     self.thumbnails.get(&path)?.clone()
                 }
             }
@@ -2226,6 +2235,33 @@ impl NekoviewApp {
             drawn_rect = Some(rect);
         });
         drawn_rect
+    }
+
+    /// 高画質プレビューの生成を、今リクエストしてよいか。選択が一定時間（`TAG_PREVIEW_DEBOUNCE`）続き、
+    /// アーカイブを開く処理中でなく、ページ読み等のディスク読みが静かなときだけ true。
+    /// 満たさないときは、満たす頃に再描画を予約する（待つ間はグリッド用サムネで代用される）。
+    fn tag_preview_ready_to_request(&mut self, ctx: &egui::Context, path: &std::path::Path) -> bool {
+        if self.tag_preview_pending.as_deref() == Some(path) {
+            return false;
+        }
+        let since = match &self.tag_preview_want {
+            Some((p, t)) if p.as_path() == path => *t,
+            _ => {
+                let now = std::time::Instant::now();
+                self.tag_preview_want = Some((path.to_path_buf(), now));
+                now
+            }
+        };
+        let waited = since.elapsed();
+        if waited < TAG_PREVIEW_DEBOUNCE {
+            ctx.request_repaint_after(TAG_PREVIEW_DEBOUNCE - waited);
+            return false;
+        }
+        if self.pending_open.is_some() || !crate::cache::foreground_io_quiet_for(TAG_PREVIEW_FG_QUIET) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+            return false;
+        }
+        true
     }
 
     /// タグパネル高画質プレビュー: 専用解像度（`TAG_PREVIEW_DECODE_EDGE`）で1件だけ

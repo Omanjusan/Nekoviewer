@@ -1264,6 +1264,8 @@ pub struct NekoviewApp {
     /// タグパネル高画質プレビュー: 生成リクエスト発行済みで結果待ちのパス
     /// （多重リクエスト防止用）。
     pub(crate) tag_preview_pending: Option<PathBuf>,
+    /// 高画質プレビューを要求したいパスと、その選択が始まった時刻（デバウンス用。`draw_tag_panel_preview` 参照）。
+    pub(crate) tag_preview_want: Option<(PathBuf, std::time::Instant)>,
     /// タグマネージャー(フェーズTM0): カテゴリ・tier・要素を管理する独立画面の開閉状態。
     /// 既存のメインタグ／属性タグUIとは今回切り離して考える。
     pub(crate) tag_manager_open: bool,
@@ -1952,6 +1954,7 @@ impl NekoviewApp {
             tag_preview_high_quality,
             tag_preview_texture: None,
             tag_preview_pending: None,
+            tag_preview_want: None,
             tag_manager_open: false,
             tag_search_enabled: std::collections::HashSet::new(),
             tag_search_view_open: false,
