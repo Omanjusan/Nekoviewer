@@ -1716,7 +1716,7 @@ fn draw_table_header(ui: &mut egui::Ui, total: f32) {
 
 /// 名前列に、元のファイル名を足す。候補の元になった部分は色つき・下線つきで強調し、ファイル名に無い表記には薄い注記、他にも付くファイルがあれば「（他N件）」を添える。
 fn append_source(job: &mut egui::text::LayoutJob, ui: &egui::Ui, src: &ctext::SourceFile) {
-    let font = egui::TextStyle::Small.resolve(ui.style());
+    let font = egui::TextStyle::Body.resolve(ui.style());
     let weak = ui.visuals().weak_text_color();
     let plain = egui::TextFormat { font_id: font.clone(), color: weak, ..Default::default() };
     match src.range {
@@ -1738,24 +1738,18 @@ fn append_source(job: &mut egui::text::LayoutJob, ui: &egui::Ui, src: &ctext::So
     }
 }
 
-/// 名前列のホバー: 候補名・元のファイル名の全文と、この候補が付くファイル名の一覧。
-fn show_name_hover(resp: egui::Response, name_full: &str, src: Option<&ctext::SourceFile>, list: &(Vec<String>, usize)) -> egui::Response {
+/// 名前列のホバー: 見出し「◆対象となるファイル」と、この候補が付くファイル名の番号つき一覧。
+fn show_name_hover(resp: egui::Response, list: &(Vec<String>, usize)) -> egui::Response {
+    if list.0.is_empty() {
+        return resp;
+    }
     resp.on_hover_ui(|ui| {
-        ui.label(egui::RichText::new(name_full).strong());
-        if let Some(src) = src {
-            ui.label(&src.name);
-            if !src.range.is_some() {
-                ui.weak(ctext::SOURCE_NOT_IN_NAME);
-            }
+        ui.label(egui::RichText::new(ctext::SOURCE_HOVER_HEADING).strong());
+        for (n, name) in list.0.iter().enumerate() {
+            ui.label(ctext::source_hover_line(n + 1, name));
         }
-        if list.0.len() > 1 {
-            ui.separator();
-            for n in &list.0 {
-                ui.weak(n);
-            }
-            if list.1 > 0 {
-                ui.weak(ctext::source_others(list.1));
-            }
+        if list.1 > 0 {
+            ui.weak(ctext::source_others(list.1));
         }
     })
 }
@@ -1842,8 +1836,8 @@ fn draw_candidate_row(
                 job.append(ctext::SOURCE_SEPARATOR, 0.0, egui::TextFormat { font_id: egui::TextStyle::Body.resolve(ui.style()), color: ui.visuals().weak_text_color(), ..Default::default() });
                 append_source(&mut job, ui, src);
             }
-            let resp = ui.add(egui::Label::new(job).truncate());
-            show_name_hover(resp, &name_full, source.as_ref(), &source_hover);
+            let resp = ui.add(egui::Label::new(job).truncate().show_tooltip_when_elided(false));
+            show_name_hover(resp, &source_hover);
         });
     } else {
         // 標準: 1段目に元のファイル名（候補の元になった部分を強調）、2段目にタグ候補名。
@@ -1851,14 +1845,14 @@ fn draw_candidate_row(
             if let Some(src) = &source {
                 let mut job = egui::text::LayoutJob::default();
                 append_source(&mut job, ui, src);
-                let resp = ui.add(egui::Label::new(job).truncate());
-                show_name_hover(resp, &name_full, source.as_ref(), &source_hover);
+                let resp = ui.add(egui::Label::new(job).truncate().show_tooltip_when_elided(false));
+                show_name_hover(resp, &source_hover);
             }
         });
         in_cell(ui, at(name_cell.left() - rect.left(), name_cell.right() - rect.left(), line1_h, row_h), left, |ui| {
             let label = egui::RichText::new(&name_full);
             let label = if name_is_new { label.strong() } else { label };
-            ui.add(egui::Label::new(label).truncate()).on_hover_text(&name_full);
+            ui.add(egui::Label::new(label).truncate().show_tooltip_when_elided(false)).on_hover_text(&name_full);
         });
     }
 
@@ -1880,7 +1874,7 @@ fn draw_candidate_row(
                 // 高さは文字に任せ、幅だけを制限する（高さ0の枠に置くと、文字が上下に切れる）。
                 ui.scope(|ui| {
                     ui.set_max_width(badge_w);
-                    ui.add(egui::Label::new(egui::RichText::new(&badge).color(amber)).truncate()).on_hover_text(&badge);
+                    ui.add(egui::Label::new(egui::RichText::new(&badge).color(amber)).truncate().show_tooltip_when_elided(false)).on_hover_text(&badge);
                 });
                 if ui.small_button(ctext::WHY_BUTTON_LABEL).clicked() {
                     *action = Some(RowAction::OpenWhy(i));
@@ -1891,7 +1885,7 @@ fn draw_candidate_row(
             ui.weak(hint).on_hover_text("「変更…」で、上位名も登録するかを選べます");
         }
         if compact {
-            ui.add(egui::Label::new(conclusion.as_str()).truncate()).on_hover_text(&conclusion);
+            ui.add(egui::Label::new(conclusion.as_str()).truncate().show_tooltip_when_elided(false)).on_hover_text(&conclusion);
         }
     });
 
@@ -1933,7 +1927,7 @@ fn draw_candidate_row(
     // 2段目（標準のみ）: 何をどこにどうするかの1文を、「内容・要確認」の列の中に出す（列をまたがない）。
     if !compact {
         in_cell(ui, at(cols.x_state() + CELL_PAD, cols.x_ops() - CELL_PAD, line1_h, row_h), left, |ui| {
-            ui.add(egui::Label::new(conclusion.as_str()).truncate()).on_hover_text(&conclusion);
+            ui.add(egui::Label::new(conclusion.as_str()).truncate().show_tooltip_when_elided(false)).on_hover_text(&conclusion);
         });
     }
 

@@ -236,6 +236,14 @@ pub(crate) fn source_file(c: &Candidate, inputs: &[CandidateInput]) -> Option<So
     Some(SourceFile { name, range: None, others })
 }
 
+/// ホバーの一覧の見出し。
+pub(crate) const SOURCE_HOVER_HEADING: &str = "◆対象となるファイル";
+
+/// ホバーの一覧の1行（番号つき）。
+pub(crate) fn source_hover_line(n: usize, name: &str) -> String {
+    format!("{n}. {name}")
+}
+
 /// ホバーに出す、この候補が付くファイル名の一覧（先頭 `SOURCE_HOVER_CAP` 件と、残りの件数）。
 pub(crate) fn source_hover(c: &Candidate, inputs: &[CandidateInput]) -> (Vec<String>, usize) {
     let names = c.files.iter().take(SOURCE_HOVER_CAP).filter_map(|&f| inputs.get(f)).map(|i| i.file_name.clone()).collect();
@@ -1066,6 +1074,12 @@ mod tests {
         // ホバーは先頭10件と、残りの件数。
         let (names, rest) = source_hover(&c, &inputs.iter().cloned().cycle().take(40).collect::<Vec<_>>());
         assert_eq!((names.len(), rest), (SOURCE_HOVER_CAP, 30));
+    }
+
+    #[test]
+    fn source_hover_line_is_numbered() {
+        assert_eq!(source_hover_line(1, "a.zip"), "1. a.zip");
+        assert_eq!(SOURCE_HOVER_HEADING, "◆対象となるファイル");
     }
 
     #[test]
