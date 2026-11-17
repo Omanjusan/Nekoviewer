@@ -1095,6 +1095,8 @@ pub struct NekoviewApp {
     /// イベントで更新）と違い、キー・テキスト・マウスボタン・タッチ・コピー貼り付けの「操作」だけで更新する
     /// （マウスを動かす・ホイールで一覧をスクロールするだけでは、手すき生成のタイマーを戻さない）。
     idle_last_activity: std::time::Instant,
+    /// `idle_last_activity` を戻す操作の見分け（クリックとドラッグの区別のため、押した位置を覚える）。
+    idle_op_tracker: idle_thumb::OperationTracker,
     /// 手すき時間のサムネ生成の進行状態（idle_thumb.rs）。
     idle_thumb: idle_thumb::IdleThumb,
     /// 直近フレームで確定した可視範囲（filtered_indices順のposition）。
@@ -1888,6 +1890,7 @@ impl NekoviewApp {
             thumb_priority_queued: HashSet::new(),
             thumb_last_user_activity: std::time::Instant::now(),
             idle_last_activity: std::time::Instant::now(),
+            idle_op_tracker: idle_thumb::OperationTracker::default(),
             idle_thumb: idle_thumb::IdleThumb::new(),
             thumb_visible_order_range: None,
             thumb_queue_built_at: std::time::Instant::now(),

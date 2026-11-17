@@ -131,22 +131,53 @@ impl IdleThumb {
     }
 }
 
-/// 手すき生成のタイマーを戻す「操作」か。キー・テキスト入力（IME含む）・マウスボタン・タッチ・コピー/切り取り/貼り付けだけ。
-/// マウスの移動・ホイールでの一覧のスクロール・ウィンドウのフォーカス変化などは、操作に数えない
-/// （眺めているだけの間にも、画面外のサムネを先回りして貯めるため）。許可リスト方式なので、
-/// 将来イベントの種類が増えても、手すきが勝手に止まる側には倒れない（数えない側に倒れる）。
-pub(super) fn is_deliberate_operation(event: &egui::Event) -> bool {
-    matches!(
-        event,
-        egui::Event::Key { .. }
+/// クリックとドラッグの境目（押した位置から動いた距離。egui の `max_click_dist` と同じ値）。
+const CLICK_MAX_DIST: f32 = 6.0;
+
+/// 手すき生成のタイマーを戻す「操作」を見分ける。
+/// 数える: キー・テキスト入力（IME含む）・コピー/切り取り/貼り付け・**クリック**（動かさずに押して離す）。
+/// 数えない: マウスの移動、ホイールのスクロール、フォーカス変化、ズーム、**ドラッグ**（押したまま動かす。
+/// スクロールバーのドラッグ・範囲選択・タッチのスワイプなど。タッチの `Touch` イベントも数えない。タップは
+/// egui-winit が `PointerButton` の押下と離すに翻訳するので、クリックとして数えられる）。
+/// 眺めているだけ・一覧を動かしているだけの間にも、画面外のサムネを先回りして貯めるため。
+/// 許可リスト方式なので、将来イベントの種類が増えても、手すきが勝手に止まる側には倒れない（数えない側に倒れる）。
+#[derive(Default)]
+pub(super) struct OperationTracker {
+    /// ボタンを押している間の、押した位置と、そこから `CLICK_MAX_DIST` を超えて動いたか。
+    press: Option<(egui::Pos2, bool)>,
+}
+
+impl OperationTracker {
+    /// イベントを1件見て、操作として数えるなら true。フレームのイベントは、すべて順に渡すこと
+    /// （押下位置を覚えるため、途中で止めない）。
+    pub(super) fn feed(&mut self, event: &egui::Event) -> bool {
+        match event {
+            egui::Event::Key { .. }
             | egui::Event::Text(_)
             | egui::Event::Ime(_)
-            | egui::Event::PointerButton { .. }
-            | egui::Event::Touch { .. }
             | egui::Event::Copy
             | egui::Event::Cut
-            | egui::Event::Paste(_)
-    )
+            | egui::Event::Paste(_) => true,
+            egui::Event::PointerButton { pos, pressed: true, .. } => {
+                self.press = Some((*pos, false));
+                false
+            }
+            egui::Event::PointerMoved(pos) => {
+                if let Some((start, moved)) = &mut self.press {
+                    if start.distance(*pos) > CLICK_MAX_DIST {
+                        *moved = true;
+                    }
+                }
+                false
+            }
+            // 離した。押した位置から動いていなければクリック。押下を見ていない離し（フォーカス復帰など）は数えない。
+            egui::Event::PointerButton { pos, pressed: false, .. } => match self.press.take() {
+                Some((start, moved)) => !moved && start.distance(*pos) <= CLICK_MAX_DIST,
+                None => false,
+            },
+            _ => false,
+        }
+    }
 }
 
 /// 手すきとみなせるか（最後の入力からの経過が、設定の待ち時間以上）。
@@ -333,38 +364,68 @@ impl NekoviewApp {
 mod tests {
     use super::*;
 
-    /// マウス移動・ホイールのスクロール・フォーカス変化は操作に数えず、キー・クリックなどは数える。
+    fn button(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE }
+    }
+
+    /// マウス移動・ホイール・フォーカス・ズーム・タッチの移動は数えず、キー・クリックなどは数える。
     #[test]
     fn only_deliberate_operations_reset_the_idle_timer() {
         let pos = egui::pos2(10.0, 20.0);
+        let mut t = OperationTracker::default();
         // 数えない（眺めているだけ）
-        assert!(!is_deliberate_operation(&egui::Event::PointerMoved(pos)));
-        assert!(!is_deliberate_operation(&egui::Event::MouseMoved(egui::vec2(1.0, 2.0))));
-        assert!(!is_deliberate_operation(&egui::Event::PointerGone));
-        assert!(!is_deliberate_operation(&egui::Event::MouseWheel {
+        assert!(!t.feed(&egui::Event::PointerMoved(pos)));
+        assert!(!t.feed(&egui::Event::MouseMoved(egui::vec2(1.0, 2.0))));
+        assert!(!t.feed(&egui::Event::PointerGone));
+        assert!(!t.feed(&egui::Event::MouseWheel {
             unit: egui::MouseWheelUnit::Line,
             delta: egui::vec2(0.0, -3.0),
             phase: egui::TouchPhase::Move,
             modifiers: egui::Modifiers::NONE,
         }));
-        assert!(!is_deliberate_operation(&egui::Event::WindowFocused(true)));
-        assert!(!is_deliberate_operation(&egui::Event::Zoom(1.1)));
-        // 数える（人が操作している）
-        assert!(is_deliberate_operation(&egui::Event::PointerButton {
+        assert!(!t.feed(&egui::Event::WindowFocused(true)));
+        assert!(!t.feed(&egui::Event::Zoom(1.1)));
+        assert!(!t.feed(&egui::Event::Touch {
+            device_id: egui::TouchDeviceId(0),
+            id: egui::TouchId(0),
+            phase: egui::TouchPhase::Move,
             pos,
-            button: egui::PointerButton::Primary,
-            pressed: true,
-            modifiers: egui::Modifiers::NONE,
+            force: None,
         }));
-        assert!(is_deliberate_operation(&egui::Event::Text("a".into())));
-        assert!(is_deliberate_operation(&egui::Event::Key {
+        // 数える（人が操作している）
+        assert!(t.feed(&egui::Event::Text("a".into())));
+        assert!(t.feed(&egui::Event::Key {
             key: egui::Key::A,
             physical_key: None,
             pressed: true,
             repeat: false,
             modifiers: egui::Modifiers::NONE,
         }));
-        assert!(is_deliberate_operation(&egui::Event::Paste("x".into())));
+        assert!(t.feed(&egui::Event::Paste("x".into())));
+    }
+
+    /// クリック（動かさずに押して離す）は数え、押した瞬間・ドラッグ（スワイプ・スクロールバー・範囲選択）は数えない。
+    #[test]
+    fn click_counts_but_press_and_drag_do_not() {
+        let mut t = OperationTracker::default();
+        let p = egui::pos2(100.0, 100.0);
+        // クリック: 押した瞬間は数えず、離したときに数える。
+        assert!(!t.feed(&button(p, true)));
+        assert!(t.feed(&button(p, false)));
+        // 小さな揺れ（6pt以内）は、クリックのまま。
+        assert!(!t.feed(&button(p, true)));
+        assert!(!t.feed(&egui::Event::PointerMoved(egui::pos2(103.0, 102.0))));
+        assert!(t.feed(&button(egui::pos2(103.0, 102.0), false)));
+        // ドラッグ（スワイプ）: 動かしてから離しても、数えない。
+        assert!(!t.feed(&button(p, true)));
+        assert!(!t.feed(&egui::Event::PointerMoved(egui::pos2(100.0, 160.0))));
+        assert!(!t.feed(&egui::Event::PointerMoved(egui::pos2(100.0, 101.0)))); // 途中で元の位置に戻っても、ドラッグのまま
+        assert!(!t.feed(&button(egui::pos2(100.0, 101.0), false)));
+        // 押下を見ていない離しは数えない。
+        assert!(!t.feed(&button(p, false)));
+        // ドラッグのあとの次のクリックは、普通に数える（状態が残らない）。
+        assert!(!t.feed(&button(p, true)));
+        assert!(t.feed(&button(p, false)));
     }
 
     #[test]

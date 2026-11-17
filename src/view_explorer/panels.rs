@@ -148,11 +148,16 @@ impl NekoviewApp {
     /// 呼び出し元が CentralPanel の Ui を渡す。
     pub fn ui(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
-        let (any_event, deliberate) = ctx.input(|i| (!i.events.is_empty(), i.events.iter().any(super::idle_thumb::is_deliberate_operation)));
-        if any_event {
+        let events = ctx.input(|i| i.events.clone());
+        if !events.is_empty() {
             self.thumb_last_user_activity = std::time::Instant::now();
         }
-        // 手すき生成のタイマーは、マウス移動・ホイール等では戻さない（`idle_last_activity` 参照）。
+        // 手すき生成のタイマーは、マウス移動・ホイール・ドラッグ（スワイプ等）では戻さない（`idle_last_activity` 参照）。
+        // 押下位置を覚えるため、全イベントを順に渡す（途中で止めない）。
+        let mut deliberate = false;
+        for event in &events {
+            deliberate |= self.idle_op_tracker.feed(event);
+        }
         if deliberate {
             self.idle_last_activity = std::time::Instant::now();
         }
