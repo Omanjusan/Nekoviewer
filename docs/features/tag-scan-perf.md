@@ -89,8 +89,8 @@ info.txt 等が欲しいだけなら、末尾の中央ディレクトリ（名�
 
 ## 7. 範囲の外（別件）
 
-ビューアーで本を開くとき（`list_images_zip_with_progress`）やメモリ見積もり（`estimate_archive_memory_zip`）も、同じ `ZipArchive::new` を使うので、冷たいHDDでは同じ全エントリのシークを払っているはず（200ページで約0.7秒、650エントリで約2秒と推定）。
-画像1枚ずつの読みまで `ZipArchive` に依存していて、直すには読み込みの経路全体を自前にする必要がある。影響範囲が大きいので、この件には含めていない。
+ビューアーで本を開くとき（`list_images_zip_with_progress`）やメモリ見積もり（`estimate_archive_memory_zip`）も、同じ `ZipArchive::new` を使うので、冷たいHDDでは同じ全エントリのシークを払っていた（実測で 1.8〜6秒）。
+この件は、タグ自動抽出の高速化とは別に、**[archive-open-perf.md](archive-open-perf.md) で対応した**。ここで作った中央ディレクトリの近道（`zip_cd.rs`）を、一覧取得・メモリ見積もり・ページ読み（`FastZip`）に使っている。
 
 ## 8. 実装
 

@@ -32,6 +32,12 @@ v1.1.0時点のキャッシュ層（`cache.rs` / `anim.rs` / `neko_dir.rs`）の
 - **ZIP/CBZ**: 生バイト列（`Raw`）を共有し、各デコードスレッドが自分用の軽量 `ZipArchive` を
   開いて並列にデコードする。`ZipArchive::by_name` は1エントリだけの個別解凍が可能な真の
   ランダムアクセスを持つため、生バイト列の共有だけで十分並列性が出る
+- **FileCache にまだ載っていない zip（ディスク直読み）**: `OpenArchive::Fast`（`FastZip`）が、
+  `ZipArchive::new` を通さず中央ディレクトリだけで開く。判断できない zip は従来の `ZipArchive`
+  （`OpenArchive::Disk`）に戻る。冷たいHDDの初回を速くするための経路
+  （[features/archive-open-perf.md](features/archive-open-perf.md)）
+- **FileCache の zip 丸読み**: 2MBずつ読み、ページ読み等の画面表示用のディスク読みが動いている間は
+  次の区切りを待つ（HDDで、ページ送りと同じディスクを取り合わないため。同ドキュメント §4.1）
 - **7z/tar（ソリッド圧縮）**: ランダムアクセスができないため、`FileCache` 側で1回だけ全画像を
   展開し（`Extracted`）、各デコードスレッドは読み取り専用でロックなしに参照する
 - あえて非対称にしている理由: もしZIPも「生きたアーカイブハンドルを共有」する形にすると
@@ -98,3 +104,5 @@ v1.1.0時点のキャッシュ層（`cache.rs` / `anim.rs` / `neko_dir.rs`）の
 （3枚以下→先頭1枚、4〜10枚→先頭・末尾、11枚以上→先頭・中間・末尾）し、サンプル平均×総ページ数
 が予算を超えるかを判定する。7z（ソリッド圧縮）はサンプリングでの軽量見積もりが成立しない
 ため、`estimate_archive_memory_7z` に委譲し一括展開結果を使った全件厳密判定を行う。
+zip のサンプル読みは `FastZip`（中央ディレクトリの近道。`ZipArchive::new` を通さない）で行い、
+使えない zip だけ従来の `ZipArchive` に戻る（[features/archive-open-perf.md](features/archive-open-perf.md)）。
