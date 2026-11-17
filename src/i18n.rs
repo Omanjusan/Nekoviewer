@@ -11623,16 +11623,17 @@ pub fn lang_code() -> &'static str {
     display().code()
 }
 
-/// 日本語と中国語を併記した1つの文字列にする。同じ文字列なら、1つだけ。
-/// 長い文や改行を含む文は、2行に分ける（「日本語」の下に「中文」）。短いものは「日本語 ／ 中文」。
+/// 日本語と中国語を併記した1つの文字列にする。日本語の前に「【日】」、中国語の前に「【中】」を付けて、どちらがどちらかを区別する。
+/// 同じ文字列なら、1つだけ（印は付けない）。
+/// 長い文や改行を含む文は、2行に分ける（上が日本語、下が中国語）。短いものは「【日】… ／ 【中】…」。
 pub fn join_bilingual(ja: &str, zh: &str) -> String {
     if ja == zh {
         return ja.to_string();
     }
     if ja.contains('\n') || zh.contains('\n') || ja.chars().count() > 40 {
-        format!("{ja}\n{zh}")
+        format!("【日】{ja}\n【中】{zh}")
     } else {
-        format!("{ja} ／ {zh}")
+        format!("【日】{ja} ／ 【中】{zh}")
     }
 }
 
@@ -11707,11 +11708,11 @@ mod display_tests {
 
     #[test]
     fn bilingual_join_rules() {
-        assert_eq!(join_bilingual("次へ", "下一步"), "次へ ／ 下一步");
+        assert_eq!(join_bilingual("次へ", "下一步"), "【日】次へ ／ 【中】下一步");
         assert_eq!(join_bilingual("OK", "OK"), "OK");
-        assert_eq!(join_bilingual("1行目\n2行目", "第1行"), "1行目\n2行目\n第1行");
+        assert_eq!(join_bilingual("1行目\n2行目", "第1行"), "【日】1行目\n2行目\n【中】第1行");
         let long = "あ".repeat(41);
-        assert_eq!(join_bilingual(&long, "中"), format!("{long}\n中"));
+        assert_eq!(join_bilingual(&long, "中"), format!("【日】{long}\n【中】中"));
     }
 
     #[test]
@@ -11721,7 +11722,7 @@ mod display_tests {
         assert_eq!(tr_for(Display::Zh, "日", "en", "中"), "中");
         let a = tr_for(Display::JaZh, "日", "en", "中");
         let b = tr_for(Display::JaZh, "日", "en", "中");
-        assert_eq!(a, "日 ／ 中");
+        assert_eq!(a, "【日】日 ／ 【中】中");
         assert!(std::ptr::eq(a, b));
     }
 
@@ -11733,7 +11734,7 @@ mod display_tests {
             Lang::Chinese => "3项".to_string(),
         };
         assert_eq!(render_for(Display::En, f), "3 items");
-        assert_eq!(render_for(Display::JaZh, f), "3件 ／ 3项");
+        assert_eq!(render_for(Display::JaZh, f), "【日】3件 ／ 【中】3项");
     }
 }
 
