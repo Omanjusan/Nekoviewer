@@ -253,6 +253,8 @@ pub struct ResizeInfo {
     pub src: (u32, u32),
     pub dst: (u32, u32),
     pub color: image::ColorType,
+    /// 縮小に使った経路（`fir_resize` が控える）。例: `U8x3` / `L8:U8` / `L8:RGBA→U8x4` / `RGBA→U8x4`。縮小なしは空。
+    pub path: &'static str,
     pub elapsed: std::time::Duration,
 }
 
@@ -263,9 +265,18 @@ impl ResizeInfo {
         if self.src == self.dst {
             format!("元={}x{}({:?}) 縮小なし 変換={:.1}ms", self.src.0, self.src.1, self.color, ms)
         } else {
-            format!("元={}x{}({:?}) →{}x{} 縮小={:.1}ms", self.src.0, self.src.1, self.color, self.dst.0, self.dst.1, ms)
+            format!("元={}x{}({:?}) →{}x{} 縮小={:.1}ms[{}]", self.src.0, self.src.1, self.color, self.dst.0, self.dst.1, ms, self.path)
         }
     }
+}
+
+thread_local! {
+    /// `fir_resize` が最後に使った経路名（`ResizeInfo.path` 用）。
+    static LAST_RESIZE_PATH: std::cell::Cell<&'static str> = const { std::cell::Cell::new("") };
+}
+
+fn set_resize_path(name: &'static str) {
+    LAST_RESIZE_PATH.with(|c| c.set(name));
 }
 
 thread_local! {
@@ -433,6 +444,7 @@ fn fir_resize(img: image::DynamicImage, nw: u32, nh: u32, filter: image::imageop
     let options = ResizeOptions::new().resize_alg(to_fir_alg(filter));
     match img {
         image::DynamicImage::ImageRgb8(rgb) => {
+            set_resize_path("Rgb8:U8x3");
             let (w, h) = (rgb.width(), rgb.height());
             let src = FirImage::from_vec_u8(w, h, rgb.into_raw(), PixelType::U8x3).unwrap();
             let mut dst = FirImage::new(nw, nh, PixelType::U8x3);
@@ -443,6 +455,7 @@ fn fir_resize(img: image::DynamicImage, nw: u32, nh: u32, filter: image::imageop
         image::DynamicImage::ImageLuma8(gray) => {
             let (w, h) = (gray.width(), gray.height());
             if l8_prefers_single_channel(w, h, nw, nh, filter) {
+                set_resize_path("L8:U8");
                 let src = FirImage::from_vec_u8(w, h, gray.into_raw(), PixelType::U8).unwrap();
                 let mut dst = FirImage::new(nw, nh, PixelType::U8);
                 Resizer::new().resize(&src, &mut dst, &options).unwrap();
@@ -450,10 +463,14 @@ fn fir_resize(img: image::DynamicImage, nw: u32, nh: u32, filter: image::imageop
                 luma8_to_rgba(&gray_out)
             } else {
                 // 縮小が緩い（カーネルが小さい）ときは、1チャンネル経路が極端に遅い。RGBA化して4チャンネルで縮小する。
+                set_resize_path("L8:RGBA→U8x4");
                 resize_rgba8(luma8_to_rgba(&gray), nw, nh, &options)
             }
         }
-        _ => resize_rgba8(img.into_rgba8(), nw, nh, &options),
+        _ => {
+            set_resize_path("RGBA→U8x4");
+            resize_rgba8(img.into_rgba8(), nw, nh, &options)
+        }
     }
 }
 
@@ -597,6 +614,7 @@ fn decode_bytes_to_content(
 pub fn resize_for_display(img: image::DynamicImage, filter: image::imageops::FilterType, target: Option<(u32, u32)>) -> image::RgbaImage {
     set_last_page_meta(PageMeta { orig: (img.width(), img.height()), animated: false });
     let (w, h, color) = (img.width(), img.height(), img.color());
+    set_resize_path("");
     let t = std::time::Instant::now();
     let (dst, out) = match target {
         Some((tw, th)) => {
@@ -605,7 +623,7 @@ pub fn resize_for_display(img: image::DynamicImage, filter: image::imageops::Fil
         }
         None => ((w, h), into_rgba_fast(img)),
     };
-    let info = ResizeInfo { src: (w, h), dst, color, elapsed: t.elapsed() };
+    let info = ResizeInfo { src: (w, h), dst, color, path: LAST_RESIZE_PATH.with(|c| c.get()), elapsed: t.elapsed() };
     LAST_RESIZE_INFO.with(|c| c.set(Some(info)));
     out
 }
