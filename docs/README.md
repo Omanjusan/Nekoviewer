@@ -42,6 +42,7 @@
 - [features/perf-fixture.md](features/perf-fixture.md) — 速度計測フィクスチャー（開発専用）。サムネのみ／フルサポートの処理時間比較、DBクリアと復元、手動確認項目
 - [features/tag-scan-perf.md](features/tag-scan-perf.md) — タグ自動抽出の高速化（zip の中央ディレクトリだけを末尾から読む近道・マジック判定の省略・従来経路への戻り条件）、計測ログの見方、手動テスト手順
 - [features/archive-open-perf.md](features/archive-open-perf.md) — アーカイブを開く速度（冷たいHDD）。開く経路から `ZipArchive::new` を外す近道・FastZip・同じディスクを取り合わせない仕組み（FileCache の譲り・手すき生成・タグプレビューのデバウンス・サムネバーのページ優先と同時2本）、計測ログの見方、手動テスト手順
+- [features/viewer-decode-perf.md](features/viewer-decode-perf.md) — ビューアーの静止画デコード・縮小の速度。真グレー(L8)の縮小経路の切り替え（タップ数8の境目）、等倍に近い縮小をGPUに任せる設定（既定ON・縮小率0.85以上）、縮小の内訳ログ、開発用ベンチ、見送った案（WebP高速化・libjpeg-turbo ほか）、手動テスト手順
 - [features/idle-thumb.md](features/idle-thumb.md) — 手すき時間のサムネ生成（操作が3秒止まっている間に、画面外のサムネをDBへ先回りして貯める）、手動確認項目
 - [features/tag-search.md](features/tag-search.md) — タグ検索タブ（フォルダ横断のタグ絞り込み、単一選択カテゴリ、左ペイン幅の可変）と手動テスト手順
 - [features/search-tab.md](features/search-tab.md) — 検索タブ（新=台帳全件／旧=基点フォルダ）、検索文字列の書き方、進捗・中断・他タブでの継続、

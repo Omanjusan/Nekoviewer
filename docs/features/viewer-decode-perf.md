@@ -1,0 +1,140 @@
+# ビューアーの静止画デコード・縮小の速度
+
+ビューアーで1ページを出すまでの、**デコードと縮小（表示サイズへの CPU リサイズ）** の無駄を減らした。
+アーカイブを開く速度（読み・一覧）は [archive-open-perf.md](archive-open-perf.md)、サムネの速度は [idle-thumb.md](idle-thumb.md)・[cache-design.md](../cache-design.md) が別に扱う。ここは**ページ1枚ぶんの CPU 処理**だけ。
+GPU に出す画素（テクスチャ）の形は、画像フィルター・Exif 向き・見開きなど既存の仕様のまま。変わるのは「縮小をだれが行うか」と「縮小の経路」だけ。
+
+## 1. 実測で分かったこと
+
+実機（COMIC ExE 637枚、1062x1500 の WebP/JPEG、表示領域 941x1330、32スレッド機）のログと、開発用ベンチ（§6）の結果。
+
+| 区分 | 結果 |
+|---|---|
+| 1ページの内訳（改修前） | 18〜25ms。うち縮小が 6〜8ms（Rgb8）、WebP のデコード本体が約12ms、JPEG のデコード本体が約3.5ms |
+| 縮小の相手 | 元1062x1500→表示941x1330 は縮小率0.887（ほぼ等倍）。それでも毎ページ縮小していた |
+| WebP のデコード時間 | **ビットレートに比例**（1062x1500 で q75=123KB→6.8ms、q90=276KB→11.6ms、q96=469KB→16.8ms）。固有コストで、安価に縮める手はない（§7） |
+| 真グレー(L8)画像 | `fast_image_resize` の1チャンネル(U8)経路が、**カーネルのタップ数（≒2×サポート÷縮小率）が8未満だと極端に遅い**。近等倍の縮小で U8 14ms、U8x4 6ms |
+
+## 2. 変更の一覧
+
+| | 内容 | 効果（実測） |
+|---|---|---|
+| P1 | **L8 を Luma のまま縮小**し、小さい出力だけ RGBA 化する。縮小なしの L8→RGBA 変換も専用ループにした（`luma8_to_rgba`・`into_rgba_fast`） | 強縮小の L8 PNG：縮小 45→10ms、縮小なし 35→7.5ms |
+| P2 | 縮小なしの RGBA 化を `into_rgba8`（Rgba8 はコピーせず移動）に。zip 読みの出力 `Vec` を、宣言サイズで事前確保する（上限 `PREALLOC_CAP`=64MiB。宣言サイズは信用しない） | RGBA PNG の縮小なし 8→1.2ms |
+| P5 | perf ログに、縮小の内訳（元寸法・色形式・縮小先・縮小の所要・経路）を追加 | §5 |
+| P7 | **L8 の縮小を、タップ数で経路切り替え**（`l8_prefers_single_channel`）。広いカーネル（強縮小）は U8、狭い（近等倍）は「RGBA 化→U8x4」 | 近等倍の L8：Lanczos3 15.9→7.9ms。実機ログで 15→8ms、ジョブ全体 -5ms |
+| P8 | **等倍に近い縮小を CPU で行わず、元の大きさのまま GPU（LINEAR 補間）に任せる**（設定でON/OFF、既定ON）。§3 | 縮小 6.8→1.4ms、ジョブ全体 約22→17.5ms（実機ログ） |
+
+### 2.1 P7 の切り替え規則
+
+縮小率が大きい軸（＝タップ数が小さい軸）で判定する。タップ数 = 2×サポート÷縮小率。
+
+| フィルター | U8 のまま縮小する条件 | それ以外 |
+|---|---|---|
+| CatmullRom（サポート2） | タップ数 ≥ 8（縮小率 ≦ 約0.5） | RGBA 化→U8x4 |
+| Lanczos3（サポート3） | タップ数 ≥ 8（縮小率 ≦ 約0.75） | 同上 |
+| Triangle・Gaussian（サポート1） | タップ数 ≥ 3 | 同上 |
+| Nearest | 常に U8 | — |
+
+境目は実測（`decode_bench_l8_taps_rule`）。Rgb8・RGBA の縮小経路は変更していない。
+
+## 3. P8：等倍に近い縮小のスキップ
+
+### 3.1 仕様
+
+- 縮小率 = min(枠幅÷元幅, 枠高÷元高)。**0.85 以上、1 未満**なら CPU 縮小を行わず、元の大きさ・元の画素のまま返す（`NEAR_UNITY_SKIP_SCALE`＝0.85、固定値）。表示側が、枠に合わせて GPU の LINEAR 補間で縮める。
+- 画質は、CPU 縮小（画像フィルターの設定：Lanczos3 等）ではなく GPU の補間になる。縮小率0.85以上では、1出力画素が元の約1.18画素を参照する程度で、折り返しは小さい。
+- 元寸法（`PageMeta.orig`）は従来どおり。画像情報オーバーレイの「オリジナル」寸法も変わらない。
+- **適用する条件**（すべて満たすときだけ。`near_unity_skip_policy`、[workers.rs](../../src/view_explorer/workers.rs)）：
+  - 設定「等倍に近い縮小をGPUに任せる」がON（既定）。
+  - 基準解像度が「ウィンドウ追従」。
+  - 原寸ズームでも虫眼鏡でもない通常表示。
+  - 元画像の縦横が、GPU テクスチャの1辺の上限（`max_texture_side`）以下。超える元画像は必ず縮小する。
+- **対象外**：サムネ（サムネ用ワーカーは条件を設定しない）、原寸・虫眼鏡（目標が上限幅の正方形で、ウィンドウに合わせた縮小ではない）、アニメ（GIF/APNG/AVIF/WebP のリング経路）、OCR の原寸デコード。
+- テクスチャは、スキップしたページで約 1/縮小率² 倍（0.887 なら約1.27倍）大きくなる。
+
+### 3.2 設定
+
+- 場所：設定ダイアログ →「ビューアー」タブの最上部（「Exif Orientationによる自動回転」の直下）。ラベルは「■ 等倍に近い縮小をGPUに任せる（高速表示）」（英：Let the GPU downscale near-1:1 pages (faster display)／中：接近原尺寸的缩小交给GPU（加速显示））。
+- 永続：state の `near_unity_skip_enabled`。キーなし・不正値は既定ON。
+- 切り替えると、画像フィルターの変更と同じ流れで、開いているアーカイブの**静止画だけ**を即座に再デコードする（`poll_near_unity_skip_change`。アニメは触らない）。
+
+### 3.3 実装の受け渡し
+
+設定 → `LoadRequest.near_unity_skip`（`Option<NearUnitySkip>`）→ ページ用デコードワーカーがジョブの間だけスレッドローカル（`JOB_NEAR_UNITY_SKIP`）に置く → `decode_bytes_to_content`・`load_raw_content_from_bytes` が `resize_for_display_with` へ渡す。デコード関数群の引数は増やしていない。設定しないスレッド（サムネ・OCR）は常に従来どおり縮小する。
+
+## 4. 実装
+
+- [cache.rs](../../src/cache.rs)：`fir_resize`（Rgb8・L8・その他の経路）、`luma8_to_rgba`・`into_rgba_fast`・`resize_rgba8`、`l8_prefers_single_channel`、`NearUnitySkip`・`NEAR_UNITY_SKIP_SCALE`・`resize_for_display_with`（`resize_for_display` は `skip=None` で委譲）、`ResizeInfo`・`LAST_RESIZE_INFO`・`LAST_RESIZE_PATH`、`JOB_NEAR_UNITY_SKIP`、`LoadRequest.near_unity_skip`。
+- [zip.rs](../../src/fs/archive/zip.rs)・[zip_cd.rs](../../src/fs/archive/zip_cd.rs)：事前確保（`PREALLOC_CAP`）。
+- [workers.rs](../../src/view_explorer/workers.rs)：`near_unity_skip_policy`、`poll_near_unity_skip_change`、2か所の `LoadRequest` 生成。
+- [gui_config.rs](../../src/gui_config.rs)：`ViewerConfig.near_unity_skip_enabled`（読み書き・既定ON）。[view_gui_config.rs](../../src/view_gui_config.rs)：設定ダイアログのチェックボックス。[i18n.rs](../../src/i18n.rs)：ラベル・説明（日・英・中）。
+- [view_reader.rs](../../src/view_reader.rs)：`max_texture_side()`。
+
+テスト（`cargo test`）：
+- cache.rs：`luma8_to_rgba` が image クレートの変換と完全一致、L8 縮小が従来経路と差1以内（強縮小）・完全一致（近等倍）でグレー・不透明のまま、経路の選択（`l8_prefers_single_channel` の境目）、縮小なしで元寸法が `PageMeta` に残る、`NearUnitySkip::applies` の境目（0.85 を含み 0.84 は含まない・縦横の厳しい側・テクスチャ上限）、`resize_for_display_with` のスキップ時に元の大きさ・画素のまま／OFF では縮小される。
+- gui_config.rs：`near_unity_skip_enabled` の既定ON・OFF・不正値。
+
+## 5. 計測ログ（`[perf/open]`）
+
+[archive-open-perf.md §5](archive-open-perf.md) の `ページ内訳`・`ページジョブ(デコードワーカー)` の末尾に、静止画の縮小の内訳が付く。
+
+```
+元=1062x1500(Rgb8) →941x1330 縮小=6.5ms[Rgb8:U8x3]
+元=1062x1500(L8)   →941x1330 縮小=7.9ms[L8:RGBA→U8x4]
+元=3000x4000(L8)   →720x960  縮小=8.2ms[L8:U8]
+元=1062x1500(Rgb8) 縮小なし 変換=1.2ms[スキップ(GPU任せ)]
+```
+
+- 経路名：`Rgb8:U8x3`、`L8:U8`、`L8:RGBA→U8x4`、`RGBA→U8x4`、`スキップ(GPU任せ)`。縮小なしで経路が空なら、もともと縮小の要らないページ。
+- `デコード`＝読みのあとの全処理で、縮小を含む。**`デコード − 縮小` がデコード本体**。
+- アニメ・TXT・失敗したページには付かない。
+
+## 6. 開発用の計測ハーネス
+
+[src/cache/decode_bench.rs](../../src/cache/decode_bench.rs)（`#[ignore]`、通常のテストには入らない）。`/usr/share/backgrounds` の実写 JPEG から、各形式（JPEG・PNG・WebP）を作って測る。
+
+```
+cargo test --profile fastrel decode_bench -- --ignored --nocapture --test-threads=1
+```
+
+| テスト | 見るもの |
+|---|---|
+| `decode_bench` | 形式ごとの、EXIF 検出・デコード・縮小（枠3種×フィルター2種）・RGBA 化・egui 変換 |
+| `decode_bench_l8_near_unity` | 実ログの 1062x1500→941x1330 での、L8 と Rgb8 の縮小経路比較 |
+| `decode_bench_l8_strategy` | L8 の戦略比較（U8 のまま／RGBA 化→U8x4）を、近等倍・強縮小の両方で |
+| `decode_bench_l8_crossover` | 縮小率を振って切り替え点を探る |
+| `decode_bench_l8_taps_rule` | 「タップ数8以上なら U8 が速い」の検証（Triangle・Nearest を含む） |
+
+## 7. 見送ったもの（実測済み）
+
+- **WebP のデコードの高速化**：libwebp の `use_threads` は 1.00x（libwebp-sys が `WEBP_USE_THREAD` 無しでビルドされている）、SSE4.1／AVX2 の feature は 2%以内（誤差。`avx2` は C ビルド全体に `-mavx2` が付くため旧 CPU で動かなくなる恐れもある）、高速アップサンプルは 2〜3%（画質低下）。`webp` crate の `to_image()` のコピーは 1.6MP で約0.1ms、12MP で約7ms（約9%）で、直接呼びに替える費用に見合わない。
+- **JPEG の縮小デコード（libjpeg-turbo）**：全デコードで zune-jpeg より約25〜40%速く、DCT 縮小でさらに +5〜30%だが、C 依存になる（musl 単一バイナリ・Windows クロス・AppImage への影響）。今回の漫画ページ（1.6MP、縮小率0.887）では DCT 縮小が使えず、効果は小さい。大きな JPEG（12MP 以上）を扱うなら再検討する。純Rust の jpeg-decoder の `scale()` は効果がほぼ無かった（ハフマン復号が支配的）。
+- **egui の `from_rgba_premultiplied` 化**：1.25→0.35ms だが、不透明判定の全画素走査で実質の短縮は約0.6ms。見送り。
+- **`ForegroundIoGuard` を読み区間に限定**：FileCache の丸読みの「譲り待ち」が実読みより長い（実読み約100ms に対し譲り待ち 811ms）が、ページ読みが OS キャッシュで 0.1ms のため体感の影響は見えない。HDD で効く条件が逆になる恐れもあり、見送り。
+- **先読み投機実行の並列数（固定1）**：設計の記述が docs に無く、設計からやり直す対象として保留。
+- **TXT ページ（info.txt）を最初から目標サイズで描く**：最初の1ページの縮小（約17.7ms）が減るが、設計が要る。未着手。
+
+## 8. 手動テスト
+
+perf ログは、設定→デバッグの perf ログを ON にして見る。基準は COMIC ExE 型（1062x1500 の WebP/JPEG、表示領域の高さがそれより小さい）。
+
+| # | 手順 | 期待 | 確認 |
+|---|---|---|---|
+| 1 | 設定「ビューアー」タブを開く | 最上部の Exif の下に「等倍に近い縮小をGPUに任せる」のチェックがあり、**既定ON**。日・英・中で文言が出る | [ ] |
+| 2 | ON のまま、表示領域より少し大きい（縮小率0.85〜0.99）ページを順に送る | ログに `縮小なし 変換=…ms[スキップ(GPU任せ)]`。縮小 6〜8ms が約1ms に | [ ] |
+| 3 | 2 の状態で、画像情報オーバーレイを見る | 「オリジナル」寸法が元画像の寸法のまま。表示は枠に収まる（はみ出さない・欠けない） | [ ] |
+| 4 | チェックを OFF にして［反映］ | 開いている静止画が即座に再デコードされ、ログが `縮小=…ms[Rgb8:U8x3]` に戻る。ON に戻すとスキップに戻る | [ ] |
+| 5 | ON と OFF で、同じページの見た目を比べる（細い線・文字・網点） | 差が許容できるか。気になるなら OFF にできる | [ ] |
+| 6 | ウィンドウを小さくして、縮小率を0.85未満にする（リサイズ後に再デコード） | 通常の縮小に戻る（`[Rgb8:U8x3]` 等）。スキップされない | [ ] |
+| 7 | ウィンドウを元画像より大きくする（縦1500px 以上） | もともと縮小なし（スキップの表示は出ない）。見た目が従来と同じ | [ ] |
+| 8 | 基準解像度を「原寸」に切り替える | スキップされない（`スキップ`が出ない）。表示が従来と同じ | [ ] |
+| 9 | 虫眼鏡を ON にする／原寸ズームにする | スキップされない。画質・倍率が従来と同じ | [ ] |
+| 10 | 見開きにする | 両ページとも同じ規則で、表示が崩れない（2枚の高さ・位置） | [ ] |
+| 11 | GPU テクスチャ上限を超える元画像（長辺 8192px 超）を開く | 必ず縮小される（スキップされない）。表示される | [ ] |
+| 12 | アニメ（GIF/APNG/WebP アニメ）のあるアーカイブで 4 の ON/OFF を切り替える | アニメの再生位置が維持される。静止画だけが再デコードされる | [ ] |
+| 13 | サムネバー・エクスプローラーのサムネを見る | 見た目・生成速度が変わらない（P8 の対象外） | [ ] |
+| 14 | 設定を OFF にして、アプリを再起動する | OFF のまま。ON のまま再起動すると ON のまま | [ ] |
+| 15 | 真グレー(L8)の画像（グレースケール JPEG/PNG）のアーカイブを、P8 を OFF にして開く | 近等倍で `縮小=…ms[L8:RGBA→U8x4]`（約8ms）、強縮小で `[L8:U8]`。縮小の所要が Rgb8 の2倍を超えない | [ ] |
+| 16 | 縮小の見た目を、L8 と Rgb8 で比べる | グレーの階調・黒つぶれ・白飛びが従来と同じ（差は±1段階以内） | [ ] |
+| 17 | perf ログを OFF にして使う | ログが出ない。表示・速度は変わらない | [ ] |
