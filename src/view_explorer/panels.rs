@@ -276,7 +276,6 @@ impl NekoviewApp {
         self.draw_memory_warning_dialog(&ctx);
         self.draw_magnifier_zoom_notice(&ctx);
         self.draw_decode_edge_prompt(&ctx);
-        self.draw_folder_book_access_notice(&ctx);
         self.draw_favorite_dialog(&ctx);
         self.draw_virtual_dialogs(&ctx);
         self.draw_tree_sort_dialog(&ctx);
@@ -436,18 +435,13 @@ impl NekoviewApp {
             MenuBarButton::HelpToggle => {
                 self.help_enabled = !self.help_enabled;
             }
-            MenuBarButton::ScoringToggle => {
-                let mut cfg = self.viewer_cfg.lock().unwrap();
-                cfg.rating_overlay_enabled = !cfg.rating_overlay_enabled;
-                drop(cfg);
-                self.persist_state();
-            }
-            MenuBarButton::ToolPaletteToggle => {
-                let mut cfg = self.viewer_cfg.lock().unwrap();
-                cfg.tool_palette.visible = !cfg.tool_palette.visible;
-            }
-            MenuBarButton::FolderBookAccessToggle => {
-                self.toggle_folder_book_access();
+            MenuBarButton::Convenience => {
+                // カーソルが乗った時点で自動展開されるが、マウスで閉じた後などはEnterで開き直す。
+                if self.convenience_menu_open {
+                    self.close_convenience_menu();
+                } else {
+                    self.open_convenience_menu_by_keyboard();
+                }
             }
             MenuBarButton::ViewerRecover => {
                 if self.viewer_is_open() {
@@ -739,7 +733,6 @@ impl NekoviewApp {
         let help_reload = i18n::t().help_reload();
         let help_sort1 = i18n::t().help_sort_primary();
         let help_info = i18n::t().help_card_info();
-        let help_toggles = i18n::t().help_view_toggles();
         let help_thumb = i18n::t().help_thumbnail_status();
         ui.horizontal(|ui| {
             // 隠しファイル表示トグルは設定ダイアログの「共通」タブへ移設した。
@@ -793,6 +786,11 @@ impl NekoviewApp {
             if r_band.clicked() {
                 self.open_card_band_dialog();
             }
+
+            ui.separator();
+
+            // ── 便利機能（フォルダ本アクセス・スコアリング・ツールボックスの展開メニュー1個） ──────────
+            self.draw_convenience_button(ui, is_cursor(MenuBarButton::Convenience), help_on);
 
             // ── ステータスウィンドウボタン（右端） ────────────────────────
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -856,59 +854,6 @@ impl NekoviewApp {
                 }
 
                 ui.separator();
-
-                // ── ツールパレット（ビューアー内ツールボックス）表示ON/OFF ─────────
-                // ファイルを渡り歩いても同じ挙動を示す永続設定のため viewer_cfg 直結。
-                // RightToLeftレイアウトのため、コード順で後に置いた方が視覚上は左（Settingsの左隣）になる。
-                let tool_palette_visible = self.viewer_cfg.lock().unwrap().tool_palette.visible;
-                let r_tool_palette = ui.scope(|ui| {
-                    if tool_palette_visible {
-                        ui.visuals_mut().selection.bg_fill = egui::Color32::from_rgb(30, 100, 200);
-                        ui.visuals_mut().selection.stroke.color = egui::Color32::WHITE;
-                    }
-                    ui.selectable_label(tool_palette_visible, i18n::t().tool_palette_toggle_button(tool_palette_visible))
-                }).inner;
-                if is_cursor(MenuBarButton::ToolPaletteToggle) { draw_cursor_ring(ui, r_tool_palette.rect); }
-                help_tip(&r_tool_palette, help_on, &help_toggles);
-                if r_tool_palette.clicked() {
-                    self.viewer_cfg.lock().unwrap().tool_palette.visible = !tool_palette_visible;
-                }
-
-                // ── スコアリング（末尾の評価オーバーレイ）ON/OFF ────────────────────
-                // 邪魔に感じる人向けの永続設定。RightToLeftレイアウトのため、
-                // コード順で後に置いた方が視覚上は左（フォルダ本アクセスの右隣）になる。
-                let scoring_on = self.viewer_cfg.lock().unwrap().rating_overlay_enabled;
-                let r_scoring = ui.scope(|ui| {
-                    if scoring_on {
-                        ui.visuals_mut().selection.bg_fill = egui::Color32::from_rgb(30, 100, 200);
-                        ui.visuals_mut().selection.stroke.color = egui::Color32::WHITE;
-                    }
-                    ui.selectable_label(scoring_on, i18n::t().scoring_toggle_button(scoring_on))
-                }).inner;
-                if is_cursor(MenuBarButton::ScoringToggle) { draw_cursor_ring(ui, r_scoring.rect); }
-                help_tip(&r_scoring, help_on, &help_toggles);
-                if r_scoring.clicked() {
-                    self.viewer_cfg.lock().unwrap().rating_overlay_enabled = !scoring_on;
-                    self.persist_state();
-                }
-
-                // ── 「フォルダ本アクセス」トグル ────────────────────────────────
-                // ONの間、対象フォルダ（アーカイブ非混在・直下に生画像あり）に入ると、
-                // 通常の一覧表示の代わりに仮想アーカイブとしてビューアーを開く。
-                // 永続化しない（アプリ再起動のたびに毎回OFFへ戻る）。
-                let folder_book_access_on = self.folder_book_access_enabled;
-                let r_folder_book_access = ui.scope(|ui| {
-                    if folder_book_access_on {
-                        ui.visuals_mut().selection.bg_fill = egui::Color32::from_rgb(30, 100, 200);
-                        ui.visuals_mut().selection.stroke.color = egui::Color32::WHITE;
-                    }
-                    ui.selectable_label(folder_book_access_on, i18n::t().folder_book_access_toggle_button(folder_book_access_on))
-                }).inner;
-                if is_cursor(MenuBarButton::FolderBookAccessToggle) { draw_cursor_ring(ui, r_folder_book_access.rect); }
-                help_tip(&r_folder_book_access, help_on, &help_toggles);
-                if r_folder_book_access.clicked() {
-                    self.toggle_folder_book_access();
-                }
 
                 ui.separator();
                 let r_thumb = ui.label(self.thumbnail_status_text());

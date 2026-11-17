@@ -53,6 +53,7 @@ mod spread_state;
 mod tag_apply;
 mod tag_candidates;
 mod tag_confirm_text;
+mod convenience_text;
 mod tag_corpus;
 mod tag_eval;
 mod tag_features;
@@ -180,7 +181,6 @@ fn main() {
         if let Some(v) = state.app_default_slot { cfg.default_slot = v; }
         if let Some(v) = state.app_magnifier_zoom_notice_shown { cfg.magnifier_zoom_notice_shown = v; }
         if let Some(v) = state.app_max_decode_edge_prompt_answered { cfg.max_decode_edge_prompt_answered = v; }
-        if let Some(v) = state.app_folder_book_access_warning_seen { cfg.folder_book_access_warning_seen = v; }
         if let Some(v) = state.app_launch_x11 { cfg.launch_x11 = v; }
         if let Some(v) = state.app_text_page { cfg.text_page = v; }
         if let Some(v) = state.app_tag_match { cfg.tag_match = v; }

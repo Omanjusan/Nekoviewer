@@ -4624,28 +4624,6 @@ For files without metadata, setting the main category etc. by hand and training 
     }
 
     /// 言語選択コンボボックス用の、その言語自身の正式名称（現在の表示言語に依存しない）。
-    pub fn scoring_toggle_button(self, on: bool) -> &'static str {
-        match (self, on) {
-            (Lang::Japanese, true)  => "スコアリングON",
-            (Lang::Japanese, false) => "スコアリングOFF",
-            (Lang::English, true)   => "Scoring: ON",
-            (Lang::English, false)  => "Scoring: OFF",
-            (Lang::Chinese, true)   => "评分：开",
-            (Lang::Chinese, false)  => "评分：关",
-        }
-    }
-
-    pub fn tool_palette_toggle_button(self, on: bool) -> &'static str {
-        match (self, on) {
-            (Lang::Japanese, true)  => "ツールボックスON",
-            (Lang::Japanese, false) => "ツールボックスOFF",
-            (Lang::English, true)   => "Toolbox: ON",
-            (Lang::English, false)  => "Toolbox: OFF",
-            (Lang::Chinese, true)   => "工具箱：开",
-            (Lang::Chinese, false)  => "工具箱：关",
-        }
-    }
-
     pub fn tag_main_edit_toggle_button(self, on: bool) -> &'static str {
         match (self, on) {
             (Lang::Japanese, true)  => "編集モードON",
@@ -6652,41 +6630,6 @@ For files without metadata, setting the main category etc. by hand and training 
             Lang::Japanese => "（要素なし。上の欄から追加）",
             Lang::English  => "(No items. Add from the field above)",
             Lang::Chinese  => "（无元素。请从上方输入框添加）",
-        }
-    }
-
-    pub fn folder_book_access_toggle_button(self, on: bool) -> &'static str {
-        match (self, on) {
-            (Lang::Japanese, true)  => "フォルダ本アクセスON",
-            (Lang::Japanese, false) => "フォルダ本アクセスOFF",
-            (Lang::English, true)   => "Folder-as-Book: ON",
-            (Lang::English, false)  => "Folder-as-Book: OFF",
-            (Lang::Chinese, true)   => "文件夹当书：开",
-            (Lang::Chinese, false)  => "文件夹当书：关",
-        }
-    }
-
-    pub fn folder_book_access_notice_title(self) -> &'static str {
-        match self {
-            Lang::Japanese => "フォルダ本アクセスについて",
-            Lang::English  => "About Folder-as-Book",
-            Lang::Chinese  => "关于文件夹当书",
-        }
-    }
-
-    pub fn folder_book_access_notice_body(self) -> &'static str {
-        match self {
-            Lang::Japanese => "単体画像だけで構成されているフォルダにアクセスしたときアーカイブに見立てて閲覧できるモードです。単体画像+サブフォルダ構成も対象ですが単体画像+アーカイブファイルの構成はこの機能の対象外です\n\nこの閲覧はあくまで仮のものです。しおり・見開き・ソート・サムネイル登録・お気に入り・評価など、本物のアーカイブで使える各種保存機能は利用できません。",
-            Lang::English  => "This mode lets you view a folder made up only of standalone images as if it were an archive. Folders containing standalone images plus subfolders are also supported, but folders mixing standalone images with archive files are not.\n\nThis is a temporary, virtual view only. Save features available for real archives — bookmarks, spread mode, sort order, thumbnail selection, favorites, and ratings — are not available here.",
-            Lang::Chinese  => "此模式可让您像浏览档案一样查看仅由独立图片组成的文件夹。包含独立图片和子文件夹的结构也支持，但独立图片与档案文件混合的结构不在此功能范围内。\n\n此浏览仅为临时的虚拟视图。书签、跨页模式、排序、缩略图选择、收藏、评分等仅适用于真实档案的保存功能，在此均不可用。",
-        }
-    }
-
-    pub fn folder_book_access_notice_dont_show_again(self) -> &'static str {
-        match self {
-            Lang::Japanese => "次回から表示しない",
-            Lang::English  => "Don't show this again",
-            Lang::Chinese  => "下次不再显示",
         }
     }
 
@@ -9687,66 +9630,30 @@ impl Lang {
     }
 
     pub fn help_view_toggles(self) -> HelpDoc {
+        use crate::convenience_text::{DESC_FOLDER_BOOK, DESC_SCORING, DESC_TOOLBOX};
         match self {
             Lang::Japanese => HelpDoc {
-                title: "ON/OFFトグル",
+                title: "便利機能ON/OFF設定",
                 sections: &[
-                    (
-                        "[フォルダ本アクセス]",
-                        "単体画像で構成されるフォルダにアクセスしたとき、フォルダへの移動と同時にビューアーを立ち上げ、\n\
-                         1アーカイブとして閲覧できるモード。なお、実アーカイブのような各種設定は保存できない。",
-                    ),
-                    (
-                        "[ツールボックス]",
-                        "ビューアー内のツールパレット（マス配置のツールボックス）の表示ON/OFF。\n\
-                         ファイルを移っても状態は保たれる。",
-                    ),
-                    (
-                        "[スコアリング]",
-                        "アーカイブの末尾ページに出る評価オーバーレイ（スコア入力）のON/OFF。\n\
-                         邪魔に感じるときはOFFにする。",
-                    ),
+                    ("[フォルダ本アクセス]", DESC_FOLDER_BOOK[0]),
+                    ("[スコアリング]", DESC_SCORING[0]),
+                    ("[ツールボックス]", DESC_TOOLBOX[0]),
                 ],
             },
             Lang::English => HelpDoc {
-                title: "ON/OFF toggles",
+                title: "Convenience features ON/OFF",
                 sections: &[
-                    (
-                        "[Folder-as-Book]",
-                        "When you navigate into a folder made up of standalone images, the viewer launches at the\n\
-                         same time and opens it as if it were a single archive. Note that, unlike a real archive,\n\
-                         its settings cannot be saved.",
-                    ),
-                    (
-                        "[Toolbox]",
-                        "Shows or hides the tool palette (grid-layout toolbox) in the viewer.\n\
-                         The state is kept when you move between files.",
-                    ),
-                    (
-                        "[Scoring]",
-                        "Turns the rating overlay (score input) at the end of an archive ON/OFF.\n\
-                         Turn it OFF if it gets in the way.",
-                    ),
+                    ("[Folder-as-Book]", DESC_FOLDER_BOOK[1]),
+                    ("[Scoring]", DESC_SCORING[1]),
+                    ("[Toolbox]", DESC_TOOLBOX[1]),
                 ],
             },
             Lang::Chinese => HelpDoc {
-                title: "开/关切换",
+                title: "便利功能 开/关 设置",
                 sections: &[
-                    (
-                        "[文件夹当书]",
-                        "进入仅由独立图片组成的文件夹时，会同时启动查看器，将其作为单个档案打开浏览。\n\
-                         请注意，与真实档案不同，此模式下的各项设置无法保存。",
-                    ),
-                    (
-                        "[工具箱]",
-                        "显示/隐藏查看器内的工具面板（格子布局的工具箱）。\n\
-                         切换文件时状态保持不变。",
-                    ),
-                    (
-                        "[评分]",
-                        "开/关压缩包末尾页出现的评分浮层（评分输入）。\n\
-                         觉得碍事时可关闭。",
-                    ),
+                    ("[文件夹当书]", DESC_FOLDER_BOOK[2]),
+                    ("[评分]", DESC_SCORING[2]),
+                    ("[工具箱]", DESC_TOOLBOX[2]),
                 ],
             },
         }

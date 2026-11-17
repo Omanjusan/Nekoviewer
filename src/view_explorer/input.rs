@@ -354,6 +354,11 @@ impl NekoviewApp {
             self.handle_sort_menu_keys(ctx);
             return;
         }
+        // 便利機能メニュー内にカーソルがあるときも同様
+        if self.convenience_menu_cursor.is_some() {
+            self.handle_convenience_menu_keys(ctx);
+            return;
+        }
         let km = &self.config.keymap;
         let (key_left, key_right, key_enter, key_down) = ctx.input(|i| (
             km.explorer_binding(ExplorerAction::NavLeft).key_pressed(i),
@@ -367,8 +372,10 @@ impl NekoviewApp {
         // ソートボタン上（メニューが閉じている、またはマウスで開いた直後）で↓を押すと、
         // 展開して最上位の項目へカーソルを置く
         if key_down {
-            if MENU_BAR_ORDER.get(self.menu_cursor) == Some(&MenuBarButton::Sort) {
-                self.open_sort_menu_by_keyboard();
+            match MENU_BAR_ORDER.get(self.menu_cursor) {
+                Some(&MenuBarButton::Sort) => self.open_sort_menu_by_keyboard(),
+                Some(&MenuBarButton::Convenience) => self.open_convenience_menu_by_keyboard(),
+                _ => {}
             }
             return;
         }
@@ -382,10 +389,17 @@ impl NekoviewApp {
         }
         if self.menu_cursor != before {
             // ソートボタンに着いたら自動展開して最上位の項目へ。外れたら縮小する。
-            if MENU_BAR_ORDER.get(self.menu_cursor) == Some(&MenuBarButton::Sort) {
-                self.open_sort_menu_by_keyboard();
-            } else if self.sort_menu_open {
+            match MENU_BAR_ORDER.get(self.menu_cursor) {
+                Some(&MenuBarButton::Sort) => self.open_sort_menu_by_keyboard(),
+                Some(&MenuBarButton::Convenience) => self.open_convenience_menu_by_keyboard(),
+                _ => {}
+            }
+            // 外れたほうのメニューは縮小する
+            if MENU_BAR_ORDER.get(self.menu_cursor) != Some(&MenuBarButton::Sort) && self.sort_menu_open {
                 self.close_sort_menu();
+            }
+            if MENU_BAR_ORDER.get(self.menu_cursor) != Some(&MenuBarButton::Convenience) && self.convenience_menu_open {
+                self.close_convenience_menu();
             }
         }
         if key_enter {

@@ -311,10 +311,6 @@ pub struct AppConfig {
     pub keymap: Keymap,
     /// keymap.ini/state/spread.redb の置き場所（resolve_config_root() で解決済み）。
     pub config_root: PathBuf,
-    /// 「フォルダ本アクセス」の初回警告（各種保存系操作を行わない旨）を
-    /// 「次回から表示しない」チェック済みで確認したか。永続設定
-    /// （state の `app_folder_book_access_warning_seen`）。
-    pub folder_book_access_warning_seen: bool,
     /// アーカイブ内TXTを画像ページとして開く設定（有効・高さ上限・切り詰め/分割・読込上限・ページ数への算入）。
     /// 永続設定（state の `app_text_page`）。変更時は `fs::archive::text_page::set_options` へ反映する。
     pub text_page: crate::fs::archive::text_page::TextPageOptions,
@@ -396,7 +392,6 @@ impl AppConfig {
             pending_decode_edge_prompt: None,
             keymap: Keymap::load(&root),
             config_root: root,
-            folder_book_access_warning_seen: false,
             text_page: Default::default(),
             tag_match: Default::default(),
             tag_learning_use: true,

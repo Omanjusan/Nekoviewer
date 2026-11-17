@@ -343,16 +343,12 @@ pub(crate) enum MenuBarButton {
     CardBand,
     /// UIベースカラー（ダーク⇄ライト）の切替。永続設定。メニューバー右端の[stat]と[?]の間。
     ThemeToggle,
-    /// スコアリング（アーカイブ末尾の評価オーバーレイ）のON/OFF。viewer_cfg直結の永続設定。
-    ScoringToggle,
     StatusToggle,
     /// ヘルプ（ツールチップ）表示のON/OFF。非永続。メニューバーの視覚上の右端。
     HelpToggle,
-    /// ビューアー内ツールパレット（マス配置ツールボックス）の表示ON/OFF。
-    /// ファイルを渡り歩いても同じ状態を保つ（viewer_cfg経由でPaletteStateへ直結）。
-    ToolPaletteToggle,
-    /// 「フォルダ本アクセス」トグル。永続化しない（毎回OFF起動）。
-    FolderBookAccessToggle,
+    /// 便利機能の展開メニュー（フォルダ本アクセス・スコアリング・ツールボックスのON/OFF）。
+    /// 旧3ボタンを1個に集約した。操作はソート展開メニューと同じ作法（convenience_menu.rs）。
+    Convenience,
     /// 画面外へ行ったビューアー窓を中央へ戻す単発ボタン。ビューアーが開いているときだけ有効。
     ViewerRecover,
     Settings,
@@ -370,15 +366,24 @@ pub(crate) enum SortMenuItem {
     ViewerDefaultKey(crate::types::ReaderSortKey),
 }
 
+/// 便利機能メニュー内のカーソル対象（キーボード操作と描画で共用。並びが表示順）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ConvenienceItem {
+    FolderBook,
+    Scoring,
+    ToolBox,
+}
+
+pub(crate) const CONVENIENCE_ITEMS: [ConvenienceItem; 3] =
+    [ConvenienceItem::FolderBook, ConvenienceItem::Scoring, ConvenienceItem::ToolBox];
+
 /// 表示順そのもの（draw_menu_barの描画順と一致させること）。
 /// 見開き・ページモード群はビューアーツールバーへ移設した（toolbar.rs 参照）。
-pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 11] = [
+pub(crate) const MENU_BAR_ORDER: [MenuBarButton; 9] = [
     MenuBarButton::Reload,
     MenuBarButton::Sort,
     MenuBarButton::CardBand,
-    MenuBarButton::FolderBookAccessToggle,
-    MenuBarButton::ScoringToggle,
-    MenuBarButton::ToolPaletteToggle,
+    MenuBarButton::Convenience,
     MenuBarButton::ViewerRecover,
     MenuBarButton::Settings,
     MenuBarButton::StatusToggle,
@@ -398,7 +403,7 @@ mod menu_bar_order_tests {
     #[test]
     fn settings_status_and_help_keep_the_visual_right_end_order() {
         assert_eq!(
-            &MENU_BAR_ORDER[7..],
+            &MENU_BAR_ORDER[5..],
             &[
                 MenuBarButton::Settings,
                 MenuBarButton::StatusToggle,
@@ -1495,10 +1500,10 @@ pub struct NekoviewApp {
     /// 「フォルダ本アクセス」トグル。ONの間、条件を満たすフォルダに入ると
     /// 通常の一覧表示の代わりに仮想アーカイブとしてビューアーを開く。永続化しない（毎回OFF起動）。
     folder_book_access_enabled: bool,
-    /// 初回警告ダイアログの表示中フラグ。非永続・実行時のみ。
-    folder_book_access_notice_open: bool,
-    /// 初回警告ダイアログ内「次回から表示しない」チェックボックスの一時状態。
-    folder_book_access_notice_dont_show_again: bool,
+    /// 便利機能メニューの開閉。非永続。
+    convenience_menu_open: bool,
+    /// 便利機能メニュー内のキーボードカーソル（CONVENIENCE_ITEMS の添字）。マウスで開いた間は None。
+    convenience_menu_cursor: Option<usize>,
     status_window_data: Arc<Mutex<crate::view_status::StatusData>>,
     /// ステータスデータを最後に更新した時刻（1秒間隔制御用）
     last_status_update: std::time::Instant,
@@ -1561,6 +1566,7 @@ mod workers;
 mod viewer_host;
 mod input;
 mod panels;
+mod convenience_menu;
 mod favorites_ui;
 mod real_dir_stash;
 mod tab_position;
@@ -2050,8 +2056,8 @@ impl NekoviewApp {
             show_status_window: false,
             help_enabled: false,
             folder_book_access_enabled: false,
-            folder_book_access_notice_open: false,
-            folder_book_access_notice_dont_show_again: false,
+            convenience_menu_open: false,
+            convenience_menu_cursor: None,
             status_window_data: Arc::new(Mutex::new(crate::view_status::StatusData::default())),
             last_status_update: std::time::Instant::now(),
             status_update_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),

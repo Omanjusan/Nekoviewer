@@ -514,8 +514,6 @@ pub struct AppState {
     pub app_magnifier_zoom_notice_shown: Option<bool>,
     /// `max_decode_edge` の既定値底上げ（1920→4000）の確認を済ませたか。
     pub app_max_decode_edge_prompt_answered: Option<bool>,
-    /// 「フォルダ本アクセス」初回警告を「次回から表示しない」済みで確認したか。
-    pub app_folder_book_access_warning_seen: Option<bool>,
     /// アーカイブ内TXTの画像ページ設定（`TextPageOptions::to_state_str` の形）。
     pub app_text_page: Option<crate::fs::archive::text_page::TextPageOptions>,
     /// 一括タグ付けの照合の切替項目（`MatchOptions::to_state_str` の形）。
@@ -597,7 +595,6 @@ impl Default for AppState {
             app_decode_threads: None,
             app_magnifier_zoom_notice_shown: None,
             app_max_decode_edge_prompt_answered: None,
-            app_folder_book_access_warning_seen: None,
             app_text_page: None,
             app_tag_match: None,
             app_tag_learning_use: None,
@@ -716,7 +713,6 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut app_decode_threads: Option<usize> = None;
     let mut app_magnifier_zoom_notice_shown: Option<bool> = None;
     let mut app_max_decode_edge_prompt_answered: Option<bool> = None;
-    let mut app_folder_book_access_warning_seen: Option<bool> = None;
     let mut app_text_page: Option<crate::fs::archive::text_page::TextPageOptions> = None;
     let mut app_tag_match: Option<crate::tag_similarity::MatchOptions> = None;
     let mut app_tag_learning_use: Option<bool> = None;
@@ -906,7 +902,6 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "app_decode_threads" => { app_decode_threads = v.trim().parse().ok(); }
                 "app_magnifier_zoom_notice_shown" => { app_magnifier_zoom_notice_shown = v.trim().parse().ok(); }
                 "app_max_decode_edge_prompt_answered" => { app_max_decode_edge_prompt_answered = v.trim().parse().ok(); }
-                "app_folder_book_access_warning_seen" => { app_folder_book_access_warning_seen = v.trim().parse().ok(); }
                 "app_text_page" => { app_text_page = crate::fs::archive::text_page::TextPageOptions::from_state_str(v); }
                 "app_tag_match" => { app_tag_match = crate::tag_similarity::MatchOptions::from_state_str(v); }
                 "app_tag_learning_use" => { app_tag_learning_use = v.parse::<bool>().ok(); }
@@ -1207,7 +1202,6 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
         app_decode_threads,
         app_magnifier_zoom_notice_shown,
         app_max_decode_edge_prompt_answered,
-        app_folder_book_access_warning_seen,
         app_text_page,
         app_tag_match,
         app_tag_learning_use,
@@ -1423,8 +1417,8 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
         Some(0) => "5", Some(1) => "6", Some(2) => "7", Some(3) => "8", _ => "",
     };
     content.push_str(&format!(
-        "app_decode_threads={}\napp_default_slot={}\napp_magnifier_zoom_notice_shown={}\napp_max_decode_edge_prompt_answered={}\napp_folder_book_access_warning_seen={}\n",
-        app_cfg.decode_threads, default_slot_str, app_cfg.magnifier_zoom_notice_shown, app_cfg.max_decode_edge_prompt_answered, app_cfg.folder_book_access_warning_seen,
+        "app_decode_threads={}\napp_default_slot={}\napp_magnifier_zoom_notice_shown={}\napp_max_decode_edge_prompt_answered={}\n",
+        app_cfg.decode_threads, default_slot_str, app_cfg.magnifier_zoom_notice_shown, app_cfg.max_decode_edge_prompt_answered,
     ));
     content.push_str(&format!("app_text_page={}\n", app_cfg.text_page.to_state_str()));
     content.push_str(&format!("app_tag_match={}\n", app_cfg.tag_match.to_state_str()));
@@ -1576,13 +1570,10 @@ mod tests {
     }
 
     #[test]
-    fn folder_book_access_warning_seen_flag_parses_and_defaults_to_unset() {
-        let parsed = parse_state_text("fba_set", "app_folder_book_access_warning_seen=true\n");
-        assert_eq!(parsed.app_folder_book_access_warning_seen, Some(true));
-        let parsed = parse_state_text("fba_bad", "app_folder_book_access_warning_seen=yes\n");
-        assert_eq!(parsed.app_folder_book_access_warning_seen, None);
-        let parsed = parse_state_text("fba_none", "lang=ja\n");
-        assert_eq!(parsed.app_folder_book_access_warning_seen, None);
+    fn retired_folder_book_access_warning_key_is_ignored() {
+        // 初回警告の廃止で消したキー。古い state に残っていても、読み飛ばして他の項目は読める。
+        let parsed = parse_state_text("fba_old", "app_folder_book_access_warning_seen=true\napp_text_page=junk\n");
+        assert_eq!(parsed.app_text_page, None);
     }
 
     #[test]
