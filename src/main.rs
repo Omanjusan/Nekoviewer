@@ -227,10 +227,12 @@ fn main() {
         log_common!("[startup] start_dir = {:?}, open_target = {:?}", start_dir, open_target);
         // デバッグ用: 起動するフォルダのサムネを、ワーカーが動き出す前に破棄する（直下のみ）。
         // 標準エラーへ必ず出す（`--clear-thumbs` を付けたときだけ実行されるので、うるさくない）。
+        // 対象は「実際に開くフォルダ」。前回のタブが仮想フォルダなら、そのノードの実パス（`--scan-layers` と同じ選び方）。
         if args.clear_thumbs {
-            match neko_dir::clear_dir_thumbs(&start_dir, &cfg) {
-                Some(n) => eprintln!("[startup] --clear-thumbs: {:?} のサムネを {} 件破棄した", start_dir, n),
-                None => eprintln!("[startup] --clear-thumbs: {:?} はキャッシュDBが無い（または開けない）ため何もしなかった", start_dir),
+            let target = layer_scan::pick_scan_dir(&state.tab_positions, &start_dir);
+            match neko_dir::clear_dir_thumbs(&target, &cfg) {
+                Some(n) => eprintln!("[startup] --clear-thumbs: {:?} のサムネを {} 件破棄した", target, n),
+                None => eprintln!("[startup] --clear-thumbs: {:?} はキャッシュDBが無い（または開けない）ため何もしなかった", target),
             }
         }
         // 走査対象は復帰先（実ツリー=start_dir、仮想フォルダタブ=ノードの実パス）。タブはCLI引数の固定後の値を見る。
@@ -403,7 +405,7 @@ struct CliArgs {
     cache_max_mb: Option<u64>,
     /// `--scan-layers`: 復帰先フォルダ直下のzipを別スレッドで走査し、層つきの中身を持つ最初の1件を標準出力に出す（テスト用）。
     scan_layers:  bool,
-    /// `--clear-thumbs`: 起動するフォルダ（位置引数があればその場所、無ければ最後に訪れたフォルダ）直下の
+    /// `--clear-thumbs`: 起動時に開くフォルダ（位置引数があればその場所、無ければ前回の場所。前回のタブが仮想フォルダなら、そのノードの実パス）直下の
     /// 生成済みサムネを、起動前に破棄する（デバッグ用。再生成とビューアー同時起動の兼ね合いを見る）。
     clear_thumbs: bool,
 }

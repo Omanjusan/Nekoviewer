@@ -139,7 +139,7 @@ nekoviewer /path/to/dir
 nekoviewer --cache-max-mb 2048
 
 # 起動するフォルダ直下の生成済みサムネを、起動前に破棄する（デバッグ用。再生成の確認に使う）。
-# 位置引数があればその場所（ファイルなら親フォルダ）、無ければ最後に訪れたフォルダが対象。直下のみ
+# 位置引数があればその場所（ファイルなら親フォルダ）、無ければ前回の場所が対象（前回のタブが仮想フォルダなら、そのノードの実パス）。直下のみ
 nekoviewer --clear-thumbs
 nekoviewer --clear-thumbs /path/to/some.zip   # 親フォルダのサムネを破棄し、some.zip をビューアーで開く
 
