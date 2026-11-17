@@ -181,15 +181,43 @@ impl NekoviewApp {
         }
     }
 
-    /// タグチップの右クリックメニュー項目「この要素名（X）をタグ検索」。押されたら true を返す
-    /// （呼び出し側が `request_tag_search` で予約し、メニューを閉じる）。
-    /// `searchable` が false（メインの「未設定」）のときはグレーで押せない。
-    pub(super) fn tag_chip_search_menu_item(ui: &mut egui::Ui, name: &str, searchable: bool) -> bool {
-        let t = i18n::t();
-        let label = t.tag_chip_search_menu(crate::tag_master::display_name(name));
-        let resp = ui.add_enabled(searchable, egui::Button::new(label));
-        let resp = if searchable { resp } else { resp.on_disabled_hover_text(t.tag_chip_search_unset_hint()) };
-        resp.clicked()
+    /// タグチップの左クリックポップアップ「この要素名（X）をタグ検索」（確認メニュー）。
+    /// 開いている要素は `open_id` に1つだけ持つ。
+    /// - 要素を左クリック: 閉じていれば開く。開いていれば閉じる。
+    /// - 他の要素を左クリック: 先のメニューを閉じて、その要素のメニューを開く。
+    /// - エクスプローラー上の他の場所を左クリック: ポップアップの外クリックとして閉じる。
+    /// - 項目を押す: `search_req` に予約して閉じる（実行は描画後、`run_pending_tag_search`）。
+    /// `searchable` が false（メインの「未設定」）のときは項目がグレーで押せない。
+    pub(super) fn tag_chip_search_popup(
+        resp: &egui::Response,
+        open_id: &mut Option<u64>,
+        search_req: &mut Option<u64>,
+        id: u64,
+        name: &str,
+        searchable: bool,
+    ) {
+        let was_open = *open_id == Some(id);
+        let mut open = was_open;
+        let mut picked = false;
+        egui::Popup::menu(resp)
+            .open_bool(&mut open)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                let t = i18n::t();
+                let label = t.tag_chip_search_menu(crate::tag_master::display_name(name));
+                let item = ui.add_enabled(searchable, egui::Button::new(label));
+                let item = if searchable { item } else { item.on_disabled_hover_text(t.tag_chip_search_unset_hint()) };
+                picked = item.clicked();
+            });
+        if picked {
+            *search_req = Some(id);
+            *open_id = None;
+        } else if resp.clicked() {
+            *open_id = if was_open { None } else { Some(id) };
+            resp.ctx.request_repaint();
+        } else if was_open && !open {
+            *open_id = None;
+        }
     }
 
     pub(super) fn request_tag_search(&mut self, id: u64) {

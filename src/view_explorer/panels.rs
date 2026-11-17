@@ -1223,18 +1223,13 @@ impl NekoviewApp {
             center_galley,
             main_color,
         );
-        // 閲覧モードのときだけ、選択値の右クリックで「この要素をタグ検索」を出す（編集モードでは抑制）。
+        // 閲覧モードのときだけ、選択値の左クリックで「この要素をタグ検索」を出す（編集モードでは抑制）。
         if !edit_on {
             let (main_id, main_name) = (options[idx].0, selected_name.clone());
             let center_resp = ui.interact(center_rect, ui.id().with("tag_main_center"), egui::Sense::click());
             let mut search_req = None;
-            center_resp.context_menu(|ui| {
-                let searchable = main_id != crate::tag_manager::TAG_MAIN_UNSET_ID;
-                if Self::tag_chip_search_menu_item(ui, &main_name, searchable) {
-                    search_req = Some(main_id);
-                    ui.close();
-                }
-            });
+            let searchable = main_id != crate::tag_manager::TAG_MAIN_UNSET_ID;
+            Self::tag_chip_search_popup(&center_resp, &mut self.tag_chip_menu, &mut search_req, main_id, &main_name, searchable);
             if let Some(id) = search_req {
                 self.request_tag_search(id);
             }
@@ -1288,6 +1283,8 @@ impl NekoviewApp {
     /// `tag_manager_categories`（メインカテゴリを除く）を実データとして直接参照する。
     fn draw_tag_panel_attr_tags(&mut self, ui: &mut egui::Ui) {
         if self.tag_main_edit_toggle {
+            // 編集モードでは検索ポップアップを出さない。開いていたものは閉じておく（戻ったとき勝手に開かないように）。
+            self.tag_chip_menu = None;
             self.draw_tag_attr_edit_mode(ui);
         } else {
             self.draw_tag_attr_view_mode(ui);
@@ -1381,12 +1378,7 @@ impl NekoviewApp {
                                     continue;
                                 }
                                 let resp = tag_chip(ui, name, full_w, cat.color, text_color, egui::Sense::click(), false);
-                                resp.context_menu(|ui| {
-                                    if Self::tag_chip_search_menu_item(ui, name, true) {
-                                        search_req = Some(tier.id);
-                                        ui.close();
-                                    }
-                                });
+                                Self::tag_chip_search_popup(&resp, &mut self.tag_chip_menu, &mut search_req, tier.id, name, true);
                             }
                         }
                     }
