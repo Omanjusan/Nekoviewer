@@ -173,6 +173,15 @@ const FORMAT_CACHE_ENTRY_OVERHEAD: usize = 64;
 
 impl FormatCache {
     fn get_or_compute(&mut self, path: &Path) -> ArchiveFormat {
+        self.lookup_or(path, || detect_format_uncached(path))
+    }
+
+    /// 形式が別の根拠（中央ディレクトリが読めた等）で分かったときに覚えさせる。既にあれば何もしない。
+    fn remember(&mut self, path: &Path, format: ArchiveFormat) {
+        self.lookup_or(path, || format);
+    }
+
+    fn lookup_or(&mut self, path: &Path, compute: impl FnOnce() -> ArchiveFormat) -> ArchiveFormat {
         let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
         if self.last_dir.as_deref() != Some(dir.as_path()) {
             self.current_gen += 1;
@@ -187,7 +196,7 @@ impl FormatCache {
             }
         }
 
-        let format = detect_format_uncached(path);
+        let format = compute();
         let entry_bytes = path.as_os_str().len() + FORMAT_CACHE_ENTRY_OVERHEAD;
         let g = self.dirs.entry(dir).or_insert_with(|| DirGeneration {
             generation,
@@ -250,6 +259,20 @@ fn format_cache() -> &'static std::sync::Mutex<FormatCache> {
 /// 判定結果はディレクトリ単位・世代管理でキャッシュし、同じパスへの再判定でファイルI/Oを避ける。
 pub fn detect_format(path: &Path) -> ArchiveFormat {
     format_cache().lock().unwrap().get_or_compute(path)
+}
+
+/// 拡張子が zip 系（.zip / .cbz）か。大文字小文字は区別しない。
+pub(crate) fn has_zip_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("zip") || e.eq_ignore_ascii_case("cbz"))
+}
+
+/// 中央ディレクトリが読めた（＝zip と確定した）パスを、形式キャッシュへ「zip」として覚えさせる。
+/// 以降の `detect_format` は先頭のマジック読み（冷たいHDDではシーク1回。キャッシュのロック中に読むので、
+/// 他スレッドの判定も待たせる）を省ける。
+pub(crate) fn remember_zip(path: &Path) {
+    format_cache().lock().unwrap().remember(path, ArchiveFormat::Zip);
 }
 
 /// 7z/CB7 かどうかを判定する（`detect_format` の薄いラッパ）。

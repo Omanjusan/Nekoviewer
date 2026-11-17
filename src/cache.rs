@@ -112,6 +112,9 @@ pub struct LoadRequest {
 /// ワーカースレッド内で保持する開きっぱなしアーカイブ（ディスク版・メモリ版を統合）
 enum OpenArchive {
     Disk(zip::ZipArchive<std::fs::File>),
+    /// `ZipArchive::new` を通さず、中央ディレクトリだけで開いたzip（冷たいHDDの初回を速くする。
+    /// 判断できないzipは `Disk` にフォールバックする）。
+    Fast(crate::fs::archive::FastZip),
     Mem(zip::ZipArchive<std::io::Cursor<Arc<[u8]>>>),
     /// 7z/tar のソリッド圧縮は開いた時点で画像を一括展開済み。
     /// ページ送りは再展開せずここから引く。
@@ -143,10 +146,14 @@ fn open_archive_from_disk(path: &std::path::Path) -> Option<OpenArchive> {
             let map = Arc::new(crate::fs::archive::extract_all_images_tar_path(path));
             Some(OpenArchive::Extracted(map))
         }
-        crate::fs::archive::ArchiveFormat::Zip => std::fs::File::open(path)
-            .ok()
-            .and_then(|f| zip::ZipArchive::new(f).ok())
-            .map(OpenArchive::Disk),
+        crate::fs::archive::ArchiveFormat::Zip => crate::fs::archive::FastZip::open(path)
+            .map(OpenArchive::Fast)
+            .or_else(|| {
+                std::fs::File::open(path)
+                    .ok()
+                    .and_then(|f| zip::ZipArchive::new(f).ok())
+                    .map(OpenArchive::Disk)
+            }),
     }
 }
 
@@ -154,6 +161,10 @@ impl OpenArchive {
     fn load_page(&mut self, entry_name: &str, filter: image::imageops::FilterType, cache_budget_bytes: usize, ring_bounds: (usize, usize), frame_hard_limit_bytes: usize, target_size: Option<(u32, u32)>, exif_enabled: bool) -> Option<PageContent> {
         match self {
             Self::Disk(a) => load_page_content(a, entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled),
+            Self::Fast(z) => {
+                let (buf, display_name) = z.load_bytes(entry_name)?;
+                decode_bytes_to_content(&buf, &display_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled)
+            }
             Self::Mem(a)  => load_page_content(a, entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled),
             Self::Extracted(map) => {
                 let buf = map.get(entry_name)?;
@@ -306,7 +317,7 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                     // スレッドローカルに展開する安全弁で、通常はFileCache側の先出しにより
                     // ほぼ発生しない）
                     let is_same = open_archive.as_ref().map_or(false, |(p, a)| {
-                        p == &req.archive_path && matches!(a, OpenArchive::Disk(_) | OpenArchive::Extracted(_) | OpenArchive::Folder)
+                        p == &req.archive_path && matches!(a, OpenArchive::Disk(_) | OpenArchive::Fast(_) | OpenArchive::Extracted(_) | OpenArchive::Folder)
                     });
                     if !is_same {
                         let t_open = std::time::Instant::now();
@@ -2148,7 +2159,7 @@ pub fn spawn_entry_thumb_worker(filter: image::imageops::FilterType, num_threads
                     // スレッドローカルに展開する安全弁で、通常はFileCache側の先出しにより
                     // ほぼ発生しない）
                     let is_same = open_archive.as_ref().map_or(false, |(p, a)| {
-                        p == &req.archive_path && matches!(a, OpenArchive::Disk(_) | OpenArchive::Extracted(_) | OpenArchive::Folder)
+                        p == &req.archive_path && matches!(a, OpenArchive::Disk(_) | OpenArchive::Fast(_) | OpenArchive::Extracted(_) | OpenArchive::Folder)
                     });
                     if !is_same {
                         open_archive = open_archive_from_disk(&req.archive_path)

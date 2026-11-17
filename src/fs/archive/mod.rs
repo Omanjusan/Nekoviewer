@@ -27,6 +27,7 @@ pub use sevenz::extract_all_images_7z_path;
 #[cfg(feature = "fmt-tar")]
 pub use tar::extract_all_images_tar_path;
 pub use zip::load_bytes_from_archive;
+pub(crate) use zip::FastZip;
 
 /// ZIP/CBZ/7z/CB7 内の画像エントリ
 pub struct ImageEntry {
@@ -216,6 +217,15 @@ pub fn list_images(path: &Path) -> Vec<ImageEntry> {
 pub fn list_images_with_progress(path: &Path, on_progress: &mut ProgressCallback) -> Option<Vec<ImageEntry>> {
     if path.is_dir() {
         return folder::list_images_folder_with_progress(path, on_progress);
+    }
+    // 拡張子が zip/cbz なら、形式判定（先頭のマジック読み）より先に近道で一覧を作る。
+    // 中央ディレクトリが読めれば zip と確定するので、形式キャッシュへ覚えさせて以降の判定も省く。
+    // 読めない（7z の偽名など）ときは、従来どおり形式判定を通す。
+    if detect::has_zip_extension(path) {
+        if let Some(result) = zip::try_list_images_zip_fast(path, on_progress) {
+            detect::remember_zip(path);
+            return result;
+        }
     }
     match detect::detect_format(path) {
         #[cfg(feature = "fmt-7z")]
