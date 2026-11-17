@@ -575,6 +575,8 @@ impl NekoviewApp {
             Window::Two => t.tag_confirm_title_two(),
         })
         .id(egui::Id::new("tag_confirm_window"))
+        // 右タグパネル（Foreground の Area）より前面に出す。窓の重なり順は Order が先で、同じ Order の中でだけ、触った順になる。
+        .order(egui::Order::Foreground)
         .open(&mut open)
         .collapsible(false)
         .resizable(true)

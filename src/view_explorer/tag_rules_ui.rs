@@ -544,6 +544,8 @@ impl NekoviewApp {
         };
         egui::Window::new(title)
             .id(egui::Id::new("tag_rules_window"))
+            // 確認窓（Foreground）から開くので、その後ろに隠れないようにそろえる。
+            .order(egui::Order::Foreground)
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
