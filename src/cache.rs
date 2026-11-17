@@ -442,21 +442,44 @@ fn fir_resize(img: image::DynamicImage, nw: u32, nh: u32, filter: image::imageop
         }
         image::DynamicImage::ImageLuma8(gray) => {
             let (w, h) = (gray.width(), gray.height());
-            let src = FirImage::from_vec_u8(w, h, gray.into_raw(), PixelType::U8).unwrap();
-            let mut dst = FirImage::new(nw, nh, PixelType::U8);
-            Resizer::new().resize(&src, &mut dst, &options).unwrap();
-            let gray_out = image::GrayImage::from_raw(nw, nh, dst.into_vec()).unwrap();
-            luma8_to_rgba(&gray_out)
+            if l8_prefers_single_channel(w, h, nw, nh, filter) {
+                let src = FirImage::from_vec_u8(w, h, gray.into_raw(), PixelType::U8).unwrap();
+                let mut dst = FirImage::new(nw, nh, PixelType::U8);
+                Resizer::new().resize(&src, &mut dst, &options).unwrap();
+                let gray_out = image::GrayImage::from_raw(nw, nh, dst.into_vec()).unwrap();
+                luma8_to_rgba(&gray_out)
+            } else {
+                // 縮小が緩い（カーネルが小さい）ときは、1チャンネル経路が極端に遅い。RGBA化して4チャンネルで縮小する。
+                resize_rgba8(luma8_to_rgba(&gray), nw, nh, &options)
+            }
         }
-        _ => {
-            let rgba = img.into_rgba8();
-            let (w, h) = (rgba.width(), rgba.height());
-            let src = FirImage::from_vec_u8(w, h, rgba.into_raw(), PixelType::U8x4).unwrap();
-            let mut dst = FirImage::new(nw, nh, PixelType::U8x4);
-            Resizer::new().resize(&src, &mut dst, &options).unwrap();
-            image::RgbaImage::from_raw(nw, nh, dst.into_vec()).unwrap()
-        }
+        _ => resize_rgba8(img.into_rgba8(), nw, nh, &options),
     }
+}
+
+fn resize_rgba8(rgba: image::RgbaImage, nw: u32, nh: u32, options: &ResizeOptions) -> image::RgbaImage {
+    let (w, h) = (rgba.width(), rgba.height());
+    let src = FirImage::from_vec_u8(w, h, rgba.into_raw(), PixelType::U8x4).unwrap();
+    let mut dst = FirImage::new(nw, nh, PixelType::U8x4);
+    Resizer::new().resize(&src, &mut dst, options).unwrap();
+    image::RgbaImage::from_raw(nw, nh, dst.into_vec()).unwrap()
+}
+
+/// L8 の縮小を、1チャンネル(U8)のまま行うか（true）、RGBA(U8x4)に変えて行うか（false）。
+/// fast_image_resize 5.x の U8 は、畳み込みカーネルのタップ数（≒ 2×サポート÷縮小率）が小さいと
+/// 極端に遅くなる（実測：CatmullRom/Lanczos3 はタップ数8未満で U8x4 の2〜3倍、Triangle は約3未満で逆転）。
+/// 強縮小（タップ数が大きい）では U8 のほうが速い。縮小率が大きいほうの軸（タップ数が小さい軸）で判定する。
+/// 目安は decode_bench（decode_bench_l8_taps_rule）の実測。
+fn l8_prefers_single_channel(w: u32, h: u32, nw: u32, nh: u32, filter: image::imageops::FilterType) -> bool {
+    use image::imageops::FilterType;
+    let (support, min_taps) = match filter {
+        FilterType::Nearest => return true,
+        FilterType::Triangle | FilterType::Gaussian => (1.0f32, 3.0f32),
+        FilterType::CatmullRom => (2.0, 8.0),
+        FilterType::Lanczos3 => (3.0, 8.0),
+    };
+    let scale = (nw as f32 / w.max(1) as f32).max(nh as f32 / h.max(1) as f32).max(f32::MIN_POSITIVE);
+    2.0 * support / scale >= min_taps
 }
 
 /// L8 → RGBA（[g,g,g,255]）。image クレートの汎用変換より速い単純ループ（自動ベクトル化される）。
@@ -2586,6 +2609,39 @@ mod ring_integration_tests {
             let max_diff = fast.as_raw().iter().zip(reference.as_raw()).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
             assert!(max_diff <= 1, "{filter:?}: 従来経路との差 {max_diff}");
             assert!(fast.pixels().all(|p| p.0[0] == p.0[1] && p.0[1] == p.0[2] && p.0[3] == 255), "{filter:?}: グレー・不透明のまま");
+        }
+    }
+
+    #[test]
+    fn gray_resize_picks_single_channel_only_when_the_kernel_is_wide() {
+        use image::imageops::FilterType::*;
+        // 強縮小（1/4）: カーネルが広いので U8
+        for f in [Nearest, Triangle, CatmullRom, Lanczos3] {
+            assert!(l8_prefers_single_channel(2000, 3000, 500, 750, f), "{f:?} 強縮小");
+        }
+        // 近等倍（実ログの 1062x1500→941x1330）: U8 が極端に遅いので U8x4（Nearest は常に U8）
+        for f in [Triangle, CatmullRom, Lanczos3] {
+            assert!(!l8_prefers_single_channel(1062, 1500, 941, 1330, f), "{f:?} 近等倍");
+        }
+        assert!(l8_prefers_single_channel(1062, 1500, 941, 1330, Nearest));
+        // 境目: Lanczos3 は縮小率0.75まで U8、0.8から U8x4。CatmullRom は0.5まで U8、0.6から U8x4（実測の境目）
+        assert!(l8_prefers_single_channel(2000, 3000, 1500, 2250, Lanczos3));
+        assert!(!l8_prefers_single_channel(2000, 3000, 1600, 2400, Lanczos3));
+        assert!(l8_prefers_single_channel(2000, 3000, 1000, 1500, CatmullRom));
+        assert!(!l8_prefers_single_channel(2000, 3000, 1200, 1800, CatmullRom));
+    }
+
+    #[test]
+    fn gray_resize_near_unity_uses_rgba_path_and_stays_within_one_level() {
+        use image::imageops::FilterType;
+        // 近等倍（U8x4 側の経路）でも、グレー・不透明のままで、参照（全部RGBA経路）と一致する
+        let gray = gradient_gray(200, 120);
+        for filter in [FilterType::CatmullRom, FilterType::Lanczos3, FilterType::Triangle] {
+            assert!(!l8_prefers_single_channel(200, 120, 180, 108, filter), "{filter:?}");
+            let out = fir_resize(image::DynamicImage::ImageLuma8(gray.clone()), 180, 108, filter);
+            let reference = fir_resize(image::DynamicImage::ImageRgba8(image::DynamicImage::ImageLuma8(gray.clone()).to_rgba8()), 180, 108, filter);
+            assert_eq!(out.as_raw(), reference.as_raw(), "{filter:?}: 同じ経路なので完全一致");
+            assert!(out.pixels().all(|p| p.0[0] == p.0[1] && p.0[1] == p.0[2] && p.0[3] == 255));
         }
     }
 

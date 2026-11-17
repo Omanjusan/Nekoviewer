@@ -214,3 +214,69 @@ fn decode_bench_l8_strategy() {
         }
     }
 }
+
+/// L8 の U8/RGBA→U8x4 切替点（出力/原寸の面積比）を探る。線形縮小率 s を振る。
+#[test]
+#[ignore]
+fn decode_bench_l8_crossover() {
+    use fast_image_resize::{images::Image as FirImage, PixelType, ResizeAlg, FilterType as FirFilter, ResizeOptions, Resizer};
+    let src = std::fs::read("/usr/share/backgrounds/Beach-by-Troy-T.jpg").unwrap();
+    let base = image::load_from_memory(&src).unwrap();
+    for &(w, h) in &[(1062u32, 1500u32), (2000, 3000), (3840, 2560)] {
+        let gray = base.resize_to_fill(w, h, image::imageops::FilterType::Triangle).to_luma8();
+        println!("\n== L8 {w}x{h}  (面積比 = s^2)  Lanczos3 / CatmullRom の順で U8 | RGBA→U8x4");
+        for &s in &[0.35f32, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9] {
+            let (nw, nh) = (((w as f32 * s) as u32).max(1), ((h as f32 * s) as u32).max(1));
+            let mut line = format!("  s={s:.2} area={:.2} →{nw}x{nh}:", s * s);
+            for (alg, f) in [(FirFilter::Lanczos3, image::imageops::FilterType::Lanczos3), (FirFilter::CatmullRom, image::imageops::FilterType::CatmullRom)] {
+                let opt = ResizeOptions::new().resize_alg(ResizeAlg::Convolution(alg));
+                let u8ms = median_ms(|| crate::cache::resize_for_display(image::DynamicImage::ImageLuma8(gray.clone()), f, Some((nw, nh))));
+                let rgba = median_ms(|| {
+                    let mut buf = vec![255u8; w as usize * h as usize * 4];
+                    for (d, &g) in buf.chunks_exact_mut(4).zip(gray.as_raw()) { d[0] = g; d[1] = g; d[2] = g; }
+                    let sI = FirImage::from_vec_u8(w, h, buf, PixelType::U8x4).unwrap();
+                    let mut d = FirImage::new(nw, nh, PixelType::U8x4);
+                    Resizer::new().resize(&sI, &mut d, &opt).unwrap();
+                    d
+                });
+                line += &format!("  {u8ms:5.1}|{rgba:5.1}{}", if rgba < u8ms { "*" } else { " " });
+            }
+            println!("{line}");
+        }
+    }
+}
+
+/// 規則「タップ数(2×サポート÷縮小率)が8以上ならU8が速い」の検証用。Triangle(サポート1)・Nearest も見る。
+#[test]
+#[ignore]
+fn decode_bench_l8_taps_rule() {
+    use fast_image_resize::{images::Image as FirImage, PixelType, ResizeAlg, FilterType as FirFilter, ResizeOptions, Resizer};
+    let src = std::fs::read("/usr/share/backgrounds/Beach-by-Troy-T.jpg").unwrap();
+    let (w, h) = (2000u32, 3000u32);
+    let gray = image::load_from_memory(&src).unwrap().resize_to_fill(w, h, image::imageops::FilterType::Triangle).to_luma8();
+    println!("\n== L8 {w}x{h}  U8 | RGBA→U8x4（*=RGBA が速い）");
+    for (name, alg, f, support) in [
+        ("Triangle ", ResizeAlg::Convolution(FirFilter::Bilinear), image::imageops::FilterType::Triangle, 1.0f32),
+        ("Nearest  ", ResizeAlg::Nearest, image::imageops::FilterType::Nearest, 0.0),
+        ("CatmullRom", ResizeAlg::Convolution(FirFilter::CatmullRom), image::imageops::FilterType::CatmullRom, 2.0),
+        ("Lanczos3 ", ResizeAlg::Convolution(FirFilter::Lanczos3), image::imageops::FilterType::Lanczos3, 3.0),
+    ] {
+        let opt = ResizeOptions::new().resize_alg(alg);
+        let mut line = format!("  {name}:");
+        for &s in &[0.1f32, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.9] {
+            let (nw, nh) = (((w as f32 * s) as u32).max(1), ((h as f32 * s) as u32).max(1));
+            let u8ms = median_ms(|| crate::cache::resize_for_display(image::DynamicImage::ImageLuma8(gray.clone()), f, Some((nw, nh))));
+            let rgba = median_ms(|| {
+                let mut buf = vec![255u8; w as usize * h as usize * 4];
+                for (d, &g) in buf.chunks_exact_mut(4).zip(gray.as_raw()) { d[0] = g; d[1] = g; d[2] = g; }
+                let si = FirImage::from_vec_u8(w, h, buf, PixelType::U8x4).unwrap();
+                let mut d = FirImage::new(nw, nh, PixelType::U8x4);
+                Resizer::new().resize(&si, &mut d, &opt).unwrap();
+                d
+            });
+            let taps = if support > 0.0 { format!("{:.1}", 2.0 * support / s) } else { "-".into() };
+            line += &format!(" s{s:.2}(t{taps}) {u8ms:4.1}|{rgba:4.1}{}", if rgba < u8ms { "*" } else { " " });
+        }
+        println!("{line}");
+    }
+}
