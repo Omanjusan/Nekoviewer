@@ -1614,6 +1614,9 @@ pub struct ThumbResult {
     pub session_id: u64,
     pub stage: ThumbResultStage,
     pub failed: bool,
+    /// 元ファイルの更新時刻を読めなかった（実体が無い、またはstatに失敗した）。
+    /// キャッシュ済みサムネを返した場合も立つ。検索結果の表示中に、消えたファイルを一覧から外す判断に使う。
+    pub missing: bool,
     pub is_tag_preview: bool,
 }
 
@@ -1714,6 +1717,7 @@ fn spawn_thumb_gen_pool(
                     session_id: req.session_id,
                     stage: ThumbResultStage::Complete,
                     failed,
+                    missing: false,
                 });
                 // ROOT を起こして poll_workers に結果を回収させる
                 ctx.request_repaint();
@@ -1775,6 +1779,7 @@ pub fn spawn_thumb_worker(
                             session_id: req.session_id,
                             stage: ThumbResultStage::Preview,
                             failed: false,
+                            missing: false,
                         });
                         ctx.request_repaint();
                         // 後追い検証とCAS: stale/mtime不一致なら旧画像を残したまま再生成する。
@@ -1793,6 +1798,7 @@ pub fn spawn_thumb_worker(
                                 session_id: req.session_id,
                                 stage: ThumbResultStage::Complete,
                                 failed: false,
+                                missing: current_mtime == 0,
                             });
                             ctx.request_repaint();
                         }
@@ -1811,6 +1817,7 @@ pub fn spawn_thumb_worker(
                                 session_id: req.session_id,
                                 stage: ThumbResultStage::Complete,
                                 failed: true,
+                                missing: current_mtime == 0,
                             });
                             ctx.request_repaint();
                         }
@@ -2286,6 +2293,60 @@ mod ring_integration_tests {
         assert_eq!(complete.stage, ThumbResultStage::Complete);
         assert!(complete.rgba.is_none());
         assert!(!complete.failed);
+        assert!(!complete.missing, "実在するファイルは missing にならない");
+        drop(tx);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 消えたファイルは、キャッシュ済みサムネの有無によらず `missing` で知らせる
+    /// （検索結果の表示中に、一覧から外す判断に使う）。
+    #[test]
+    fn thumbnail_worker_flags_missing_source_with_or_without_cached_thumb() {
+        let root = std::env::temp_dir().join(format!(
+            "nekoviewer_thumb_missing_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+        ));
+        let source_dir = root.join("source");
+        std::fs::create_dir_all(&source_dir).unwrap();
+        let cached_path = source_dir.join("cached.png");
+        image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+            8, 8, image::Rgba([1, 2, 3, 255]),
+        )).save(&cached_path).unwrap();
+        let never_path = source_dir.join("never.png"); // 一度も作らない（キャッシュも無い）
+        let db = crate::neko_dir::open_cache_db(&root.join("cache"), &source_dir).unwrap();
+        let (tx, rx, _) = spawn_thumb_worker(2, egui::Context::default());
+        let request = |path: &std::path::Path| ThumbRequest {
+            archive_path: path.to_path_buf(),
+            db: Some(Arc::clone(&db)),
+            is_raw_file: true,
+            thumbnail_selection: None,
+            requested_edge: 64,
+            requested_filter: crate::config::ResizeFilter::Triangle,
+            generation_token: None,
+            session_id: 1,
+            is_tag_preview: false,
+        };
+        let wait = std::time::Duration::from_secs(5);
+
+        // キャッシュを作ってから、元ファイルを消す。
+        tx.send(request(&cached_path)).unwrap();
+        let generated = rx.recv_timeout(wait).unwrap();
+        assert!(generated.rgba.is_some() && !generated.missing);
+        std::fs::remove_file(&cached_path).unwrap();
+
+        // キャッシュあり・実体なし: サムネは出る（Xは付かない）が、missing で知らせる。
+        tx.send(request(&cached_path)).unwrap();
+        let preview = rx.recv_timeout(wait).unwrap();
+        let complete = rx.recv_timeout(wait).unwrap();
+        assert!(preview.rgba.is_some());
+        assert!(!complete.failed && complete.missing);
+
+        // キャッシュなし・実体なし: 失敗（赤X）でもあり、missing でもある。
+        tx.send(request(&never_path)).unwrap();
+        let none = rx.recv_timeout(wait).unwrap();
+        assert!(none.rgba.is_none() && none.failed && none.missing);
         drop(tx);
         let _ = std::fs::remove_dir_all(&root);
     }

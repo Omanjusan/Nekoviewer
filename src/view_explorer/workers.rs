@@ -488,8 +488,27 @@ impl NekoviewApp {
         let was_pending = self.normal_thumb_pending() > 0;
         let thumb_results: Vec<ThumbResult> =
             std::iter::from_fn(|| self.thumb_res_rx.try_recv().ok()).collect();
+        // 検索結果の表示中に「実体が無い」と分かったファイル（表示中の一覧から外す）。
+        let mut missing_in_search: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
         for result in thumb_results {
             if result.session_id != self.thumb_session.load(std::sync::atomic::Ordering::Acquire) {
+                continue;
+            }
+            // 検索結果（台帳全件）には、消したがまだ台帳に「確認済」で残っているファイルが混ざる。
+            // 実体が無いと分かったものは、赤Xを付けずに一覧から外す（DBは触らない）。
+            // ネットワークマウント配下は、接続不調でstatに失敗しただけの可能性があるので外さない（従来どおり）。
+            if result.missing
+                && !result.is_tag_preview
+                && self.viewing_search.is_some()
+                && self.network_mount_root_cached(&result.path).is_none()
+            {
+                if result.stage == ThumbResultStage::Complete {
+                    self.thumb_pending.remove(&result.path);
+                    self.idle_thumb_completed(&result.path);
+                }
+                if self.archives.contains(&result.path) {
+                    missing_in_search.insert(result.path);
+                }
                 continue;
             }
             if result.is_tag_preview {
@@ -538,6 +557,9 @@ impl NekoviewApp {
                     }
                 }
             }
+        }
+        if !missing_in_search.is_empty() {
+            self.drop_missing_from_search_view(&missing_in_search);
         }
         self.pump_perf_fixture_all_thumbs();
         self.pump_thumbnail_queue(ctx);

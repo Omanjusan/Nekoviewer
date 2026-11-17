@@ -855,14 +855,20 @@ impl NekoviewApp {
 
                 ui.separator();
 
-                ui.separator();
-                let r_thumb = ui.label(self.thumbnail_status_text());
-                help_tip(&r_thumb, help_on, &help_thumb);
+                // 横断表示（お気に入り・検索・タグ検索・類似）では、実フォルダ向けのサムネイル数・ID取得状況は意味が無いので出さない。
+                if !self.in_cross_view() {
+                    ui.separator();
+                    let r_thumb = ui.label(self.thumbnail_status_text());
+                    help_tip(&r_thumb, help_on, &help_thumb);
+                }
 
                 // DB内の重複の解決（サムネイル n/m の左）。未解決が無いときはグレーで押せない。
                 // ID層が止まっている間（バックアップ失敗でOFFを選んだ時など）は出さない。
                 if crate::file_identity::is_enabled() {
-                    ui.separator();
+                    // 横断表示ではラベルを出さないので、区切り線が二重にならないよう省く。
+                    if !self.in_cross_view() {
+                        ui.separator();
+                    }
                     let (resolve_label, resolve_enabled) = self.identity_resolve_button();
                     let r_resolve = ui.add_enabled(resolve_enabled, egui::Button::new(resolve_label));
                     if r_resolve.clicked() {
@@ -871,6 +877,14 @@ impl NekoviewApp {
                 }
             });
         });
+    }
+
+    /// 中央のアイテム欄が実ディレクトリ由来ではなく、横断一覧（お気に入り・検索・タグ検索・類似）になっているか。
+    fn in_cross_view(&self) -> bool {
+        !self.folder_pane_tab.shows_real_dir()
+            || self.viewing_favorites.is_some()
+            || self.viewing_search.is_some()
+            || self.viewing_similar.is_some()
     }
 
     fn thumbnail_status_text(&self) -> String {

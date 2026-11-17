@@ -44,7 +44,7 @@ fn take_allowed_thumbnail(
 }
 
 /// 並び替え前のインデックス → 同じパスの並び替え後のインデックス（消えたパスは含まない）
-fn index_remap(before: &[PathBuf], after: &[PathBuf]) -> HashMap<usize, usize> {
+pub(super) fn index_remap(before: &[PathBuf], after: &[PathBuf]) -> HashMap<usize, usize> {
     let new_index: HashMap<&PathBuf, usize> = after.iter().enumerate().map(|(i, p)| (p, i)).collect();
     before.iter().enumerate().filter_map(|(i, p)| Some((i, *new_index.get(p)?))).collect()
 }

@@ -236,6 +236,39 @@ impl NekoviewApp {
         self.select_anchor = None;
     }
 
+    /// 検索結果の表示中に、実体が無いと分かったファイルを表示中の一覧から外す。
+    /// 履歴（`entry.hits`）とDBは変えない（ファイルが戻れば、開き直した時に再び出る）。
+    /// 並びは保ったまま詰め、選択・複数選択・グリッドカーソルは同じファイルを指し直す。
+    pub(super) fn drop_missing_from_search_view(&mut self, missing: &std::collections::HashSet<PathBuf>) {
+        if self.viewing_search.is_none() {
+            return;
+        }
+        let before = std::mem::take(&mut self.archives);
+        self.archives = before.iter().filter(|p| !missing.contains(*p)).cloned().collect();
+        if self.archives.len() == before.len() {
+            return;
+        }
+        for p in missing {
+            self.thumbnails.remove(p);
+            self.thumb_pending.remove(p);
+        }
+        let remap = super::scan::index_remap(&before, &self.archives);
+        let moved = |i: usize| remap.get(&i).copied();
+        let selection_lost = self.selected_archive_index.is_some_and(|i| moved(i).is_none());
+        self.selected_archive_index = self.selected_archive_index.and_then(moved);
+        self.select_anchor = self.select_anchor.and_then(moved);
+        self.multi_selected = self.multi_selected.iter().filter_map(|&i| moved(i)).collect();
+        if let Some(super::GridEntry::Archive(i)) = self.grid_cursor {
+            self.grid_cursor = moved(i).map(super::GridEntry::Archive);
+        }
+        if selection_lost {
+            self.selected_archive_meta = None;
+        }
+        // 選択インデックスを付け直した後にフィルタを作り直す。
+        self.recompute_filter();
+        self.egui_ctx.request_repaint();
+    }
+
     /// 検索結果表示を終え、実ディレクトリ（current_dir）表示に戻す。
     pub(super) fn exit_search_view(&mut self) {
         if self.viewing_search.is_none() {
