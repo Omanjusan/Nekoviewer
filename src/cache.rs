@@ -386,8 +386,8 @@ fn to_fir_alg(filter: image::imageops::FilterType) -> ResizeAlg {
     }
 }
 
-// RGB 画像は RGB のまま resize し、小さくなった出力だけ RGBA に変換する。
-// デバッグモードでは大きな入力を to_rgba8() するコストが支配的になるため。
+// RGB・グレー(L8)画像は元の形式のまま resize し、小さくなった出力だけ RGBA に変換する。
+// 大きな入力を先に RGBA 化するコストが支配的になるため（L8 は 6MP で約35ms→縮小も約5倍遅かった）。
 fn fir_resize(img: image::DynamicImage, nw: u32, nh: u32, filter: image::imageops::FilterType) -> image::RgbaImage {
     let options = ResizeOptions::new().resize_alg(to_fir_alg(filter));
     match img {
@@ -397,7 +397,15 @@ fn fir_resize(img: image::DynamicImage, nw: u32, nh: u32, filter: image::imageop
             let mut dst = FirImage::new(nw, nh, PixelType::U8x3);
             Resizer::new().resize(&src, &mut dst, &options).unwrap();
             let rgb_out = image::RgbImage::from_raw(nw, nh, dst.into_vec()).unwrap();
-            image::DynamicImage::ImageRgb8(rgb_out).to_rgba8()
+            image::DynamicImage::ImageRgb8(rgb_out).into_rgba8()
+        }
+        image::DynamicImage::ImageLuma8(gray) => {
+            let (w, h) = (gray.width(), gray.height());
+            let src = FirImage::from_vec_u8(w, h, gray.into_raw(), PixelType::U8).unwrap();
+            let mut dst = FirImage::new(nw, nh, PixelType::U8);
+            Resizer::new().resize(&src, &mut dst, &options).unwrap();
+            let gray_out = image::GrayImage::from_raw(nw, nh, dst.into_vec()).unwrap();
+            luma8_to_rgba(&gray_out)
         }
         _ => {
             let rgba = img.into_rgba8();
@@ -407,6 +415,26 @@ fn fir_resize(img: image::DynamicImage, nw: u32, nh: u32, filter: image::imageop
             Resizer::new().resize(&src, &mut dst, &options).unwrap();
             image::RgbaImage::from_raw(nw, nh, dst.into_vec()).unwrap()
         }
+    }
+}
+
+/// L8 → RGBA（[g,g,g,255]）。image クレートの汎用変換より速い単純ループ（自動ベクトル化される）。
+fn luma8_to_rgba(gray: &image::GrayImage) -> image::RgbaImage {
+    let (w, h) = gray.dimensions();
+    let mut out = vec![255u8; w as usize * h as usize * 4];
+    for (dst, &g) in out.chunks_exact_mut(4).zip(gray.as_raw()) {
+        dst[0] = g;
+        dst[1] = g;
+        dst[2] = g;
+    }
+    image::RgbaImage::from_raw(w, h, out).unwrap()
+}
+
+/// 縮小しない経路の RGBA 化。Rgba8 はコピーせず移動、L8 は専用ループ、他は image クレートの変換。
+fn into_rgba_fast(img: image::DynamicImage) -> image::RgbaImage {
+    match img {
+        image::DynamicImage::ImageLuma8(gray) => luma8_to_rgba(&gray),
+        other => other.into_rgba8(),
     }
 }
 
@@ -505,14 +533,14 @@ fn decode_bytes_to_content(
 pub fn resize_for_display(img: image::DynamicImage, filter: image::imageops::FilterType, target: Option<(u32, u32)>) -> image::RgbaImage {
     set_last_page_meta(PageMeta { orig: (img.width(), img.height()), animated: false });
     let Some((tw, th)) = target else {
-        return img.to_rgba8();
+        return into_rgba_fast(img);
     };
     let (w, h) = (img.width(), img.height());
     let (nw, nh) = crate::anim::fit_within(w, h, tw, th);
     if (nw, nh) != (w, h) {
         fir_resize(img, nw, nh, filter)
     } else {
-        img.to_rgba8()
+        into_rgba_fast(img)
     }
 }
 
@@ -2493,6 +2521,42 @@ mod ring_integration_tests {
     /// フェーズ5: 実際のデフォルト(100MB)と同じ値。テストフィクスチャは全て十分小さいので影響しない。
     const TEST_FRAME_HARD_LIMIT_BYTES: usize = 100 * MB;
 
+    fn gradient_gray(w: u32, h: u32) -> image::GrayImage {
+        image::GrayImage::from_fn(w, h, |x, y| image::Luma([((x * 7 + y * 13) % 256) as u8]))
+    }
+
+    #[test]
+    fn luma8_to_rgba_matches_image_crate_conversion_exactly() {
+        let gray = gradient_gray(37, 23);
+        let expected = image::DynamicImage::ImageLuma8(gray.clone()).to_rgba8();
+        assert_eq!(luma8_to_rgba(&gray).as_raw(), expected.as_raw());
+    }
+
+    #[test]
+    fn gray_resize_matches_rgba_path_within_one_level() {
+        use image::imageops::FilterType;
+        let gray = gradient_gray(200, 120);
+        for filter in [FilterType::CatmullRom, FilterType::Lanczos3, FilterType::Triangle] {
+            let fast = fir_resize(image::DynamicImage::ImageLuma8(gray.clone()), 100, 60, filter);
+            let reference = fir_resize(image::DynamicImage::ImageRgba8(image::DynamicImage::ImageLuma8(gray.clone()).to_rgba8()), 100, 60, filter);
+            assert_eq!(fast.dimensions(), (100, 60));
+            let max_diff = fast.as_raw().iter().zip(reference.as_raw()).map(|(a, b)| a.abs_diff(*b)).max().unwrap();
+            assert!(max_diff <= 1, "{filter:?}: 従来経路との差 {max_diff}");
+            assert!(fast.pixels().all(|p| p.0[0] == p.0[1] && p.0[1] == p.0[2] && p.0[3] == 255), "{filter:?}: グレー・不透明のまま");
+        }
+    }
+
+    #[test]
+    fn gray_page_without_resize_stays_exact_and_reports_original_size() {
+        let gray = gradient_gray(50, 40);
+        let expected = image::DynamicImage::ImageLuma8(gray.clone()).to_rgba8();
+        let _ = take_last_page_meta();
+        // 枠に収まる → 縮小なし
+        let out = resize_for_display(image::DynamicImage::ImageLuma8(gray), image::imageops::FilterType::CatmullRom, Some((100, 100)));
+        assert_eq!(out.as_raw(), expected.as_raw());
+        assert_eq!(take_last_page_meta().unwrap().orig, (50, 40));
+    }
+
     #[test]
     fn thumbnail_source_crop_uses_exact_left_and_right_halves() {
         let mut rgba = image::RgbaImage::new(5, 2);
@@ -3827,3 +3891,6 @@ mod file_cache_yield_tests {
         assert!(!foreground_io_quiet_for(std::time::Duration::from_secs(5)), "終わった直後は、長い静けさを要求すると false");
     }
 }
+
+#[cfg(test)]
+mod decode_bench;

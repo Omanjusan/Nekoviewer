@@ -228,6 +228,9 @@ impl<R: Read> Read for CrcReader<R> {
     }
 }
 
+/// 展開先バッファの事前確保の上限（宣言サイズが偽装されていても、確保はここまで）。
+pub(crate) const PREALLOC_CAP: u64 = 64 * 1024 * 1024;
+
 /// エントリ本体を、展開後 `limit` バイトまで読む。ローカルヘッダ（30バイト＋名前＋拡張）とデータだけを読む。
 /// 対応するのは stored と deflate のみ。暗号化・その他の方式・不整合・CRC 不一致・読み取りエラーは `Err`
 /// （呼び出し側は、zip 全体を従来経路に戻す。結果を変えないため）。
@@ -251,7 +254,8 @@ pub(crate) fn read_entry_limited<R: Read + Seek>(reader: &mut R, cd: &CentralDir
     let src = (&mut *reader).take(e.comp_size as u64);
     let body: Box<dyn Read + '_> = if e.method == 0 { Box::new(src) } else { Box::new(flate2::read::DeflateDecoder::new(BufReader::with_capacity(32 * 1024, src))) };
     let checked = CrcReader { inner: body, crc: flate2::Crc::new(), expected: e.crc32 };
-    let mut out = Vec::new();
+    // 宣言サイズは信用しない（偽装対策で上限クランプ）。事前確保は再確保コピーを避けるためだけ。
+    let mut out = Vec::with_capacity((e.uncomp_size as u64).min(limit).min(PREALLOC_CAP) as usize);
     checked.take(limit).read_to_end(&mut out).map_err(|_| ())?;
     Ok(out)
 }

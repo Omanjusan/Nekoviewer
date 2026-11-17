@@ -301,7 +301,8 @@ pub fn load_bytes_from_archive<R: Read + Seek>(
         return Some((super::text_page::wrap_entry(body, page, declared_larger), display_name));
     }
     let mut entry = archive.by_name(entry_name).ok()?;
-    let mut buf = Vec::new();
+    // 宣言サイズは信用しない（上限クランプ）。事前確保は再確保コピーを避けるためだけ。
+    let mut buf = Vec::with_capacity(entry.size().min(super::zip_cd::PREALLOC_CAP) as usize);
     entry.read_to_end(&mut buf).ok()?;
     let display_name = decode_zip_name(entry.name_raw());
     Some((buf, display_name))
