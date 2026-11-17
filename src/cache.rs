@@ -263,7 +263,8 @@ impl ResizeInfo {
     pub fn describe(&self) -> String {
         let ms = self.elapsed.as_secs_f64() * 1000.0;
         if self.src == self.dst {
-            format!("元={}x{}({:?}) 縮小なし 変換={:.1}ms", self.src.0, self.src.1, self.color, ms)
+            let path = if self.path.is_empty() { String::new() } else { format!("[{}]", self.path) };
+            format!("元={}x{}({:?}) 縮小なし 変換={:.1}ms{}", self.src.0, self.src.1, self.color, ms, path)
         } else {
             format!("元={}x{}({:?}) →{}x{} 縮小={:.1}ms[{}]", self.src.0, self.src.1, self.color, self.dst.0, self.dst.1, ms, self.path)
         }
@@ -609,9 +610,40 @@ fn decode_bytes_to_content(
     Some(PageContent::Static(resize_for_display(img, filter, target_size)))
 }
 
+/// P8: 等倍に近い縮小を CPU で行わず、元の大きさのまま GPU（LINEAR 補間）に任せる条件。
+/// CPU 縮小（Lanczos3 等）より画質はわずかに落ちるが、1ページ 6〜15ms の縮小が丸ごと消える。
+/// 設定（GUI の ON/OFF）でのみ有効にする（呼び出し側が `Some` を渡す）。サムネ・原寸/虫眼鏡は渡さない。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NearUnitySkip {
+    /// 縮小率（枠に収める倍率 = min(枠幅/元幅, 枠高/元高)）がこの値以上ならスキップ。
+    pub min_scale: f32,
+    /// GPU テクスチャの1辺の上限。元画像がこれを超えるときは、必ず縮小する。
+    pub max_side: u32,
+}
+
+/// 既定のしきい値（縮小率）。0.85 以上＝縮小量が15%以内。実ログの 1062x1500→941x1330 は 0.887。
+/// 縮小率0.85では、GPU の LINEAR 補間が1出力画素あたり元の約1.18画素を参照するだけで、折り返しは小さい。
+pub const NEAR_UNITY_SKIP_SCALE: f32 = 0.85;
+
+impl NearUnitySkip {
+    /// 元 `w`x`h` を枠 `tw`x`th` に収める縮小を、スキップしてよいか。
+    pub fn applies(&self, w: u32, h: u32, tw: u32, th: u32) -> bool {
+        if w == 0 || h == 0 || w > self.max_side || h > self.max_side {
+            return false;
+        }
+        let scale = (tw as f32 / w as f32).min(th as f32 / h as f32);
+        scale < 1.0 && scale >= self.min_scale
+    }
+}
+
 /// `target` に縮小する（拡大はしない）。`target` が None のときは無制限（原寸のまま）。
 /// フェーズ6: 従来の固定上限(1920x1080)から、リサイズ再デコード対応のため呼び出し側指定に変更。
 pub fn resize_for_display(img: image::DynamicImage, filter: image::imageops::FilterType, target: Option<(u32, u32)>) -> image::RgbaImage {
+    resize_for_display_with(img, filter, target, None)
+}
+
+/// `resize_for_display` に、P8（等倍に近い縮小のスキップ）の条件を足したもの。`skip` が None なら従来どおり。
+pub fn resize_for_display_with(img: image::DynamicImage, filter: image::imageops::FilterType, target: Option<(u32, u32)>, skip: Option<NearUnitySkip>) -> image::RgbaImage {
     set_last_page_meta(PageMeta { orig: (img.width(), img.height()), animated: false });
     let (w, h, color) = (img.width(), img.height(), img.color());
     set_resize_path("");
@@ -619,7 +651,15 @@ pub fn resize_for_display(img: image::DynamicImage, filter: image::imageops::Fil
     let (dst, out) = match target {
         Some((tw, th)) => {
             let (nw, nh) = crate::anim::fit_within(w, h, tw, th);
-            if (nw, nh) != (w, h) { ((nw, nh), fir_resize(img, nw, nh, filter)) } else { ((w, h), into_rgba_fast(img)) }
+            if (nw, nh) == (w, h) {
+                ((w, h), into_rgba_fast(img))
+            } else if skip.is_some_and(|p| p.applies(w, h, tw, th)) {
+                // 縮小せず元の大きさで返す。表示側が、枠に合わせて GPU で縮める。
+                set_resize_path("スキップ(GPU任せ)");
+                ((w, h), into_rgba_fast(img))
+            } else {
+                ((nw, nh), fir_resize(img, nw, nh, filter))
+            }
         }
         None => ((w, h), into_rgba_fast(img)),
     };
@@ -2661,6 +2701,59 @@ mod ring_integration_tests {
             assert_eq!(out.as_raw(), reference.as_raw(), "{filter:?}: 同じ経路なので完全一致");
             assert!(out.pixels().all(|p| p.0[0] == p.0[1] && p.0[1] == p.0[2] && p.0[3] == 255));
         }
+    }
+
+    #[test]
+    fn near_unity_skip_applies_only_between_threshold_and_one() {
+        let p = NearUnitySkip { min_scale: NEAR_UNITY_SKIP_SCALE, max_side: 16384 };
+        // 実ログ: 1062x1500 → 枠 941x1330（縮小率 0.887）はスキップ
+        assert!(p.applies(1062, 1500, 941, 1330));
+        // 境目: 0.85ちょうどは含み、0.84は含まない
+        assert!(p.applies(1000, 1000, 850, 850));
+        assert!(!p.applies(1000, 1000, 840, 840));
+        // 強い縮小は従来どおり縮小する
+        assert!(!p.applies(3840, 2560, 1920, 1280));
+        // 縮小が要らない（枠が元以上）はスキップ対象外（もともと縮小しない）
+        assert!(!p.applies(800, 600, 1000, 1000));
+        // 縦横で厳しい側の縮小率で判定する（縦は0.8、横は0.95 → 0.8 → 縮小する）
+        assert!(!p.applies(1000, 1000, 950, 800));
+        assert!(p.applies(1000, 1000, 950, 900));
+        // 0 サイズ
+        assert!(!p.applies(0, 10, 5, 5));
+    }
+
+    #[test]
+    fn near_unity_skip_never_exceeds_texture_limit() {
+        // 元が GPU テクスチャの上限を超えるときは、縮小率が0.9でも必ず縮小する
+        let p = NearUnitySkip { min_scale: NEAR_UNITY_SKIP_SCALE, max_side: 8192 };
+        assert!(!p.applies(9000, 6000, 8192, 5461));
+        assert!(p.applies(8000, 6000, 7400, 5550));
+    }
+
+    #[test]
+    fn resize_for_display_with_skip_returns_source_size_and_keeps_pixels() {
+        use image::imageops::FilterType;
+        let rgb = image::RgbImage::from_fn(100, 150, |x, y| image::Rgb([(x * 2) as u8, (y * 2 % 256) as u8, 7]));
+        let img = image::DynamicImage::ImageRgb8(rgb);
+        let expected = img.to_rgba8();
+        let p = Some(NearUnitySkip { min_scale: NEAR_UNITY_SKIP_SCALE, max_side: 16384 });
+
+        let _ = take_last_page_meta();
+        clear_last_resize_info();
+        // 枠 90x135（縮小率0.9）→ スキップ: 元の大きさ・画素のまま、元寸法は PageMeta に残る
+        let out = resize_for_display_with(img.clone(), FilterType::Lanczos3, Some((90, 135)), p);
+        assert_eq!(out.dimensions(), (100, 150));
+        assert_eq!(out.as_raw(), expected.as_raw());
+        assert_eq!(take_last_page_meta().unwrap().orig, (100, 150));
+        assert!(last_resize_info_text().contains("スキップ"));
+
+        // 枠 60x90（縮小率0.6）→ 縮小する
+        let out = resize_for_display_with(img.clone(), FilterType::Lanczos3, Some((60, 90)), p);
+        assert_eq!(out.dimensions(), (60, 90));
+
+        // skip が None（設定OFF）なら、同じ枠でも従来どおり縮小する
+        let out = resize_for_display_with(img, FilterType::Lanczos3, Some((90, 135)), None);
+        assert_eq!(out.dimensions(), (90, 135));
     }
 
     #[test]
