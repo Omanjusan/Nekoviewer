@@ -830,6 +830,22 @@ impl NekoviewApp {
                     self.open_settings();
                 }
 
+                // ── 言語（設定ボタンの左隣）。「日中（テスト）」は、日本語と中国語を併記して、訳を確認するための表示 ──
+                ui.separator();
+                ui.horizontal(|ui| {
+                    let current = i18n::display();
+                    let mut picked = None;
+                    for d in i18n::Display::ALL {
+                        if ui.add(egui::Button::new(d.native_name()).selected(current == d)).clicked() && current != d {
+                            picked = Some(d);
+                        }
+                    }
+                    if let Some(d) = picked {
+                        i18n::set_display(d);
+                        self.persist_state();
+                    }
+                });
+
                 ui.separator();
 
                 // ── ビューアー復帰（画面外へ行った窓を中央へ戻す単発ボタン）─────────

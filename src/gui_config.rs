@@ -844,7 +844,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "rating_sort_ascending" => { rating_sort_ascending = v.trim().parse().ok(); }
                 "lang" => {
                     let v = v.trim();
-                    if matches!(v, "ja" | "en" | "cn") {
+                    if matches!(v, "ja" | "en" | "cn" | "jazh") {
                         lang = Some(v.to_string());
                     }
                 }
@@ -1524,6 +1524,13 @@ mod tests {
     fn tag_learn_intro_hidden_parses_and_ignores_bad_values() {
         assert_eq!(parse_state_text("ti_on", "app_tag_learn_intro_hidden=true\n").app_tag_learn_intro_hidden, Some(true));
         assert_eq!(parse_state_text("ti_bad", "app_tag_learn_intro_hidden=x\n").app_tag_learn_intro_hidden, None);
+    }
+
+    #[test]
+    fn lang_accepts_the_bilingual_test_display_and_ignores_unknown() {
+        assert_eq!(parse_state_text("lang_jazh", "lang=jazh\n").lang, "jazh");
+        assert_eq!(parse_state_text("lang_cn", "lang=cn\n").lang, "cn");
+        assert_eq!(parse_state_text("lang_bad", "lang=fr\n").lang, "ja");
     }
 
     #[test]

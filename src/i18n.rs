@@ -1,4 +1,6 @@
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lang {
@@ -4624,14 +4626,6 @@ For files without metadata, setting the main category etc. by hand and training 
     }
 
     /// 言語選択コンボボックス用の、その言語自身の正式名称（現在の表示言語に依存しない）。
-    pub fn native_name(self) -> &'static str {
-        match self {
-            Lang::Japanese => "日本語",
-            Lang::English  => "English",
-            Lang::Chinese  => "简体中文",
-        }
-    }
-
     pub fn scoring_toggle_button(self, on: bool) -> &'static str {
         match (self, on) {
             (Lang::Japanese, true)  => "スコアリングON",
@@ -8123,14 +8117,6 @@ For files without metadata, setting the main category etc. by hand and training 
         }
     }
 
-    pub fn settings_lang_label(self) -> &'static str {
-        match self {
-            Lang::Japanese => "■ 言語",
-            Lang::English  => "■ Language",
-            Lang::Chinese  => "■ 语言",
-        }
-    }
-
     pub fn settings_ring_bounds_label(self) -> &'static str {
         match self {
             Lang::Japanese => "■ ※ リングバッファの先読み枚数（下限〜上限）",
@@ -11547,29 +11533,175 @@ impl Lang {
 }
 
 static LANG: AtomicU8 = AtomicU8::new(0);
+/// 「日中（テスト）」表示か。オンのとき、基準の言語は日本語（`t()` は日本語を返す）。
+static BILINGUAL: AtomicBool = AtomicBool::new(false);
 
+/// 表示の言語。3言語に、「日中（テスト）」（日本語と中国語を併記して、訳を確認するための表示）を足した4つ。
+/// 日中（テスト）に対応するのは、`tr`・`render` を通す文言だけ。それ以外の文言は、日本語のまま出る。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Display {
+    Ja,
+    En,
+    Zh,
+    JaZh,
+}
+
+impl Display {
+    pub const ALL: [Display; 4] = [Display::Ja, Display::En, Display::Zh, Display::JaZh];
+
+    pub fn native_name(self) -> &'static str {
+        match self {
+            Display::Ja => "日本語",
+            Display::En => "English",
+            Display::Zh => "中文",
+            Display::JaZh => "日中（テスト）",
+        }
+    }
+
+    /// state に保存する文字列。
+    pub fn code(self) -> &'static str {
+        match self {
+            Display::Ja => "ja",
+            Display::En => "en",
+            Display::Zh => "cn",
+            Display::JaZh => "jazh",
+        }
+    }
+
+    pub fn from_code(code: &str) -> Display {
+        match code {
+            "en" => Display::En,
+            "cn" => Display::Zh,
+            "jazh" => Display::JaZh,
+            _ => Display::Ja,
+        }
+    }
+}
+
+/// いまの言語（日中（テスト）のときは、基準の日本語）。
 pub fn t() -> Lang {
     Lang::from_u8(LANG.load(Ordering::Relaxed))
 }
 
-pub fn set(lang: Lang) {
+pub fn display() -> Display {
+    if BILINGUAL.load(Ordering::Relaxed) {
+        return Display::JaZh;
+    }
+    match t() {
+        Lang::Japanese => Display::Ja,
+        Lang::English => Display::En,
+        Lang::Chinese => Display::Zh,
+    }
+}
+
+pub fn set_display(d: Display) {
+    BILINGUAL.store(d == Display::JaZh, Ordering::Relaxed);
+    let lang = match d {
+        Display::Ja | Display::JaZh => Lang::Japanese,
+        Display::En => Lang::English,
+        Display::Zh => Lang::Chinese,
+    };
     LANG.store(lang.as_u8(), Ordering::Relaxed);
 }
 
 pub fn set_from_code(code: &str) {
-    let lang = match code {
-        "en" => Lang::English,
-        "cn" => Lang::Chinese,
-        _    => Lang::Japanese,
-    };
-    set(lang);
+    set_display(Display::from_code(code));
 }
 
 pub fn lang_code() -> &'static str {
-    match t() {
-        Lang::Japanese => "ja",
-        Lang::English  => "en",
-        Lang::Chinese  => "cn",
+    display().code()
+}
+
+/// 日本語と中国語を併記した1つの文字列にする。同じ文字列なら、1つだけ。
+/// 長い文や改行を含む文は、2行に分ける（「日本語」の下に「中文」）。短いものは「日本語 ／ 中文」。
+pub fn join_bilingual(ja: &str, zh: &str) -> String {
+    if ja == zh {
+        return ja.to_string();
+    }
+    if ja.contains('\n') || zh.contains('\n') || ja.chars().count() > 40 {
+        format!("{ja}\n{zh}")
+    } else {
+        format!("{ja} ／ {zh}")
+    }
+}
+
+/// 3言語の文言から、`d` に合うものを返す（固定文言用）。日中（テスト）は、併記した文字列を1回だけ作って使い回す。
+pub fn tr_for(d: Display, ja: &'static str, en: &'static str, zh: &'static str) -> &'static str {
+    match d {
+        Display::Ja => ja,
+        Display::En => en,
+        Display::Zh => zh,
+        Display::JaZh => {
+            static CACHE: OnceLock<Mutex<HashMap<(usize, usize), &'static str>>> = OnceLock::new();
+            let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+            let mut map = cache.lock().unwrap_or_else(|e| e.into_inner());
+            *map.entry((ja.as_ptr() as usize, zh.as_ptr() as usize))
+                .or_insert_with(|| Box::leak(join_bilingual(ja, zh).into_boxed_str()))
+        }
+    }
+}
+
+/// いまの表示に合う文言を返す。固定文言は、日本語・英語・中国語の順に渡す。
+pub fn tr(ja: &'static str, en: &'static str, zh: &'static str) -> &'static str {
+    tr_for(display(), ja, en, zh)
+}
+
+/// 数や名前を埋め込む文言用。`f` は言語を受け取って文字列を作る。日中（テスト）では、日本語と中国語で作って併記する。
+pub fn render(f: impl Fn(Lang) -> String) -> String {
+    render_for(display(), f)
+}
+
+pub fn render_for(d: Display, f: impl Fn(Lang) -> String) -> String {
+    match d {
+        Display::Ja => f(Lang::Japanese),
+        Display::En => f(Lang::English),
+        Display::Zh => f(Lang::Chinese),
+        Display::JaZh => join_bilingual(&f(Lang::Japanese), &f(Lang::Chinese)),
+    }
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+
+    #[test]
+    fn codes_round_trip_and_unknown_falls_back_to_japanese() {
+        for d in Display::ALL {
+            assert_eq!(Display::from_code(d.code()), d);
+        }
+        assert_eq!(Display::from_code("zzz"), Display::Ja);
+        assert_eq!(Display::from_code(""), Display::Ja);
+    }
+
+    #[test]
+    fn bilingual_join_rules() {
+        assert_eq!(join_bilingual("次へ", "下一步"), "次へ ／ 下一步");
+        assert_eq!(join_bilingual("OK", "OK"), "OK");
+        assert_eq!(join_bilingual("1行目\n2行目", "第1行"), "1行目\n2行目\n第1行");
+        let long = "あ".repeat(41);
+        assert_eq!(join_bilingual(&long, "中"), format!("{long}\n中"));
+    }
+
+    #[test]
+    fn tr_for_picks_by_display_and_caches_the_joined_text() {
+        assert_eq!(tr_for(Display::Ja, "日", "en", "中"), "日");
+        assert_eq!(tr_for(Display::En, "日", "en", "中"), "en");
+        assert_eq!(tr_for(Display::Zh, "日", "en", "中"), "中");
+        let a = tr_for(Display::JaZh, "日", "en", "中");
+        let b = tr_for(Display::JaZh, "日", "en", "中");
+        assert_eq!(a, "日 ／ 中");
+        assert!(std::ptr::eq(a, b));
+    }
+
+    #[test]
+    fn render_for_builds_each_language_and_joins_for_the_test_display() {
+        let f = |l: Lang| match l {
+            Lang::Japanese => "3件".to_string(),
+            Lang::English => "3 items".to_string(),
+            Lang::Chinese => "3项".to_string(),
+        };
+        assert_eq!(render_for(Display::En, f), "3 items");
+        assert_eq!(render_for(Display::JaZh, f), "3件 ／ 3项");
     }
 }
 

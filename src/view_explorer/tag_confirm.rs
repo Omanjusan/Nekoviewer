@@ -592,7 +592,7 @@ impl NekoviewApp {
             let window_idx: Vec<usize> = st.set.indices_in_window(stage);
             // 1行目: 絞り込み（表示の切り替えのボタン・名前の絞り込み）と、右端寄せの「オプション」。
             ui.horizontal_wrapped(|ui| {
-                ui.strong(ctext::FILTER_HEADING);
+                ui.strong(ctext::filter_heading());
                 for (v, label, n) in [
                     (ListView::All, ctext::VIEW_ALL, counts.all),
                     (ListView::NeedsReview, ctext::VIEW_NEEDS_REVIEW, counts.needs_review),
@@ -619,8 +619,8 @@ impl NekoviewApp {
                 let w = ui.available_size_before_wrap().x.max(OPTION_BTN_W);
                 ui.allocate_ui_with_layout(egui::vec2(w, ui.spacing().interact_size.y), egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let config = egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
-                    egui::containers::menu::MenuButton::new(ctext::OPTION_BUTTON).config(config).ui(ui, |ui| {
-                        ui.label(egui::RichText::new(ctext::OPTION_DENSITY_HEADING).strong());
+                    egui::containers::menu::MenuButton::new(ctext::option_button()).config(config).ui(ui, |ui| {
+                        ui.label(egui::RichText::new(ctext::option_density_heading()).strong());
                         ui.radio_value(&mut st.compact, false, ctext::DENSITY_STANDARD).on_hover_text(ctext::DENSITY_HINT);
                         ui.radio_value(&mut st.compact, true, ctext::DENSITY_COMPACT).on_hover_text(ctext::DENSITY_HINT);
                         ui.separator();
@@ -635,7 +635,7 @@ impl NekoviewApp {
             });
             // 2行目: 一括操作（3つを、最初から並べる）。
             ui.horizontal_wrapped(|ui| {
-                ui.strong(ctext::BULK_HEADING);
+                ui.strong(ctext::bulk_heading());
                 if ui.button(ctext::BULK_ADOPT_ALL).clicked() {
                     for &i in &window_idx {
                         st.set.candidates[i].adopt();
@@ -1025,15 +1025,15 @@ impl NekoviewApp {
                 let mut keep = false;
                 let modal = self.explorer_modal(ctx, "tag_cancel_confirm").show(ctx, |ui| {
                     ui.set_width(420.0);
-                    ui.heading(ctext::CANCEL_CONFIRM_TITLE);
+                    ui.heading(ctext::cancel_confirm_title());
                     ui.add_space(4.0);
-                    ui.label(ctext::CANCEL_CONFIRM_BODY);
+                    ui.label(ctext::cancel_confirm_body());
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if ui.button(ctext::CANCEL_CONFIRM_CONTINUE).clicked() {
+                        if ui.button(ctext::cancel_confirm_continue()).clicked() {
                             keep = true;
                         }
-                        if ui.button(ctext::CANCEL_CONFIRM_GO).clicked() {
+                        if ui.button(ctext::cancel_confirm_go()).clicked() {
                             cancel_go = true;
                         }
                     });

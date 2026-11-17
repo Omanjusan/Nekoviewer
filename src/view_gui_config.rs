@@ -153,7 +153,6 @@ pub(crate) struct SettingsDraft {
     tag_learning_use: bool,
     viewer_filter: ResizeFilter,
     thumb_filter: ResizeFilter,
-    lang: i18n::Lang,
     show_hidden: bool,
     /// サムネカード情報帯の日付書式（エクスプローラータブで編集）。
     card_date_format: CardDateFormat,
@@ -312,7 +311,6 @@ impl SettingsDraft {
             tag_learning_use: config.tag_learning_use,
             viewer_filter: config.viewer_filter,
             thumb_filter: config.thumb_filter,
-            lang: i18n::t(),
             show_hidden,
             card_date_format,
             ring_min: config.anim_ring_min_frames,
@@ -394,7 +392,6 @@ impl SettingsDraft {
         config.tag_learning_use = self.tag_learning_use;
         config.viewer_filter = self.viewer_filter;
         config.thumb_filter = self.thumb_filter;
-        i18n::set(self.lang);
 
         config.anim_ring_min_frames = self.ring_min;
         config.anim_ring_max_frames = self.ring_max;
@@ -729,16 +726,6 @@ fn draw_settings_tab_common(ui: &mut egui::Ui, draft: &mut SettingsDraft) {
         ui.label(i18n::t().settings_show_hidden_label());
         ui.checkbox(&mut draft.show_hidden, "");
     });
-    ui.separator();
-
-    ui.label(i18n::t().settings_lang_label());
-    egui::ComboBox::from_id_salt("settings_lang")
-        .selected_text(draft.lang.native_name())
-        .show_ui(ui, |ui| {
-            for lang in [i18n::Lang::Japanese, i18n::Lang::English, i18n::Lang::Chinese] {
-                ui.selectable_value(&mut draft.lang, lang, lang.native_name());
-            }
-        });
 }
 
 // ── エクスプローラータブ: サムネカード情報帯の日付書式 ──────────────────────

@@ -7,7 +7,7 @@
 //!   （文面はこのモジュールに集約してあるので、移すときの対象はここだけ）
 //! - 呼び出し側は、確認ウィンドウの行描画・変更ダイアログ・理由ポップアップ（フェーズB以降）
 
-use crate::i18n::Lang;
+use crate::i18n::{self, Lang};
 use crate::tag_candidates::{Candidate, CandidateInput, CatRef, Choice, ParentMode, Role};
 use crate::tag_master::{display_name, primary_alias};
 use crate::view_explorer::TagManagerCategoryUi;
@@ -156,18 +156,38 @@ pub(crate) const STAGE_TWO_NAME: &str = "作者・グループ";
 
 /// 1枚目から2枚目へ進むボタン。
 pub(crate) fn footer_next_label() -> String {
-    format!("次へ：2/2 {STAGE_TWO_NAME}の解決ページへ進む")
+    i18n::render(|l| match l {
+        Lang::Japanese => format!("次へ：2/2 {STAGE_TWO_NAME}の解決ページへ進む"),
+        Lang::English => "Next: go to 2/2 – authors and groups".to_string(),
+        Lang::Chinese => "下一步：前往 2/2 作者・团体 的确认页".to_string(),
+    })
 }
 
 /// 2枚目から1枚目へ戻るボタン。
 pub(crate) fn footer_back_label() -> String {
-    format!("戻る：1/2 {STAGE_ONE_NAME}の解決ページへ戻る")
+    i18n::render(|l| match l {
+        Lang::Japanese => format!("戻る：1/2 {STAGE_ONE_NAME}の解決ページへ戻る"),
+        Lang::English => "Back: return to 1/2 – format, category, language, event".to_string(),
+        Lang::Chinese => "返回：回到 1/2 格式・类别・语言・活动 的确认页".to_string(),
+    })
 }
 
-pub(crate) const CANCEL_CONFIRM_TITLE: &str = "確認をやめますか？";
-pub(crate) const CANCEL_CONFIRM_BODY: &str = "ここまでの選択はすべて捨てられ、ファイルにはタグが付きません。";
-pub(crate) const CANCEL_CONFIRM_CONTINUE: &str = "続けて確認する";
-pub(crate) const CANCEL_CONFIRM_GO: &str = "やめる";
+pub(crate) fn cancel_confirm_title() -> &'static str {
+    i18n::tr("確認をやめますか？", "Stop reviewing?", "要停止确认吗？")
+}
+pub(crate) fn cancel_confirm_body() -> &'static str {
+    i18n::tr(
+        "ここまでの選択はすべて捨てられ、ファイルにはタグが付きません。",
+        "All choices made so far will be discarded, and no tags will be added to the files.",
+        "到目前为止的所有选择都会被丢弃，文件不会被添加标签。",
+    )
+}
+pub(crate) fn cancel_confirm_continue() -> &'static str {
+    i18n::tr("続けて確認する", "Keep reviewing", "继续确认")
+}
+pub(crate) fn cancel_confirm_go() -> &'static str {
+    i18n::tr("やめる", "Stop", "停止")
+}
 pub(crate) const FOOTER_APPLY: &str = "今までの選択を適用";
 
 pub(crate) const PRECHECK_TITLE: &str = "要確認の候補が残っています";
@@ -299,10 +319,21 @@ pub(crate) const DEFAULT_REVIEW_LABEL: &str = "デフォルト表示を要確認
 pub(crate) const DEFAULT_REVIEW_HINT: &str = "オンのとき、確認窓を開いたら要確認の候補だけを先に表示します（要確認が無いときは、すべてを表示します）";
 pub(crate) const NEEDS_REVIEW_EMPTY: &str = "要確認の候補はありません。";
 
-pub(crate) const FILTER_HEADING: &str = "絞り込み：";
-pub(crate) const BULK_HEADING: &str = "一括操作：";
-pub(crate) const OPTION_BUTTON: &str = "オプション ▾";
-pub(crate) const OPTION_DENSITY_HEADING: &str = "表示";
+// ── 多言語の文言の書き方（見本） ──
+// 固定の文言は `i18n::tr(日本語, English, 中文)`、数や名前を埋め込む文言は `i18n::render(|lang| …)` を通す。
+// こう書くと、「日中（テスト）」表示で、日本語と中文が併記される（訳の確認用）。以後の文言も、この形で足す。
+pub(crate) fn filter_heading() -> &'static str {
+    i18n::tr("絞り込み：", "Filter:", "筛选：")
+}
+pub(crate) fn bulk_heading() -> &'static str {
+    i18n::tr("一括操作：", "Bulk actions:", "批量操作：")
+}
+pub(crate) fn option_button() -> &'static str {
+    i18n::tr("オプション ▾", "Options ▾", "选项 ▾")
+}
+pub(crate) fn option_density_heading() -> &'static str {
+    i18n::tr("表示", "View", "显示")
+}
 pub(crate) const BULK_ADOPT_ALL: &str = "すべて「タグ採用予定」にする";
 pub(crate) const BULK_REJECT_ALL: &str = "すべて「タグ不採用」にする";
 pub(crate) const BULK_REJECT_UNCONFIRMED: &str = "未確定の候補を「タグ不採用」にする";
