@@ -3945,6 +3945,23 @@ For files without metadata, setting the main category etc. by hand and training 
         }
     }
 
+    /// タグチップの右クリックメニュー項目。`name` は右クリックした要素名（別名つきは主表記）。
+    pub fn tag_chip_search_menu(self, name: &str) -> String {
+        match self {
+            Lang::Japanese => format!("この要素名（{name}）をタグ検索"),
+            Lang::English  => format!("Tag search for this element ({name})"),
+            Lang::Chinese  => format!("按此元素（{name}）标签搜索"),
+        }
+    }
+
+    pub fn tag_chip_search_unset_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "未設定は検索できない",
+            Lang::English  => "\"Unset\" cannot be searched",
+            Lang::Chinese  => "“未设置”无法搜索",
+        }
+    }
+
     pub fn key_search_busy(self) -> &'static str {
         match self {
             Lang::Japanese => "別の検索を実行中のため、条件だけ入れた（検索は同時に1つだけ。終わってから「検索開始」を押す）",

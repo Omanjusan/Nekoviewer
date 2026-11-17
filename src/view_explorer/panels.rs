@@ -285,6 +285,7 @@ impl NekoviewApp {
         self.draw_key_pick_dialog(&ctx);
         self.draw_key_notice_dialog(&ctx);
         self.run_pending_key_search();
+        self.run_pending_tag_search();
         self.draw_unreachable_clean_dialogs(&ctx);
         self.draw_reveal_dialog(&ctx);
         self.draw_marker_popup(&ctx);
@@ -1222,6 +1223,22 @@ impl NekoviewApp {
             center_galley,
             main_color,
         );
+        // 閲覧モードのときだけ、選択値の右クリックで「この要素をタグ検索」を出す（編集モードでは抑制）。
+        if !edit_on {
+            let (main_id, main_name) = (options[idx].0, selected_name.clone());
+            let center_resp = ui.interact(center_rect, ui.id().with("tag_main_center"), egui::Sense::click());
+            let mut search_req = None;
+            center_resp.context_menu(|ui| {
+                let searchable = main_id != crate::tag_manager::TAG_MAIN_UNSET_ID;
+                if Self::tag_chip_search_menu_item(ui, &main_name, searchable) {
+                    search_req = Some(main_id);
+                    ui.close();
+                }
+            });
+            if let Some(id) = search_req {
+                self.request_tag_search(id);
+            }
+        }
 
         if !edit_on {
             return;
@@ -1348,6 +1365,7 @@ impl NekoviewApp {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 let full_w = ui.available_width();
+                let mut search_req: Option<u64> = None;
                 ui.horizontal_wrapped(|ui| {
                     if self.tag_attr_selected.is_empty() {
                         ui.weak(i18n::t().tag_panel_no_selected_tags());
@@ -1362,11 +1380,20 @@ impl NekoviewApp {
                                 if !self.tag_attr_selected.contains(&tier.id) {
                                     continue;
                                 }
-                                tag_chip(ui, name, full_w, cat.color, text_color, egui::Sense::hover(), false);
+                                let resp = tag_chip(ui, name, full_w, cat.color, text_color, egui::Sense::click(), false);
+                                resp.context_menu(|ui| {
+                                    if Self::tag_chip_search_menu_item(ui, name, true) {
+                                        search_req = Some(tier.id);
+                                        ui.close();
+                                    }
+                                });
                             }
                         }
                     }
                 });
+                if let Some(id) = search_req {
+                    self.request_tag_search(id);
+                }
             });
     }
 

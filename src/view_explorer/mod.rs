@@ -920,6 +920,8 @@ pub struct NekoviewApp {
     key_notice: Option<crate::search_keys::KeyStatus>,
     /// 予約された「主要タグ検索」の検索文字列。描画が終わってから実行する（`run_pending_key_search`）
     key_search_pending: Option<String>,
+    /// 予約された「この要素をタグ検索」のtier ID（右タグパネルのチップの右クリック）。描画後に実行する（`run_pending_tag_search`）
+    tag_search_pending: Option<u64>,
     /// 再紐付けのバックグラウンド実行（結果の受け取り口）。実行中は Some
     relink_job: Option<mpsc::Receiver<crate::identity_relink::RelinkReport>>,
     /// 複数件の「お気に入り設定から外す」の確認待ちパス
@@ -1767,6 +1769,7 @@ impl NekoviewApp {
             key_pick: None,
             key_notice: None,
             key_search_pending: None,
+            tag_search_pending: None,
             relink_job: None,
             favorite_unset_confirm: None,
             db_restore_confirm: None,

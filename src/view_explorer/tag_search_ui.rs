@@ -54,6 +54,11 @@ fn toggle_tag_search_chip(enabled: &mut HashSet<u64>, id: u64, single_group: Opt
     enabled.insert(id);
 }
 
+/// 「この要素をタグ検索」の有効タグ集合（1要素のみ）。
+fn single_tag_enabled(id: u64) -> HashSet<u64> {
+    HashSet::from([id])
+}
+
 impl NekoviewApp {
     /// 左ペイン（folder_panel）の幅。タグ検索タブだけ可変で、他のタブは固定。
     pub(super) fn folder_panel_width(&self) -> f32 {
@@ -176,6 +181,40 @@ impl NekoviewApp {
         }
     }
 
+    /// タグチップの右クリックメニュー項目「この要素名（X）をタグ検索」。押されたら true を返す
+    /// （呼び出し側が `request_tag_search` で予約し、メニューを閉じる）。
+    /// `searchable` が false（メインの「未設定」）のときはグレーで押せない。
+    pub(super) fn tag_chip_search_menu_item(ui: &mut egui::Ui, name: &str, searchable: bool) -> bool {
+        let t = i18n::t();
+        let label = t.tag_chip_search_menu(crate::tag_master::display_name(name));
+        let resp = ui.add_enabled(searchable, egui::Button::new(label));
+        let resp = if searchable { resp } else { resp.on_disabled_hover_text(t.tag_chip_search_unset_hint()) };
+        resp.clicked()
+    }
+
+    pub(super) fn request_tag_search(&mut self, id: u64) {
+        self.tag_search_pending = Some(id);
+        self.egui_ctx.request_repaint();
+    }
+
+    /// 予約された「この要素をタグ検索」を実行する。描画が終わった後に毎フレーム呼ぶ
+    /// （チップの描画中に一覧を差し替えると添字が範囲外になるため）。
+    /// 有効タグはその1要素だけに置き換え、タグ検索タブへ移って検索する（すでにタブ内なら再走査のみ）。
+    pub(super) fn run_pending_tag_search(&mut self) {
+        let Some(id) = self.tag_search_pending.take() else { return };
+        if self.spread_db.is_none() {
+            self.set_toast(i18n::t().key_search_no_ledger());
+            return;
+        }
+        let already_in_tab = self.folder_pane_tab == FolderPaneTab::TagSearch;
+        self.tag_search_enabled = single_tag_enabled(id);
+        // 入るときは enter_tag_search_view が再走査する。すでにタブ内なら自前でやり直す。
+        self.switch_folder_tab(FolderPaneTab::TagSearch);
+        if already_in_tab {
+            self.restart_tag_search();
+        }
+    }
+
     /// 中央の一覧を空にする（タブに入るとき・条件を変えるとき）。
     fn clear_tag_search_listing(&mut self) {
         self.archives.clear();
@@ -292,6 +331,13 @@ impl NekoviewApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn single_tag_enabled_holds_only_that_element() {
+        let set = single_tag_enabled(7);
+        assert_eq!(set.len(), 1);
+        assert!(set.contains(&7));
+    }
 
     #[test]
     fn left_width_defaults_and_clamps_to_range() {
