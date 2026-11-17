@@ -1162,6 +1162,8 @@ pub struct NekoviewApp {
     /// 中央オーバーレイでプログレスバー＋キャンセルボタンを表示し、
     /// エクスプローラー側の他操作（キーボードショートカット等）を止める。
     pending_open: Option<open_progress::PendingOpen>,
+    /// 開く操作の所要時間の計測メモ（`[perf/open]` ログ用）。
+    open_trace: Option<open_progress::OpenTrace>,
     /// 「現フォルダ内タグ情報取得」の走査中のジョブ。
     tag_scan_job: Option<tag_scan::TagScanJob>,
     /// 直近の走査結果（メモリのみ。候補生成・確認ウィンドウ・適用が読む）。
@@ -1909,6 +1911,7 @@ impl NekoviewApp {
             anim_ring_bounds: ring_bounds,
             memory_warning_open: false,
             pending_open: None,
+            open_trace: None,
             tag_scan_job: None,
             tag_scan_result: None,
             tag_confirm: None,

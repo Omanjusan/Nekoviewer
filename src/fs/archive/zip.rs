@@ -23,9 +23,11 @@ pub(crate) fn list_images_zip_with_progress(path: &Path, on_progress: &mut Progr
     let Ok(file) = std::fs::File::open(path) else {
         return Some(Vec::new());
     };
+    let t_parse = std::time::Instant::now();
     let Ok(mut archive) = ::zip::ZipArchive::new(file) else {
         return Some(Vec::new());
     };
+    crate::log_perf!("[perf/open] 一覧 ZipArchive::new={:.1}ms entries={}", t_parse.elapsed().as_secs_f64() * 1000.0, archive.len());
 
     let total = archive.len();
     let text_opts = super::text_page::options();
@@ -135,11 +137,16 @@ pub(crate) fn estimate_archive_memory_zip(
     max_decode_edge: u32,
 ) -> ArchiveMemoryEstimate {
     let Ok(file) = std::fs::File::open(path) else { return ArchiveMemoryEstimate::Ok };
+    let t_parse = std::time::Instant::now();
     let Ok(mut archive) = ::zip::ZipArchive::new(file) else { return ArchiveMemoryEstimate::Ok };
+    crate::log_perf!("[perf/open] 見積もり ZipArchive::new={:.1}ms", t_parse.elapsed().as_secs_f64() * 1000.0);
 
     let mut sample_bytes: Vec<usize> = Vec::new();
     for idx in super::select_sample_indices(entries.len()) {
-        match estimate_entry_bytes(&mut archive, &entries[idx].entry_name, budget_bytes, ring_bounds, max_decode_edge) {
+        let t_sample = std::time::Instant::now();
+        let r = estimate_entry_bytes(&mut archive, &entries[idx].entry_name, budget_bytes, ring_bounds, max_decode_edge);
+        crate::log_perf!("[perf/open] 見積もり サンプル index={} 展開+見積もり={:.1}ms", idx, t_sample.elapsed().as_secs_f64() * 1000.0);
+        match r {
             Some(EntryEstimate::OverBudget) => return ArchiveMemoryEstimate::OverBudget,
             Some(EntryEstimate::Bytes(n)) => sample_bytes.push(n),
             None => {} // 読み込み/デコード失敗エントリはサンプルから除外

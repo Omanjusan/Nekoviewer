@@ -629,6 +629,15 @@ impl NekoviewApp {
             std::iter::from_fn(|| self.file_cache_res_rx.try_recv().ok()).collect();
         let cur_viewer_path = self.viewer.lock().unwrap().as_ref().map(|v| v.archive_path().clone());
         for (path, entry) in file_results {
+            if let Some(tr) = self.open_trace.as_ref().filter(|t| t.path == path) {
+                crate::log_perf!(
+                    "[perf/open] {} FileCache到着 viewer開始から={} クリックから={:.1}ms 取得={}",
+                    super::open_progress::trace_name(&path),
+                    tr.t_viewer.map_or("-".to_string(), |t| format!("{:.1}ms", t.elapsed().as_secs_f64() * 1000.0)),
+                    tr.t_click.elapsed().as_secs_f64() * 1000.0,
+                    if entry.is_some() { "あり" } else { "なし(予算超過/失敗)" },
+                );
+            }
             self.file_cache_pending.remove(&path);
             if let Some(entry) = entry {
                 let current = cur_viewer_path.clone().unwrap_or_else(|| path.clone());
@@ -700,6 +709,18 @@ impl NekoviewApp {
                 page_index: result.index,
                 generation: result.generation,
             };
+            if let Some(tr) = self.open_trace.as_mut().filter(|t| t.path == result.archive_path && t.pages_logged < 3) {
+                tr.pages_logged += 1;
+                crate::log_perf!(
+                    "[perf/open] {} ページ到着 index={} 表示中={} 結果={} viewer開始から={} クリックから={:.1}ms",
+                    super::open_progress::trace_name(&result.archive_path),
+                    result.index,
+                    result.index == cur_idx,
+                    if matches!(result.outcome, DecodeJobOutcome::Ready(_)) { "OK" } else { "失敗/取消" },
+                    tr.t_viewer.map_or("-".to_string(), |t| format!("{:.1}ms", t.elapsed().as_secs_f64() * 1000.0)),
+                    tr.t_click.elapsed().as_secs_f64() * 1000.0,
+                );
+            }
             match result.outcome {
                 DecodeJobOutcome::Ready(content) => {
                     self.failed_loads.remove(&failed_key);

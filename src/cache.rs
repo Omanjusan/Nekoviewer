@@ -266,6 +266,14 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                 let exif_enabled = req.exif_enabled;
                 let image_filter = req.image_filter;
                 let _ = take_last_page_meta();
+                let t_job = std::time::Instant::now();
+                let _fg = ForegroundIoGuard::begin();
+                let src_kind = match (&req.file_cache_entry, req.is_raw_file) {
+                    (_, true) => "raw",
+                    (Some(FileCacheEntry::Raw(_)), _) => "mem",
+                    (Some(FileCacheEntry::Extracted(_)), _) => "extracted",
+                    (None, _) => "disk",
+                };
                 let mut content = if req.is_raw_file {
                     match req.file_cache_entry {
                         Some(FileCacheEntry::Raw(bytes)) => {
@@ -301,8 +309,10 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                         p == &req.archive_path && matches!(a, OpenArchive::Disk(_) | OpenArchive::Extracted(_) | OpenArchive::Folder)
                     });
                     if !is_same {
+                        let t_open = std::time::Instant::now();
                         open_archive = open_archive_from_disk(&req.archive_path)
                             .map(|a| (req.archive_path.clone(), a));
+                        crate::log_perf!("[perf/open] デコードワーカーがディスクからアーカイブを開く={:.1}ms", t_open.elapsed().as_secs_f64() * 1000.0);
                     }
                     open_archive.as_mut().and_then(|(_, a)| a.load_page(&req.entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled))
                 };
@@ -313,6 +323,14 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                 if let Some(PageContent::Static(rgba)) = &mut content {
                     crate::image_filter::apply_image_filters(rgba, &image_filter);
                 }
+
+                crate::log_perf!(
+                    "[perf/open] ページジョブ(デコードワーカー) index={} 入力={} {} 所要={:.1}ms",
+                    req.index,
+                    src_kind,
+                    if content.is_some() { "OK" } else { "失敗" },
+                    t_job.elapsed().as_secs_f64() * 1000.0,
+                );
 
                 if worker_queue.finish(job_id) {
                     let outcome = match content {
@@ -1527,6 +1545,83 @@ fn content_bytes(content: &PageContent) -> usize {
 
 // ── ファイルキャッシュワーカー ─────────────────────────────────────────────────
 
+// ── FileCache の先読みを、画面に出すためのI/Oへ譲る仕組み ──────────────────────────
+// zip を丸ごとメモリへ読む FileCache ワーカーは、HDD ではページ/サムネのデコードワーカーと
+// 同じディスクを取り合い、ページ送りが1〜2秒止まる（計測: [perf/open] ページジョブ 1.5〜1.8s）。
+// そこでデコードワーカー（ページ・アーカイブ内サムネ）が動いている間と、その直後の短い静かな
+// 時間は、FileCache ワーカーが区切りごとに待つ。ページ送りが続く限り読み込みは進まない。
+
+/// デコードワーカーが処理中のジョブ数。
+static FG_IO_ACTIVE: AtomicUsize = AtomicUsize::new(0);
+/// 直近にジョブが終わった時刻（`fg_epoch` からの経過ミリ秒）。
+static FG_IO_LAST_END_MS: AtomicU64 = AtomicU64::new(0);
+/// 最後のジョブ終了からこの時間は「まだ操作中」とみなして待つ。
+const FG_IO_QUIET_MS: u64 = 150;
+/// 待つ間の確認間隔。
+const FG_IO_POLL_MS: u64 = 30;
+/// FileCache の読み込みを区切るサイズ。1区切り＝HDDで十数〜数十ms。
+const FILE_CACHE_READ_CHUNK: usize = 2 * 1024 * 1024;
+
+fn fg_epoch() -> std::time::Instant {
+    static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    *EPOCH.get_or_init(std::time::Instant::now)
+}
+
+fn fg_now_ms() -> u64 {
+    fg_epoch().elapsed().as_millis() as u64
+}
+
+/// デコードワーカーが1ジョブ処理している間だけ生きる印。
+struct ForegroundIoGuard;
+
+impl ForegroundIoGuard {
+    fn begin() -> Self {
+        FG_IO_ACTIVE.fetch_add(1, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for ForegroundIoGuard {
+    fn drop(&mut self) {
+        FG_IO_LAST_END_MS.store(fg_now_ms(), Ordering::SeqCst);
+        FG_IO_ACTIVE.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// デコードワーカーが静かになるまで待つ。待った合計を返す。
+fn wait_foreground_idle() -> std::time::Duration {
+    let t = std::time::Instant::now();
+    loop {
+        let active = FG_IO_ACTIVE.load(Ordering::SeqCst);
+        let since_end = fg_now_ms().saturating_sub(FG_IO_LAST_END_MS.load(Ordering::SeqCst));
+        if active == 0 && since_end >= FG_IO_QUIET_MS {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(FG_IO_POLL_MS));
+    }
+    t.elapsed()
+}
+
+/// ファイルを区切りごとに読む。区切りの前にデコードワーカーの稼働を確認して待つ（画面表示を優先）。
+/// 返り値: (中身, 譲って待った合計)。読めなければ None。
+fn read_file_yielding(path: &std::path::Path) -> Option<(Vec<u8>, std::time::Duration)> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len() as usize;
+    let mut buf: Vec<u8> = Vec::with_capacity(len);
+    let mut waited = std::time::Duration::ZERO;
+    loop {
+        waited += wait_foreground_idle();
+        let before = buf.len();
+        let n = (&mut f).take(FILE_CACHE_READ_CHUNK as u64).read_to_end(&mut buf).ok()?;
+        debug_assert_eq!(buf.len(), before + n);
+        if n == 0 {
+            break;
+        }
+    }
+    Some((buf, waited))
+}
+
 /// ファイルをバックグラウンドで読み込む単一スレッドのワーカーを起動する。
 /// 7z(ソリッド圧縮)は開いた時点で全画像エントリを一括展開して`Extracted`として返す
 /// （ランダムアクセスできないための一括展開。プロセス全体でこの1回きりになり、
@@ -1552,6 +1647,8 @@ pub fn spawn_file_cache_worker(ctx: egui::Context, max_bytes: usize) -> (mpsc::S
                 ctx.request_repaint();
                 continue;
             }
+            let t_fc = std::time::Instant::now();
+            let mut yielded = std::time::Duration::ZERO;
             let entry = match crate::fs::archive::detect_format(&path) {
                 #[cfg(feature = "fmt-7z")]
                 crate::fs::archive::ArchiveFormat::SevenZ => {
@@ -1564,9 +1661,18 @@ pub fn spawn_file_cache_worker(ctx: egui::Context, max_bytes: usize) -> (mpsc::S
                     Some(FileCacheEntry::Extracted(Arc::new(map)))
                 }
                 crate::fs::archive::ArchiveFormat::Zip => {
-                    std::fs::read(&path).ok().map(|bytes| FileCacheEntry::Raw(Arc::from(bytes)))
+                    read_file_yielding(&path).map(|(bytes, waited)| {
+                        yielded = waited;
+                        FileCacheEntry::Raw(Arc::from(bytes))
+                    })
                 }
             };
+            crate::log_perf!(
+                "[perf/open] FileCacheワーカー読み込み={:.1}ms (うち譲り待ち={:.1}ms) サイズ={}",
+                t_fc.elapsed().as_secs_f64() * 1000.0,
+                yielded.as_secs_f64() * 1000.0,
+                std::fs::metadata(&path).map_or(0, |m| m.len()),
+            );
             // 読み込み失敗(None)でも必ず返送し、呼び出し側が pending を解放できるようにする
             let _ = res_tx.send((path, entry));
             // ROOT を起こして poll_workers に結果を回収させる
@@ -2002,6 +2108,7 @@ pub fn spawn_entry_thumb_worker(filter: image::imageops::FilterType, num_threads
                 };
 
                 let target = Some((req.edge, req.edge));
+                let _fg = ForegroundIoGuard::begin();
                 // サムネ用途でもframe0の保持を保証し、ビューアー用リング設定と独立させる。
                 let ring_bounds = (2, 2);
                 // アーカイブ内サムネイルはビューアーのExif ON/OFF設定(D)と独立、常時EXIF自動回転を適用する。
@@ -3510,5 +3617,40 @@ mod ring_integration_tests {
 
         queue.shutdown();
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod file_cache_yield_tests {
+    use super::*;
+
+    /// 区切りをまたぐ大きさ（2MB超・端数あり）でも、中身が元ファイルと一致する。
+    #[test]
+    fn read_file_yielding_matches_std_read_across_chunks() {
+        let dir = std::env::temp_dir().join(format!("neko_fc_yield_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("blob.bin");
+        let data: Vec<u8> = (0..(FILE_CACHE_READ_CHUNK * 2 + 12345)).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&path, &data).unwrap();
+        let (got, _waited) = read_file_yielding(&path).expect("read");
+        assert_eq!(got, data);
+        // 空ファイルも読める
+        let empty = dir.join("empty.bin");
+        std::fs::write(&empty, b"").unwrap();
+        assert_eq!(read_file_yielding(&empty).unwrap().0.len(), 0);
+        assert!(read_file_yielding(&dir.join("none.bin")).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ジョブ中は待ち、終わって静かな時間が過ぎれば抜ける。
+    #[test]
+    fn wait_foreground_idle_blocks_while_job_active() {
+        let g = ForegroundIoGuard::begin();
+        let handle = std::thread::spawn(wait_foreground_idle);
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(!handle.is_finished(), "ジョブ中は待ち続ける");
+        drop(g);
+        let waited = handle.join().unwrap();
+        assert!(waited >= std::time::Duration::from_millis(200), "終了後も静かな時間ぶん待つ: {waited:?}");
     }
 }

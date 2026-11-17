@@ -46,6 +46,22 @@ pub struct MemoryBudgetParams {
     pub file_budget_bytes: usize,
 }
 
+/// 計測ログ（`[perf/open]`）用の短いファイル名。
+pub(super) fn trace_name(path: &std::path::Path) -> String {
+    path.file_name().and_then(|n| n.to_str()).unwrap_or("?").to_string()
+}
+
+/// 「ダブルクリック→ビューアーに1枚目が出るまで」の計測用の時刻メモ（速度調査用。挙動には影響しない）。
+/// `poll_workers` が1枚目のページ到着・FileCache到着を拾ってログに出す。
+pub(super) struct OpenTrace {
+    pub path: PathBuf,
+    pub t_click: std::time::Instant,
+    /// `open_viewer` を呼び終えた時刻。まだなら None。
+    pub t_viewer: Option<std::time::Instant>,
+    /// ページ到着ログを出した回数（最初の数件だけ出す）。
+    pub pages_logged: usize,
+}
+
 enum WorkerOutcome {
     Cancelled,
     Empty,
@@ -80,12 +96,16 @@ impl PendingOpen {
                 *worker_progress.lock().unwrap() = Some(ArchiveOpenPhase::Listing(p));
                 !worker_cancel.load(Ordering::Relaxed)
             };
-            let outcome = match archive::list_images_with_progress(&worker_path, &mut on_progress) {
+            let t_list = std::time::Instant::now();
+            let listed = archive::list_images_with_progress(&worker_path, &mut on_progress);
+            let list_ms = t_list.elapsed().as_secs_f64() * 1000.0;
+            let outcome = match listed {
                 None => WorkerOutcome::Cancelled,
                 Some(entries) if entries.is_empty() => WorkerOutcome::Empty,
                 Some(_entries) if worker_cancel.load(Ordering::Relaxed) => WorkerOutcome::Cancelled,
                 Some(entries) => {
                     *worker_progress.lock().unwrap() = Some(ArchiveOpenPhase::Estimating);
+                    let t_est = std::time::Instant::now();
                     let check = archive::estimate_archive_memory(
                         &worker_path,
                         &entries,
@@ -94,10 +114,21 @@ impl PendingOpen {
                         budget.max_decode_edge,
                         budget.file_budget_bytes,
                     );
+                    let est_ms = t_est.elapsed().as_secs_f64() * 1000.0;
                     // 詳細テキストの有無もここで確認する（zip/cbzのみ。他形式は未確認のまま）。
+                    let t_detail = std::time::Instant::now();
                     let read = archive::meta::read_detail(&worker_path);
                     let detail = DetailFlag::from_read(read.as_ref(), archive::meta::detail_supported(&worker_path));
                     let rating = SourceRating::from_read(read.as_ref());
+                    crate::log_perf!(
+                        "[perf/open] ワーカー {} entries={} 一覧={:.1}ms 見積もり={:.1}ms 詳細={:.1}ms 合計={:.1}ms",
+                        trace_name(&worker_path),
+                        entries.len(),
+                        list_ms,
+                        est_ms,
+                        t_detail.elapsed().as_secs_f64() * 1000.0,
+                        t_list.elapsed().as_secs_f64() * 1000.0,
+                    );
                     WorkerOutcome::Ready { entries, check, detail, rating }
                 }
             };
@@ -156,6 +187,7 @@ impl super::NekoviewApp {
             max_decode_edge: self.config.max_decode_edge,
             file_budget_bytes: self.file_cache.max_bytes(),
         };
+        self.open_trace = Some(OpenTrace { path: path.clone(), t_click: std::time::Instant::now(), t_viewer: None, pages_logged: 0 });
         self.pending_open = Some(PendingOpen::spawn(path, budget));
     }
 
@@ -180,13 +212,23 @@ impl super::NekoviewApp {
             }
             OpenPollResult::Ready { entries, check, detail, rating } => {
                 let path = self.pending_open.take().expect("pending_open just polled").path;
+                let t_ready = std::time::Instant::now();
+                if let Some(tr) = self.open_trace.as_ref().filter(|t| t.path == path) {
+                    crate::log_perf!(
+                        "[perf/open] {} クリック→ワーカー結果受信={:.1}ms",
+                        trace_name(&path),
+                        tr.t_click.elapsed().as_secs_f64() * 1000.0,
+                    );
+                }
                 // TXTページは、設定でページ数に含める場合だけ数える（既定は含めない）。
                 let count_text = archive::text_page::options().count_in_pages;
                 let pages = entries
                     .iter()
                     .filter(|e| count_text || !archive::text_page::is_text_entry_name(&e.entry_name))
                     .count();
+                let t_meta = std::time::Instant::now();
                 self.record_archive_meta(&path, pages, detail, rating);
+                crate::log_perf!("[perf/open] {} DB記録(メイン)={:.1}ms", trace_name(&path), t_meta.elapsed().as_secs_f64() * 1000.0);
                 if self.apply_memory_check(&path, check) {
                     let is_virtual_book = path.is_dir();
                     let state = crate::view_reader::ViewerState::from_image_entries(
@@ -196,7 +238,18 @@ impl super::NekoviewApp {
                         self.config.default_slot,
                         is_virtual_book,
                     );
+                    let t_open = std::time::Instant::now();
+                    let name = trace_name(state.archive_path());
                     self.open_viewer(state);
+                    crate::log_perf!(
+                        "[perf/open] {} open_viewer(メイン)={:.1}ms 受信からここまで={:.1}ms",
+                        name,
+                        t_open.elapsed().as_secs_f64() * 1000.0,
+                        t_ready.elapsed().as_secs_f64() * 1000.0,
+                    );
+                    if let Some(tr) = self.open_trace.as_mut() {
+                        tr.t_viewer = Some(std::time::Instant::now());
+                    }
                 }
                 // OverBudgetの場合はapply_memory_check内でmemory_warning_openが立つ。
             }
