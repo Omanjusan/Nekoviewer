@@ -673,6 +673,20 @@ mod text_page_tests {
         let _ = std::fs::remove_file(cbz);
     }
 
+    /// サムネ用の先頭画像読みも、拡張子が zip 系なら形式判定（マジック読み）より先に順読みを試し、成功したら zip と覚える。
+    #[test]
+    fn first_image_by_zip_extension_reads_sequentially_and_remembers_the_format() {
+        let t = ::zip::DateTime::from_date_and_time(2024, 3, 4, 5, 6, 8).unwrap();
+        let path = make_zip_dated("firstimg", &[("a/0001.jpg", jpeg(), t), ("a/0002.jpg", jpeg(), t)]);
+        let cbz = path.with_extension("cbz");
+        std::fs::rename(&path, &cbz).unwrap();
+        let via_public = crate::fs::archive::load_first_image(&cbz).expect("先頭画像");
+        let via_archive = load_first_image_via_archive(&cbz).expect("従来経路");
+        assert_eq!((via_public.width(), via_public.height()), (via_archive.width(), via_archive.height()));
+        assert_eq!(crate::fs::archive::detect_format(&cbz), crate::fs::archive::ArchiveFormat::Zip);
+        let _ = std::fs::remove_file(cbz);
+    }
+
     /// 拡張子は zip でも中身が zip でないものは、これまでどおり形式判定を通る（zip とは覚えない）。
     #[cfg(feature = "fmt-7z")]
     #[test]

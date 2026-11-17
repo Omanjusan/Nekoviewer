@@ -243,6 +243,19 @@ pub fn load_first_image(path: &Path) -> Option<image::DynamicImage> {
     if path.is_dir() {
         return folder::load_first_image_folder(path);
     }
+    // 拡張子が zip/cbz なら、形式判定（先頭のマジック読み。冷たいHDDでシーク1回）より先に、順読みを試す。
+    // 順読みは先頭の `PK\x03\x04` を自分で確かめるので、成功すれば zip と確定する（形式キャッシュにも覚えさせる）。
+    // 失敗したら、これまでどおり形式判定を通る。
+    let mut tried_sequential = false;
+    if detect::has_zip_extension(path) {
+        tried_sequential = true;
+        let t = std::time::Instant::now();
+        if let Some(img) = zip::load_first_image_sequential(path) {
+            detect::remember_zip(path);
+            crate::log_perf!("[perf/thumb] 先頭画像 順読み={:.1}ms（拡張子で先行）", t.elapsed().as_secs_f64() * 1000.0);
+            return Some(img);
+        }
+    }
     match detect::detect_format(path) {
         #[cfg(feature = "fmt-7z")]
         ArchiveFormat::SevenZ => sevenz::load_first_image_7z(path),
@@ -251,9 +264,11 @@ pub fn load_first_image(path: &Path) -> Option<image::DynamicImage> {
         ArchiveFormat::Zip => {
             // 計測: 順読み（先頭から読む。シーク少なめ）で取れたか、失敗して ZipArchive 経由に落ちたか。
             let t = std::time::Instant::now();
-            if let Some(img) = zip::load_first_image_sequential(path) {
-                crate::log_perf!("[perf/thumb] 先頭画像 順読み={:.1}ms", t.elapsed().as_secs_f64() * 1000.0);
-                return Some(img);
+            if !tried_sequential {
+                if let Some(img) = zip::load_first_image_sequential(path) {
+                    crate::log_perf!("[perf/thumb] 先頭画像 順読み={:.1}ms", t.elapsed().as_secs_f64() * 1000.0);
+                    return Some(img);
+                }
             }
             let t_seq = t.elapsed();
             let img = zip::load_first_image_via_archive(path);
