@@ -1725,11 +1725,12 @@ fn table_line1_height(ui: &egui::Ui, compact: bool) -> f32 {
 }
 
 /// 矩形 `r` の中にだけ描くセル。はみ出した分は切り取る。
+/// 親の `Ui` には、セルの大きさを返さない（`new_child`）。中身がセルより広くても、行の幅や、次の行の位置が動かない
+/// （`scope_builder` だと、はみ出した幅が親に伝わり、行を重ねるたびに列がじわじわ右へずれる）。
 fn in_cell(ui: &mut egui::Ui, r: egui::Rect, layout: egui::Layout, add: impl FnOnce(&mut egui::Ui)) {
-    ui.scope_builder(egui::UiBuilder::new().max_rect(r).layout(layout), |ui| {
-        ui.set_clip_rect(r.intersect(ui.clip_rect()));
-        add(ui);
-    });
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r).layout(layout));
+    child.set_clip_rect(r.intersect(ui.clip_rect()));
+    add(&mut child);
 }
 
 /// 種類の見出し・類似品の見出しの行（表の行と同じ高さの帯）。
