@@ -1272,6 +1272,8 @@ pub struct NekoviewApp {
     tag_learn: Option<tag_learning_ui::TagLearn>,
     /// タグ抽出ルールの一覧窓（仮。編集UIは後で決める）を開いているか。
     tag_rules_open: bool,
+    /// タグ管理の入口メニュー（エクスプローラー中央の選択メニュー）を開いているか。
+    tag_entry_menu_open: bool,
     /// ルール一覧で、削除の確認を出しているルールのID。
     tag_rules_del_ask: Option<u64>,
     /// ルール一覧の「コピーして編集」で、コピー元に選んでいるルールのID。
@@ -1942,6 +1944,7 @@ impl NekoviewApp {
             candidate_rules,
             tag_learn: None,
             tag_rules_open: false,
+            tag_entry_menu_open: false,
             tag_rules_del_ask: None,
             tag_rules_copy_src: None,
             tag_rules_editor: None,

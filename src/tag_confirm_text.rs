@@ -537,6 +537,64 @@ pub(crate) fn needs_review_empty() -> &'static str {
     i18n::tr("要確認の候補はありません。", "No items need review.", "没有需确认的候选。")
 }
 
+// ── タグ管理の入口メニュー（エクスプローラー中央に出す選択メニュー） ──
+pub(crate) fn menu_title() -> &'static str {
+    i18n::tr("タグ管理", "Tag Manager", "标签管理")
+}
+pub(crate) fn menu_scope(n: usize) -> String {
+    i18n::render(|l| match l {
+        Lang::Japanese => format!("対象のアーカイブ {n}件"),
+        Lang::English => format!("{n} archives targeted"),
+        Lang::Chinese => format!("对象压缩包 {n}个"),
+    })
+}
+pub(crate) fn menu_main_title() -> &'static str {
+    i18n::tr("自動タグ抽出", "Auto tag extraction", "自动提取标签")
+}
+pub(crate) fn menu_main_sub() -> &'static str {
+    i18n::tr(
+        "このフォルダのファイル名から、タグを抽出して付与する",
+        "Extract tags from the file names in this folder and apply them",
+        "从此文件夹的文件名中提取标签并添加",
+    )
+}
+pub(crate) fn menu_main_sub_disabled() -> &'static str {
+    i18n::tr("いまは実行できません", "Not available right now", "目前无法执行")
+}
+pub(crate) fn menu_group_label() -> &'static str {
+    i18n::tr("抽出の準備・設定", "Preparation and settings", "提取的准备与设置")
+}
+pub(crate) fn menu_learn_title() -> &'static str {
+    i18n::tr("抽出用学習", "Learning", "提取用学习")
+}
+pub(crate) fn menu_learn_desc() -> &'static str {
+    i18n::tr(
+        "振り分けたファイル名から、判定を学習する",
+        "Learn the judgment from the file names you have sorted",
+        "从您归类的文件名中学习判定",
+    )
+}
+pub(crate) fn menu_learn_advice() -> &'static str {
+    i18n::tr(
+        "正確に学習をするとタグ抽出の精度が向上します",
+        "Accurate learning improves the precision of tag extraction",
+        "准确地学习可以提高标签提取的精度",
+    )
+}
+pub(crate) fn menu_rules_title() -> &'static str {
+    i18n::tr("抽出ルール定義・確認", "Extraction rules", "提取规则的定义与确认")
+}
+pub(crate) fn menu_rules_desc() -> &'static str {
+    i18n::tr(
+        "AI generated・cosplay などの前処理ルールを見る・直す",
+        "View and edit preprocessing rules such as AI generated and cosplay",
+        "查看并修改 AI generated、cosplay 等预处理规则",
+    )
+}
+pub(crate) fn menu_edit_desc() -> &'static str {
+    i18n::tr("従来のタグ管理画面を開く", "Open the conventional tag management screen", "打开原有的标签管理界面")
+}
+
 // ── 多言語の文言の書き方（見本） ──
 // 固定の文言は `i18n::tr(日本語, English, 中文)`、数や名前を埋め込む文言は `i18n::render(|lang| …)` を通す。
 // こう書くと、「日中（テスト）」表示で、日本語と中文が併記される（訳の確認用）。以後の文言も、この形で足す。
@@ -1966,6 +2024,17 @@ mod i18n_coverage {
     #[test]
     fn plain_texts_are_translated_in_all_three_languages() {
         let all: Vec<(&str, fn() -> &'static str)> = vec![
+        ("menu_title", menu_title),
+        ("menu_main_title", menu_main_title),
+        ("menu_main_sub", menu_main_sub),
+        ("menu_main_sub_disabled", menu_main_sub_disabled),
+        ("menu_group_label", menu_group_label),
+        ("menu_learn_title", menu_learn_title),
+        ("menu_learn_desc", menu_learn_desc),
+        ("menu_learn_advice", menu_learn_advice),
+        ("menu_rules_title", menu_rules_title),
+        ("menu_rules_desc", menu_rules_desc),
+        ("menu_edit_desc", menu_edit_desc),
         ("adopt_label", adopt_label),
         ("reject_label", reject_label),
         ("resolve_subtitle", resolve_subtitle),
@@ -2127,6 +2196,7 @@ mod i18n_coverage {
                     band_title(|_| "X".to_string(), false),
                     toggle_label(true),
                     toggle_label(false),
+                    menu_scope(3),
                 ];
                 for o in outs {
                     assert!(!has_kana(&o), "{d:?}: 仮名が混ざっている: {o}");

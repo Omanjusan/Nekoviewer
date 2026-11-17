@@ -221,6 +221,7 @@ impl NekoviewApp {
             && self.tag_confirm.is_none()
             && self.tag_learn.is_none()
             && !self.tag_rules_open
+            && !self.tag_entry_menu_open
             && self.tag_apply_job.is_none()
             && self.tag_discard_job.is_none()
             && self.tag_trial_dialog.is_none()
@@ -298,6 +299,7 @@ impl NekoviewApp {
         self.draw_tag_confirm(&ctx);
         self.draw_tag_learn(&ctx);
         self.draw_tag_rules_window(&ctx);
+        self.draw_tag_entry_modal(&ctx);
         self.draw_tag_apply_overlay(&ctx);
         self.draw_tag_trial_dialog(&ctx);
         self.draw_tag_discard_overlay(&ctx);
