@@ -947,6 +947,9 @@ impl ViewerState {
         magnifier_decode_target(self.actual_decode_edge(max_decode_edge), self.max_texture_side, fit_mode)
     }
 
+    /// GPU テクスチャの1辺の上限（P8: これを超える元画像は縮小をスキップしない）。
+    pub fn max_texture_side(&self) -> usize { self.max_texture_side }
+
     /// 「原寸」のデコード長辺上限。見開き中は2倍にし、GPUテクスチャの1辺上限で頭打ちにする。
     pub fn actual_decode_edge(&self, max_decode_edge: u32) -> u32 {
         let edge = if self.page_mode != PageMode::Single {

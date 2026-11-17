@@ -7689,6 +7689,22 @@ For files without metadata, setting the main category etc. by hand and training 
         }
     }
 
+    pub fn settings_near_unity_skip_label(self) -> &'static str {
+        match self {
+            Lang::Japanese => "■ 等倍に近い縮小をGPUに任せる（高速表示）",
+            Lang::English  => "■ Let the GPU downscale near-1:1 pages (faster display)",
+            Lang::Chinese  => "■ 接近原尺寸的缩小交给GPU（加速显示）",
+        }
+    }
+
+    pub fn settings_near_unity_skip_explain(self) -> &'static str {
+        match self {
+            Lang::Japanese => "ON（既定）にすると、表示サイズが元画像の85%以上のページは、CPUで縮小せず元の大きさのままGPUが縮める。1ページあたり6〜15ms速くなるが、縮小の画質が「画像フィルター」ではなくGPUの補間になる。基準解像度が「ウィンドウ追従」の通常表示のみに効き、原寸・虫眼鏡・サムネイルには影響しない。",
+            Lang::English  => "When on (default), pages whose display size is 85% or more of the source are not downscaled on the CPU; the GPU shrinks them instead. This saves 6-15 ms per page, but the downscale quality comes from GPU interpolation rather than the image filter. Applies only to normal display with the base resolution set to \"Follow window size\"; actual size, magnifier and thumbnails are unaffected.",
+            Lang::Chinese  => "开启（默认）后，显示尺寸达到原图85%以上的页面不再由CPU缩小，而是保持原尺寸由GPU缩小。每页可加速6-15毫秒，但缩小画质将由GPU插值而非“图像滤镜”决定。仅对基准分辨率为“跟随窗口”的普通显示有效，不影响原尺寸、放大镜和缩略图。",
+        }
+    }
+
     pub fn settings_exif_orientation_explain(self) -> &'static str {
         match self {
             Lang::Japanese => "OFFにすると、画像に埋め込まれたExif Orientationタグ（誤って付与されている場合を含む）を無視して表示する。ビューアーのみに効き、サムネイルには影響しない。",

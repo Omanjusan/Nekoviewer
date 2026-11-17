@@ -201,6 +201,10 @@ pub struct ViewerConfig {
     /// false = デコード時のOrientation適用をスキップする（誤ったOrientationタグ対策）。
     /// 永続設定（save_state/load_state対象）。ビューアーのみに効き、サムネイルには影響しない。
     pub exif_orientation_enabled: bool,
+    /// P8: 表示サイズが元画像にほぼ等しい（縮小率0.85以上）ページを、CPUで縮小せず元の大きさのまま
+    /// GPUに任せるか。ON = 縮小の6〜15ms/ページが消える代わりに、縮小の画質がGPUの補間になる。
+    /// 既定ON。永続設定。効くのは「ウィンドウに追従して再デコード」中の通常表示（原寸・虫眼鏡・サムネは対象外）。
+    pub near_unity_skip_enabled: bool,
     /// 画像情報（解像度・ページ数）の右下オーバーレイを表示するか。既定ON。
     /// 永続設定。ツールパレットのトグル「画像情報表示」で切り替える。
     pub image_info_visible: bool,
@@ -279,6 +283,7 @@ impl Default for ViewerConfig {
             rotation_carry_over: false,
             rotation_session_angle: 0,
             exif_orientation_enabled: true,
+            near_unity_skip_enabled: true,
             image_info_visible: true,
             menubar_autohide: false,
             default_sort_key: None,
@@ -736,6 +741,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut thumbbar_marker_b: Option<u8> = None;
     let mut thumbbar_marker_a: Option<u8> = None;
     let mut exif_orientation_enabled: Option<bool> = None;
+    let mut near_unity_skip_enabled: Option<bool> = None;
     let mut image_info_visible: Option<bool> = None;
     let mut menubar_autohide: Option<bool> = None;
     let mut viewer_default_sort_key: Option<crate::types::ReaderSortKey> = None;
@@ -936,6 +942,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "thumbbar_marker_b" => { thumbbar_marker_b = v.trim().parse().ok(); }
                 "thumbbar_marker_a" => { thumbbar_marker_a = v.trim().parse().ok(); }
                 "exif_orientation_enabled" => { exif_orientation_enabled = v.trim().parse().ok(); }
+                "near_unity_skip_enabled" => { near_unity_skip_enabled = v.trim().parse().ok(); }
                 "image_info_visible" => { image_info_visible = v.trim().parse().ok(); }
                 "menubar_autohide" => { menubar_autohide = v.trim().parse().ok(); }
                 "viewer_default_sort_key" => { viewer_default_sort_key = reader_sort_key_from_state(v); }
@@ -1106,6 +1113,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
             rotation_carry_over: false,
             rotation_session_angle: 0,
             exif_orientation_enabled: exif_orientation_enabled.unwrap_or(true),
+            near_unity_skip_enabled: near_unity_skip_enabled.unwrap_or(true),
             image_info_visible: image_info_visible.unwrap_or(true),
             menubar_autohide: menubar_autohide.unwrap_or(false),
             default_sort_key: viewer_default_sort_key,
@@ -1305,6 +1313,10 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
     content.push_str(&format!(
         "exif_orientation_enabled={}\n",
         viewer_cfg.exif_orientation_enabled,
+    ));
+    content.push_str(&format!(
+        "near_unity_skip_enabled={}\n",
+        viewer_cfg.near_unity_skip_enabled,
     ));
     content.push_str(&format!(
         "image_info_visible={}\n",
@@ -1656,6 +1668,16 @@ mod tests {
         // 既定値のままでも往復する。
         let d = crate::magnifier::MagnifierConfig::default();
         assert_eq!(parse_state_text("koma_shrink_rt_d", &magnifier_state_lines(&d)).viewer_cfg.magnifier, d);
+    }
+
+    #[test]
+    fn near_unity_skip_defaults_on_and_parses_off_and_bad_value() {
+        // キーなし → 既定ON（P8: 効果を試すため既定ON）
+        assert!(parse_state_text("nus_none", "lang=ja\n").viewer_cfg.near_unity_skip_enabled);
+        assert!(!parse_state_text("nus_off", "near_unity_skip_enabled=false\n").viewer_cfg.near_unity_skip_enabled);
+        assert!(parse_state_text("nus_on", "near_unity_skip_enabled=true\n").viewer_cfg.near_unity_skip_enabled);
+        // 不正値は既定（ON）へ
+        assert!(parse_state_text("nus_bad", "near_unity_skip_enabled=maybe\n").viewer_cfg.near_unity_skip_enabled);
     }
 
     #[test]

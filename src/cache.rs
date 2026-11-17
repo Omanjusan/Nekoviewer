@@ -104,6 +104,9 @@ pub struct LoadRequest {
     /// 画像処理フィルター設定（ViewerConfigから都度取得）。静止画（PageContent::Static）
     /// にのみ適用し、アニメーション（GIF/APNG/AVIF/WebP）には適用しない。
     pub image_filter: crate::image_filter::ImageFilterSettings,
+    /// P8: 等倍に近い縮小をスキップする条件（None = 従来どおり必ず縮小）。通常表示のページ要求にだけ付ける
+    /// （原寸・虫眼鏡・サムネは None）。静止画の縮小（`resize_for_display_with`）にだけ効く。
+    pub near_unity_skip: Option<NearUnitySkip>,
     /// 表示解像度・Orientation等、デコード条件の世代。結果回収時に現行世代と一致しない
     /// 結果を破棄し、リサイズ前の遅い要求が新しいキャッシュを上書きするのを防ぐ。
     pub generation: u64,
@@ -281,6 +284,22 @@ fn set_resize_path(name: &'static str) {
 }
 
 thread_local! {
+    /// このスレッドで処理中のページジョブの P8 条件。ページ用デコードワーカーが、ジョブごとに
+    /// `LoadRequest.near_unity_skip` を入れて、終わったら戻す。デコード関数群の引数を増やさずに
+    /// 静止画の縮小まで届けるための受け渡し口（`LAST_PAGE_META` と同じ考え方）。
+    /// サムネ用ワーカー・OCR など、設定しないスレッドは常に None（従来どおり必ず縮小）。
+    static JOB_NEAR_UNITY_SKIP: std::cell::Cell<Option<NearUnitySkip>> = const { std::cell::Cell::new(None) };
+}
+
+fn set_job_near_unity_skip(skip: Option<NearUnitySkip>) {
+    JOB_NEAR_UNITY_SKIP.with(|c| c.set(skip));
+}
+
+fn job_near_unity_skip() -> Option<NearUnitySkip> {
+    JOB_NEAR_UNITY_SKIP.with(|c| c.get())
+}
+
+thread_local! {
     /// 直近にこのスレッドで完了した静止画の縮小内訳。取り出しても消えない（読み取り専用）。
     /// 消すのは `clear_last_resize_info`（ジョブ開始時）だけ。アニメ・TXTなど縮小を通らない経路では None のまま。
     static LAST_RESIZE_INFO: std::cell::Cell<Option<ResizeInfo>> = const { std::cell::Cell::new(None) };
@@ -340,6 +359,7 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                 let image_filter = req.image_filter;
                 let _ = take_last_page_meta();
                 clear_last_resize_info();
+                set_job_near_unity_skip(req.near_unity_skip);
                 let t_job = std::time::Instant::now();
                 let _fg = ForegroundIoGuard::begin();
                 let _page_io = PageIoGuard::begin();
@@ -392,6 +412,7 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                     open_archive.as_mut().and_then(|(_, a)| a.load_page(&req.entry_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled))
                 };
 
+                set_job_near_unity_skip(None);
                 let meta = if content.is_some() { take_last_page_meta() } else { None };
 
                 // 画像処理フィルターは静止画のみに適用する（アニメーションは対象外）。
@@ -569,7 +590,7 @@ fn load_raw_content_from_bytes(buf: &[u8], path: &std::path::Path, filter: image
     }
 
     let img = crate::fs::archive::decode_image_bytes(buf, exif_enabled)?;
-    Some(PageContent::Static(resize_for_display(img, filter, target_size)))
+    Some(PageContent::Static(resize_for_display_with(img, filter, target_size, job_near_unity_skip())))
 }
 
 /// アーカイブエントリを PageContent としてデコードする。GIF/WebP/APNGはアニメーション展開、それ以外は静止画。
@@ -607,7 +628,7 @@ fn decode_bytes_to_content(
     }
 
     let img = crate::fs::archive::decode_image_bytes(buf, exif_enabled)?;
-    Some(PageContent::Static(resize_for_display(img, filter, target_size)))
+    Some(PageContent::Static(resize_for_display_with(img, filter, target_size, job_near_unity_skip())))
 }
 
 /// P8: 等倍に近い縮小を CPU で行わず、元の大きさのまま GPU（LINEAR 補間）に任せる条件。
@@ -3464,6 +3485,7 @@ mod ring_integration_tests {
                 target_size: Some((800, 600)),
                 exif_enabled: true,
                 image_filter: crate::image_filter::ImageFilterSettings::default(),
+                near_unity_skip: None,
                 generation: 0,
             },
         }));
@@ -3521,6 +3543,7 @@ mod ring_integration_tests {
                 target_size: None,
                 exif_enabled: true,
                 image_filter: settings,
+                near_unity_skip: None,
                 generation: 0,
             },
         }));
@@ -4011,6 +4034,7 @@ mod ring_integration_tests {
                 target_size: Some((60, 60)),
                 exif_enabled: true,
                 image_filter: crate::image_filter::ImageFilterSettings::default(),
+                near_unity_skip: None,
                 generation: 0,
             },
         }));

@@ -1575,6 +1575,8 @@ pub struct NekoviewApp {
     fit_mode_last_seen: crate::magnifier::FitMode,
     /// viewer_cfg.image_filter の変化検知用（exif_orientation_enabled_last_seenと同じ方式）。
     image_filter_last_seen: crate::image_filter::ImageFilterSettings,
+    /// P8（等倍に近い縮小のスキップ）設定の変化検知用。
+    near_unity_skip_last_seen: bool,
     /// viewer_cfg.tool_palette.visible の変化検知用。エクスプローラーメニューのトグルで
     /// 変更された値をビューアー側（開きっぱなしのViewerState）へライブ反映するのに使う。
     tool_palette_visible_last_seen: bool,
@@ -1728,6 +1730,7 @@ impl NekoviewApp {
         let redecode_trigger_seq = viewer_cfg.redecode_trigger_seq;
         let exif_orientation_enabled = viewer_cfg.exif_orientation_enabled;
         let image_filter_snapshot = crate::image_filter::normalize_for_change_detection(viewer_cfg.image_filter);
+        let viewer_cfg_near_unity_skip = viewer_cfg.near_unity_skip_enabled;
         let tool_palette_visible_snapshot = viewer_cfg.tool_palette.visible;
         let (req_tx, res_rx) = spawn_worker(config.viewer_filter.to_image_filter(), config.resolved_decode_threads(), ctx.clone(), cache_max, ring_bounds, frame_hard_limit_bytes);
         let (thumb_req_tx, thumb_res_rx, thumb_session) =
@@ -2121,6 +2124,7 @@ impl NekoviewApp {
             magnifier_on_last_seen: false,
             fit_mode_last_seen: crate::magnifier::FitMode::Contain,
             image_filter_last_seen: image_filter_snapshot,
+            near_unity_skip_last_seen: viewer_cfg_near_unity_skip,
             tool_palette_visible_last_seen: tool_palette_visible_snapshot,
         };
         app.start_scan();

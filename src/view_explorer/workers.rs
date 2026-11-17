@@ -52,6 +52,7 @@ impl NekoviewApp {
     pub(super) fn poll_resize_redecode(&mut self, ctx: &egui::Context) {
         self.poll_exif_toggle();
         self.poll_image_filter_change();
+        self.poll_near_unity_skip_change();
         self.poll_tool_palette_visible_change();
         self.poll_magnifier_toggle();
         let (redecode_on, debounce_ms, seq) = {
@@ -228,6 +229,7 @@ impl NekoviewApp {
             let cfg = self.viewer_cfg.lock().unwrap();
             (cfg.exif_orientation_enabled, cfg.image_filter)
         };
+        let near_unity_skip = self.near_unity_skip_policy();
         for (visible_order, (orig_i, entry_name, _)) in pages.iter().enumerate() {
             let key = (path.clone(), *orig_i);
             self.pending_loads.lock().unwrap().insert(key);
@@ -241,6 +243,7 @@ impl NekoviewApp {
                     target_size: target,
                     exif_enabled,
                     image_filter,
+                    near_unity_skip,
                     generation: self.decode_generation,
                 },
                 PagePriorityClass::Visible,
@@ -373,6 +376,36 @@ impl NekoviewApp {
         if now != self.image_filter_last_seen {
             self.image_filter_last_seen = now;
             self.redecode_after_image_filter_change();
+        }
+    }
+
+    /// P8: 等倍に近い縮小のスキップ条件。設定がONで、かつ通常表示（基準解像度が「ウィンドウ追従」で、
+    /// 原寸ズーム・虫眼鏡のどちらでもない）のときだけ Some。原寸・虫眼鏡の目標は上限幅の正方形で
+    /// 「ウィンドウに合わせた縮小」ではないため対象外にする。元画像がテクスチャ上限を超えるときは必ず縮小する。
+    fn near_unity_skip_policy(&self) -> Option<crate::cache::NearUnitySkip> {
+        let (enabled, follow_window, zoom_actual, magnifier_on) = {
+            let cfg = self.viewer_cfg.lock().unwrap();
+            (cfg.near_unity_skip_enabled, cfg.redecode_on_resize, cfg.zoom_actual, cfg.magnifier_on)
+        };
+        if !enabled || !follow_window || zoom_actual || magnifier_on {
+            return None;
+        }
+        let max_side = self.viewer.lock().unwrap().as_ref().map_or(8192, |v| v.max_texture_side()).min(u32::MAX as usize) as u32;
+        Some(crate::cache::NearUnitySkip { min_scale: crate::cache::NEAR_UNITY_SKIP_SCALE, max_side })
+    }
+
+    /// P8の設定（GUIのON/OFF）が変わったら、開いているアーカイブの静止画を新条件で再デコードする。
+    /// 画像フィルター変更と同じ即時発火・静止画のみ（アニメは触らない）。
+    fn poll_near_unity_skip_change(&mut self) {
+        let now = self.viewer_cfg.lock().unwrap().near_unity_skip_enabled;
+        if now != self.near_unity_skip_last_seen {
+            self.near_unity_skip_last_seen = now;
+            let Some(path) = self.viewer.lock().unwrap().as_ref().map(|v| v.archive_path().clone()) else { return };
+            self.page_cache.lock().unwrap().remove_static_pages_for_path(&path);
+            self.begin_new_decode_generation();
+            if let Some(v) = self.viewer.lock().unwrap().as_mut() {
+                v.invalidate_static_pages();
+            }
         }
     }
 
@@ -798,6 +831,7 @@ impl NekoviewApp {
                 let cfg = self.viewer_cfg.lock().unwrap();
                 (cfg.exif_orientation_enabled, cfg.image_filter)
             };
+            let near_unity_skip = self.near_unity_skip_policy();
             let requested_generation = self.preparing_decode_generation
                 .unwrap_or(self.active_decode_generation);
             // submit直後にワーカーが起床できるため、投入順自体も優先順に揃える。
@@ -852,6 +886,7 @@ impl NekoviewApp {
                                 target_size: self.decode_target,
                                 exif_enabled,
                                 image_filter,
+                                near_unity_skip,
                                 generation: requested_generation,
                             },
                             class,
