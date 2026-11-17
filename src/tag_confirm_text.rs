@@ -81,6 +81,11 @@ pub(crate) fn file_count(n: usize) -> String {
     format!("{n}ファイル")
 }
 
+/// 名前列の先頭に出す対象ファイル数。
+pub(crate) fn file_count_short(n: usize) -> String {
+    format!("{n}件")
+}
+
 /// 行の1段目に出す、要確認の印（短い理由つき）。
 pub(crate) fn review_badge(kind: &ReviewKind) -> String {
     format!("要確認：{}", review_short(kind))
@@ -90,7 +95,6 @@ pub(crate) fn review_badge(kind: &ReviewKind) -> String {
 
 pub(crate) const COL_TOGGLE: &str = "採否";
 pub(crate) const COL_NAME: &str = "名前";
-pub(crate) const COL_COUNT: &str = "ファイル数";
 /// 要確認の印と、何をどこにどうするかの結論文が入る列の見出し。
 pub(crate) const COL_STATE: &str = "内容・要確認";
 
@@ -1074,6 +1078,11 @@ mod tests {
         // ホバーは先頭10件と、残りの件数。
         let (names, rest) = source_hover(&c, &inputs.iter().cloned().cycle().take(40).collect::<Vec<_>>());
         assert_eq!((names.len(), rest), (SOURCE_HOVER_CAP, 30));
+    }
+
+    #[test]
+    fn file_count_short_text() {
+        assert_eq!(file_count_short(3), "3件");
     }
 
     #[test]

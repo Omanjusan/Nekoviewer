@@ -523,6 +523,8 @@ pub struct AppState {
     /// 一括タグ付けの判定で学習結果を使うか。
     pub app_tag_learning_use: Option<bool>,
     pub app_tag_confirm_default_review: Option<bool>,
+    /// 一括タグ付けの確認窓の冒頭の説明を開いた状態にするか。
+    pub app_tag_confirm_intro_open: Option<bool>,
     /// 学習の案内を今後表示しない。
     pub app_tag_learn_intro_hidden: Option<bool>,
     /// 次回起動時に XWayland で起動するか。
@@ -600,6 +602,7 @@ impl Default for AppState {
             app_tag_match: None,
             app_tag_learning_use: None,
             app_tag_confirm_default_review: None,
+            app_tag_confirm_intro_open: None,
             app_tag_learn_intro_hidden: None,
             app_launch_x11: None,
             app_last_run_version: None,
@@ -718,6 +721,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut app_tag_match: Option<crate::tag_similarity::MatchOptions> = None;
     let mut app_tag_learning_use: Option<bool> = None;
     let mut app_tag_confirm_default_review: Option<bool> = None;
+    let mut app_tag_confirm_intro_open: Option<bool> = None;
     let mut app_tag_learn_intro_hidden: Option<bool> = None;
     let mut app_launch_x11: Option<bool> = None;
     let mut app_last_run_version: Option<String> = None;
@@ -907,6 +911,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 "app_tag_match" => { app_tag_match = crate::tag_similarity::MatchOptions::from_state_str(v); }
                 "app_tag_learning_use" => { app_tag_learning_use = v.parse::<bool>().ok(); }
                 "app_tag_confirm_default_review" => { app_tag_confirm_default_review = v.parse::<bool>().ok(); }
+                "app_tag_confirm_intro_open" => { app_tag_confirm_intro_open = v.parse::<bool>().ok(); }
                 "app_tag_learn_intro_hidden" => { app_tag_learn_intro_hidden = v.parse::<bool>().ok(); }
                 "app_launch_x11" => { app_launch_x11 = v.trim().parse().ok(); }
                 "app_last_run_version" => { app_last_run_version = Some(v.trim().to_string()).filter(|s| !s.is_empty()); }
@@ -1207,6 +1212,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
         app_tag_match,
         app_tag_learning_use,
         app_tag_confirm_default_review,
+        app_tag_confirm_intro_open,
         app_tag_learn_intro_hidden,
         app_launch_x11,
         app_last_run_version,
@@ -1424,6 +1430,7 @@ pub fn save_state(root: &Path, dir: &Path, window_size: (u32, u32), viewer_slots
     content.push_str(&format!("app_tag_match={}\n", app_cfg.tag_match.to_state_str()));
     content.push_str(&format!("app_tag_learning_use={}\n", app_cfg.tag_learning_use));
     content.push_str(&format!("app_tag_confirm_default_review={}\n", app_cfg.tag_confirm_default_review));
+    content.push_str(&format!("app_tag_confirm_intro_open={}\n", app_cfg.tag_confirm_intro_open));
     content.push_str(&format!("app_tag_learn_intro_hidden={}\n", app_cfg.tag_learn_intro_hidden));
     content.push_str(&format!("app_launch_x11={}\n", app_cfg.launch_x11));
     if !app_cfg.last_run_version.is_empty() {
@@ -1517,6 +1524,14 @@ mod tests {
     fn tag_learn_intro_hidden_parses_and_ignores_bad_values() {
         assert_eq!(parse_state_text("ti_on", "app_tag_learn_intro_hidden=true\n").app_tag_learn_intro_hidden, Some(true));
         assert_eq!(parse_state_text("ti_bad", "app_tag_learn_intro_hidden=x\n").app_tag_learn_intro_hidden, None);
+    }
+
+    #[test]
+    fn tag_confirm_intro_open_parses_and_ignores_bad_values() {
+        assert_eq!(parse_state_text("tci_off", "app_tag_confirm_intro_open=false\n").app_tag_confirm_intro_open, Some(false));
+        assert_eq!(parse_state_text("tci_on", "app_tag_confirm_intro_open=true\n").app_tag_confirm_intro_open, Some(true));
+        assert_eq!(parse_state_text("tci_bad", "app_tag_confirm_intro_open=maybe\n").app_tag_confirm_intro_open, None);
+        assert_eq!(parse_state_text("tci_none", "lang=ja\n").app_tag_confirm_intro_open, None);
     }
 
     #[test]

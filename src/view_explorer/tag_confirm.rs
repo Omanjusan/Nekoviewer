@@ -121,9 +121,13 @@ fn draw_link_picker(ui: &mut egui::Ui, id: &str, master: &[TagManagerCategoryUi]
 
 /// 窓冒頭の説明。たたむ・開くボタンと、よくある質問のボタンを持つ。
 fn draw_intro(ui: &mut egui::Ui, st: &mut TagConfirm) {
-    egui::Frame::group(ui.style()).show(ui, |ui| {
+    // お知らせ帯: 操作の帯・表と区別するため、背景を薄い青にし、左端に太い線を引く。
+    let accent = ui.visuals().hyperlink_color;
+    let fill = egui::Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 30);
+    let out = egui::Frame::new().fill(fill).corner_radius(4.0).inner_margin(egui::Margin { left: 14, right: 8, top: 6, bottom: 6 }).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("ℹ").color(accent).strong());
             ui.strong(ctext::INTRO_TITLE);
             if ui.small_button(if st.intro_open { ctext::INTRO_FOLD } else { ctext::INTRO_UNFOLD }).clicked() {
                 st.intro_open = !st.intro_open;
@@ -145,6 +149,9 @@ fn draw_intro(ui: &mut egui::Ui, st: &mut TagConfirm) {
             });
         }
     });
+    let r = out.response.rect;
+    ui.painter().rect_filled(egui::Rect::from_min_max(r.left_top(), egui::pos2(r.left() + 4.0, r.bottom())), egui::CornerRadius { nw: 4, sw: 4, ne: 0, se: 0 }, accent);
+    ui.add_space(8.0);
 }
 
 /// 窓ごとのチップの件数を数える。
@@ -539,6 +546,7 @@ impl NekoviewApp {
         ) {
             Some(mut c) => {
                 c.pick_initial_view(self.config.tag_confirm_default_review);
+                c.intro_open = self.config.tag_confirm_intro_open;
                 self.tag_confirm = Some(c);
             }
             None => self.set_toast(i18n::t().tag_confirm_no_candidates()),
@@ -574,7 +582,7 @@ impl NekoviewApp {
         .pivot(egui::Align2::CENTER_CENTER)
         .default_pos(center)
         .show(ctx, |ui| {
-            // 冒頭の説明（毎回全文。たたむボタンはあるが、状態は記憶しない）。
+            // 冒頭の説明。たたむ・開くの状態は、設定に記憶する。
             draw_intro(ui, &mut st);
             // 見出し帯: 表示の絞り込み（チップ）・要確認を既定にするチェック・名前の絞り込み・表示密度・照合の設定・一括操作。
             let counts = view_counts(&st.set, stage, &st.confirmed);
@@ -757,6 +765,11 @@ impl NekoviewApp {
             });
         });
 
+        // 冒頭の説明の「たたむ・開く」の変更を保存する（次回の窓も同じ状態で開く）。
+        if st.intro_open != self.config.tag_confirm_intro_open {
+            self.config.tag_confirm_intro_open = st.intro_open;
+            self.persist_state();
+        }
         // 「要確認を既定にする」チェックの変更を保存する。
         if default_review != self.config.tag_confirm_default_review {
             self.config.tag_confirm_default_review = default_review;
@@ -1617,8 +1630,6 @@ fn merge_error_text(e: &MergeError, t: Lang) -> String {
 
 /// 採否トグルの列の幅。
 const TOGGLE_COL_W: f32 = 124.0;
-/// ファイル数の列の幅。
-const COUNT_COL_W: f32 = 84.0;
 /// 「⋯」の列の幅。
 const OPS_COL_W: f32 = 150.0;
 /// セルの左右の余白。
@@ -1634,17 +1645,14 @@ struct TableCols {
 
 impl TableCols {
     fn new(total: f32) -> Self {
-        let rest = (total - TOGGLE_COL_W - COUNT_COL_W - OPS_COL_W - 120.0).max(100.0);
-        Self { total, name: (total * 0.24).clamp(130.0, 280.0).min(rest) }
+        let rest = (total - TOGGLE_COL_W - OPS_COL_W - 120.0).max(100.0);
+        Self { total, name: (total * 0.27).clamp(150.0, 320.0).min(rest) }
     }
     fn x_name(self) -> f32 {
         TOGGLE_COL_W
     }
-    fn x_count(self) -> f32 {
-        TOGGLE_COL_W + self.name
-    }
     fn x_state(self) -> f32 {
-        self.x_count() + COUNT_COL_W
+        TOGGLE_COL_W + self.name
     }
     fn x_ops(self) -> f32 {
         (self.total - OPS_COL_W).max(self.x_state())
@@ -1705,9 +1713,8 @@ fn draw_table_header(ui: &mut egui::Ui, total: f32) {
     };
     put(CELL_PAD, egui::Align2::LEFT_CENTER, ctext::COL_TOGGLE);
     put(cols.x_name() + CELL_PAD, egui::Align2::LEFT_CENTER, ctext::COL_NAME);
-    put(cols.x_state() - CELL_PAD, egui::Align2::RIGHT_CENTER, ctext::COL_COUNT);
     put(cols.x_state() + CELL_PAD, egui::Align2::LEFT_CENTER, ctext::COL_STATE);
-    for x in [cols.x_name(), cols.x_count(), cols.x_state(), cols.x_ops()] {
+    for x in [cols.x_name(), cols.x_state(), cols.x_ops()] {
         painter.vline(rect.left() + x, rect.y_range(), stroke);
     }
     painter.hline(rect.x_range(), rect.top(), stroke);
@@ -1736,6 +1743,13 @@ fn append_source(job: &mut egui::text::LayoutJob, ui: &egui::Ui, src: &ctext::So
     if src.others > 0 {
         job.append(&ctext::source_others(src.others), 4.0, plain);
     }
+}
+
+/// 名前列の先頭に出す、対象のファイル数「N件」。
+fn append_count(job: &mut egui::text::LayoutJob, ui: &egui::Ui, n: usize) {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    job.append(&ctext::file_count_short(n), 0.0, egui::TextFormat { font_id: font, color: ui.visuals().text_color(), ..Default::default() });
+    job.append("", 8.0, egui::TextFormat::default());
 }
 
 /// 名前列のホバー: 見出し「◆対象となるファイル」と、この候補が付くファイル名の番号つき一覧。
@@ -1792,7 +1806,6 @@ fn draw_candidate_row(
         egui::Rect::from_min_max(egui::pos2(rect.left() + x0, rect.top() + y0), egui::pos2(rect.left() + x1, rect.top() + y1))
     };
     let left = egui::Layout::left_to_right(egui::Align::Center);
-    let right = egui::Layout::right_to_left(egui::Align::Center);
 
     // 採否は、この1つのトグルだけ（「まとめる」は「⋯」から）。
     in_cell(ui, at(CELL_PAD, TOGGLE_COL_W - CELL_PAD, 0.0, row_h), left, |ui| {
@@ -1825,11 +1838,12 @@ fn draw_candidate_row(
         name_full.push_str(&format!("（{}）", c.alt_forms.join(" / ")));
     }
     let name_is_new = matches!(c.choice, Choice::New);
-    let name_cell = at(cols.x_name() + CELL_PAD, cols.x_count() - CELL_PAD, 0.0, if compact { line1_h } else { row_h });
+    let name_cell = at(cols.x_name() + CELL_PAD, cols.x_state() - CELL_PAD, 0.0, if compact { line1_h } else { row_h });
     if compact {
         // コンパクト: 「タグ候補名 ｜ 元のファイル名」を1行に。長いときは、後ろのファイル名から切り詰める。
         in_cell(ui, name_cell, left, |ui| {
             let mut job = egui::text::LayoutJob::default();
+            append_count(&mut job, ui, c.files.len());
             let name_color = if name_is_new { ui.visuals().strong_text_color() } else { ui.visuals().text_color() };
             job.append(&name_full, 0.0, egui::TextFormat { font_id: egui::TextStyle::Body.resolve(ui.style()), color: name_color, ..Default::default() });
             if let Some(src) = &source {
@@ -1841,13 +1855,14 @@ fn draw_candidate_row(
         });
     } else {
         // 標準: 1段目に元のファイル名（候補の元になった部分を強調）、2段目にタグ候補名。
-        in_cell(ui, at(cols.x_name() + CELL_PAD, cols.x_count() - CELL_PAD, 0.0, line1_h), left, |ui| {
+        in_cell(ui, at(cols.x_name() + CELL_PAD, cols.x_state() - CELL_PAD, 0.0, line1_h), left, |ui| {
+            let mut job = egui::text::LayoutJob::default();
+            append_count(&mut job, ui, c.files.len());
             if let Some(src) = &source {
-                let mut job = egui::text::LayoutJob::default();
                 append_source(&mut job, ui, src);
-                let resp = ui.add(egui::Label::new(job).truncate().show_tooltip_when_elided(false));
-                show_name_hover(resp, &source_hover);
             }
+            let resp = ui.add(egui::Label::new(job).truncate().show_tooltip_when_elided(false));
+            show_name_hover(resp, &source_hover);
         });
         in_cell(ui, at(name_cell.left() - rect.left(), name_cell.right() - rect.left(), line1_h, row_h), left, |ui| {
             let label = egui::RichText::new(&name_full);
@@ -1856,10 +1871,6 @@ fn draw_candidate_row(
         });
     }
 
-    // ファイル数（右寄せ）。
-    in_cell(ui, at(cols.x_count(), cols.x_state() - CELL_PAD, 0.0, line1_h), right, |ui| {
-        ui.weak(ctext::file_count(c.files.len()));
-    });
 
     // 要確認の印と理由ボタン（・コンパクトでは結論文）。
     in_cell(ui, at(cols.x_state() + CELL_PAD, cols.x_ops() - CELL_PAD, 0.0, line1_h), left, |ui| {
@@ -1933,7 +1944,7 @@ fn draw_candidate_row(
 
     // 罫線: 列の境目（行の全高）と、行の下の全幅の区切り。
     let stroke = ui.visuals().widgets.noninteractive.bg_stroke;
-    for x in [cols.x_name(), cols.x_count(), cols.x_state(), cols.x_ops()] {
+    for x in [cols.x_name(), cols.x_state(), cols.x_ops()] {
         ui.painter().vline(rect.left() + x, rect.y_range(), stroke);
     }
     ui.painter().hline(rect.x_range(), rect.bottom(), stroke);

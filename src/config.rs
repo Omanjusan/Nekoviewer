@@ -324,6 +324,8 @@ pub struct AppConfig {
     pub tag_learning_use: bool,
     /// 一括タグ付けの確認窓を開いたとき、要確認の候補だけを先に表示するか。永続設定（state の `app_tag_confirm_default_review`）。既定は表示する。
     pub tag_confirm_default_review: bool,
+    /// 一括タグ付けの確認窓の冒頭の説明を、開いた状態にするか。永続設定（state の `app_tag_confirm_intro_open`）。既定は開く。
+    pub tag_confirm_intro_open: bool,
     /// 学習データが無いまま一括取得を押したときの、学習の案内を今後表示しない。永続設定（state の `app_tag_learn_intro_hidden`）。
     pub tag_learn_intro_hidden: bool,
     /// 次回起動時に X11 バックエンド（XWayland）で起動するか（state の `app_launch_x11`）。
@@ -399,6 +401,7 @@ impl AppConfig {
             tag_match: Default::default(),
             tag_learning_use: true,
             tag_confirm_default_review: true,
+            tag_confirm_intro_open: true,
             tag_learn_intro_hidden: false,
             launch_x11: false,
             last_run_version: String::new(),
