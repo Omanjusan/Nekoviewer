@@ -11320,13 +11320,13 @@ impl Display {
         }
     }
 
-    /// 切り替えボタンを押したときの、次の表示（日本語 → English → 中文 → 日中（テスト）→ 日本語）。
+    /// 切り替えボタンを押したときの、次の表示（日本語 → English → 中文 → 日本語）。
+    /// 「日中（テスト）」はボタンの順には入れない。使うときは、state の `lang=jazh` を手で書く（訳の確認用の隠しモード）。
     pub fn next(self) -> Display {
         match self {
             Display::Ja => Display::En,
             Display::En => Display::Zh,
-            Display::Zh => Display::JaZh,
-            Display::JaZh => Display::Ja,
+            Display::Zh | Display::JaZh => Display::Ja,
         }
     }
 
@@ -11465,15 +11465,16 @@ mod display_tests {
     }
 
     #[test]
-    fn next_cycles_through_all_four_and_returns() {
+    fn next_cycles_through_the_three_languages_and_skips_the_test_display() {
         let mut d = Display::Ja;
         let mut seen = vec![d];
-        for _ in 0..4 {
+        for _ in 0..3 {
             d = d.next();
             seen.push(d);
         }
-        assert_eq!(seen, vec![Display::Ja, Display::En, Display::Zh, Display::JaZh, Display::Ja]);
-        assert_eq!(Display::ALL.len(), 4);
+        assert_eq!(seen, vec![Display::Ja, Display::En, Display::Zh, Display::Ja]);
+        // 隠しモードから、ボタンを押すと日本語に戻る。
+        assert_eq!(Display::JaZh.next(), Display::Ja);
     }
 
     #[test]
