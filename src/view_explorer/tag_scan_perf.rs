@@ -150,7 +150,7 @@ pub(super) fn render(perfs: &[ScanPerf], scan_wall: Duration, cand_wall: Option<
         count(Place::Tail),
         count(Place::Mid),
     ));
-    out.push("  見方: 同じフォルダを「初回」と「直後の再実行」で比べる。file_open=ファイルを開く(inode引き) / tail_raw=末尾64KBの生read / zip_parse=解析(tail_rawで温まった後)。初回で file_open が大きければメタデータ待ち、tail_raw が大きければ末尾の読み待ち。".to_string());
+    out.push("  見方: 同じフォルダを「初回(冷たい)」と「直後の再実行(温かい)」で比べる。zip_parse=近道では末尾の中央ディレクトリの読みと解析、entry_read=info.txt等の本体読み(先頭側にあるものは先頭シークになる)。tail_raw=従来経路でだけ測る末尾の生read(近道では0)。計測外が大きければ、計測の外に重い処理が隠れている。".to_string());
     out
 }
 

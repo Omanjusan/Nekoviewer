@@ -40,6 +40,7 @@
 - [features/duplicate-marker.md](features/duplicate-marker.md) — 重複マーカー（同じ内容のファイルの警告）と類似ファイル一覧・完全比較、手動テスト手順
 - [features/list-attr-column.md](features/list-attr-column.md) — リストの「エラー列」「属性列」（固定スロット）と、★・訪問回数の＋－編集（ロック付き）、手動テスト手順
 - [features/perf-fixture.md](features/perf-fixture.md) — 速度計測フィクスチャー（開発専用）。サムネのみ／フルサポートの処理時間比較、DBクリアと復元、手動確認項目
+- [features/tag-scan-perf.md](features/tag-scan-perf.md) — タグ自動抽出の高速化（zip の中央ディレクトリだけを末尾から読む近道・マジック判定の省略・従来経路への戻り条件）、計測ログの見方、手動テスト手順
 - [features/idle-thumb.md](features/idle-thumb.md) — 手すき時間のサムネ生成（操作が3秒止まっている間に、画面外のサムネをDBへ先回りして貯める）、手動確認項目
 - [features/tag-search.md](features/tag-search.md) — タグ検索タブ（フォルダ横断のタグ絞り込み、単一選択カテゴリ、左ペイン幅の可変）と手動テスト手順
 - [features/search-tab.md](features/search-tab.md) — 検索タブ（新=台帳全件／旧=基点フォルダ）、検索文字列の書き方、進捗・中断・他タブでの継続、
