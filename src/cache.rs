@@ -967,28 +967,12 @@ impl RingAnimation {
         resize_to: Option<(u32, u32)>,
         filter: image::imageops::FilterType,
         frame_hard_limit_bytes: usize,
-        format: AnimFormat,
+        _format: AnimFormat,
     ) -> (usize, AnimFrame, std::time::Duration) {
         let resize_started = std::time::Instant::now();
         let guarded = Self::guard_frame_size(raw.frame, frame_hard_limit_bytes, filter, raw.index);
         let resized = Self::apply_resize(guarded, resize_to, filter);
         let resize_elapsed = resize_started.elapsed();
-        if raw.decode_elapsed >= std::time::Duration::from_millis(8)
-            || resize_elapsed >= std::time::Duration::from_millis(8)
-        {
-            log_perf!(
-                "[diag/anim-frame] format={:?} frame={} source={}x{} output={}x{} decode={:.1}ms resize={:.1}ms delay={:.1}ms worker=pipeline",
-                format,
-                raw.index,
-                raw.source_size.0,
-                raw.source_size.1,
-                resized.image.width(),
-                resized.image.height(),
-                raw.decode_elapsed.as_secs_f64() * 1000.0,
-                resize_elapsed.as_secs_f64() * 1000.0,
-                resized.delay.as_secs_f64() * 1000.0,
-            );
-        }
         (raw.index, resized, resize_elapsed)
     }
 

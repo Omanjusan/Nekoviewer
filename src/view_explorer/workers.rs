@@ -9,8 +9,22 @@ use crate::view_reader::ViewerState;
 use super::*;
 use super::scan::spawn_summary_worker;
 
+/// アニメ表示中にも「直後の1ページ」だけ先読みしてよい、デコードスレッド数の下限。
+/// 再生パイプライン（1フレーム ≒ デコード12〜15ms＋縮小7〜9ms）に対し、別スレッドで先読みの
+/// デコードを1本走らせても再生に影響しない余裕があるか、の目安（実測は32スレッド機。
+/// `decode_threads` の既定はコア数の半分なので、4以上＝8コア相当）。足りない環境では従来どおり先読みを止める。
+const MIN_DECODE_THREADS_FOR_ANIMATION_PREFETCH: usize = 4;
+
+/// アニメ表示中に、直後の1ページの先読みを許すか。
+fn animation_next_page_prefetch_allowed(decode_threads: usize) -> bool {
+    decode_threads >= MIN_DECODE_THREADS_FOR_ANIMATION_PREFETCH
+}
+
 /// 通常表示では「可視 → 前方近順 → 後方近順」、可視アニメ中は可視ページだけを返す。
 /// アニメのフレーム処理と無関係なページ先読みを、投入前の集合構築段階で除外する。
+/// ただし `animation_next_page`（スレッドに余裕がある環境）なら、アニメ中も直後の1ページだけ残す。
+/// アニメのページ送りごとに、次のページのデコード待ち（約50ms）が出ないようにするため。
+/// 残さないと、先読みの途中だったジョブが「不要」として取り消され、完走した結果も捨てられる。
 fn ordered_page_indices(
     visible_positions: &[usize],
     visible_lo: usize,
@@ -18,11 +32,14 @@ fn ordered_page_indices(
     start: usize,
     end: usize,
     visible_animation_active: bool,
+    animation_next_page: bool,
 ) -> Vec<usize> {
     let mut ordered = visible_positions.to_vec();
     if !visible_animation_active {
         ordered.extend((visible_hi + 1)..end);
         ordered.extend((start..visible_lo).rev());
+    } else if animation_next_page && visible_hi + 1 < end {
+        ordered.push(visible_hi + 1);
     }
     ordered
 }
@@ -812,9 +829,11 @@ impl NekoviewApp {
                 })
             },
         );
-        // アニメ中は新しいAhead/Behindを開始させない。静止画またはビューアー終了時は
+        // アニメ中は、新しいAhead/Behindを開始させない。ただしスレッドに余裕がある環境では、
+        // 直後の1ページだけは先読みする（投機実行1本）。静止画またはビューアー終了時は
         // 通常の1並列へ必ず戻し、状態の戻し忘れを作らない。
-        self.req_tx.set_max_speculative_running(if visible_animation_active { 0 } else { 1 });
+        let animation_next_page = animation_next_page_prefetch_allowed(self.config.resolved_decode_threads());
+        self.req_tx.set_max_speculative_running(if visible_animation_active && !animation_next_page { 0 } else { 1 });
 
         let mut desired_job_keys = HashSet::new();
         let mut desired_pending_keys = HashSet::new();
@@ -842,6 +861,7 @@ impl NekoviewApp {
                 start,
                 end,
                 visible_animation_active,
+                animation_next_page,
             );
             for i in ordered_indices {
                 let orig_i = entries[i].original_index;
@@ -918,12 +938,17 @@ impl NekoviewApp {
 
 #[cfg(test)]
 mod animation_prefetch_tests {
-    use super::ordered_page_indices;
+    use super::{animation_next_page_prefetch_allowed, ordered_page_indices};
 
     #[test]
     fn static_page_keeps_visible_ahead_behind_order() {
         assert_eq!(
-            ordered_page_indices(&[5], 5, 5, 2, 9, false),
+            ordered_page_indices(&[5], 5, 5, 2, 9, false, false),
+            vec![5, 6, 7, 8, 4, 3, 2],
+        );
+        // 静止画では、アニメ用の指定は結果に影響しない
+        assert_eq!(
+            ordered_page_indices(&[5], 5, 5, 2, 9, false, true),
             vec![5, 6, 7, 8, 4, 3, 2],
         );
     }
@@ -931,7 +956,7 @@ mod animation_prefetch_tests {
     #[test]
     fn visible_animation_excludes_all_nonvisible_page_prefetch() {
         assert_eq!(
-            ordered_page_indices(&[5], 5, 5, 2, 9, true),
+            ordered_page_indices(&[5], 5, 5, 2, 9, true, false),
             vec![5],
         );
     }
@@ -939,9 +964,31 @@ mod animation_prefetch_tests {
     #[test]
     fn spread_with_animation_keeps_both_visible_pages() {
         assert_eq!(
-            ordered_page_indices(&[5, 6], 5, 6, 2, 10, true),
+            ordered_page_indices(&[5, 6], 5, 6, 2, 10, true, false),
             vec![5, 6],
         );
+    }
+
+    #[test]
+    fn visible_animation_with_headroom_keeps_only_the_next_page() {
+        // 直後の1ページだけ（前方2ページ目以降・後方は含めない）
+        assert_eq!(ordered_page_indices(&[5], 5, 5, 2, 9, true, true), vec![5, 6]);
+        // 見開きは、表示中の2ページの次
+        assert_eq!(ordered_page_indices(&[5, 6], 5, 6, 2, 10, true, true), vec![5, 6, 7]);
+    }
+
+    #[test]
+    fn next_page_is_dropped_at_the_end_of_the_archive() {
+        // 最終ページ（窓の終端）の次は無い
+        assert_eq!(ordered_page_indices(&[8], 8, 8, 3, 9, true, true), vec![8]);
+    }
+
+    #[test]
+    fn animation_prefetch_needs_enough_decode_threads() {
+        assert!(!animation_next_page_prefetch_allowed(1));
+        assert!(!animation_next_page_prefetch_allowed(3));
+        assert!(animation_next_page_prefetch_allowed(4));
+        assert!(animation_next_page_prefetch_allowed(16));
     }
 }
 
