@@ -734,6 +734,8 @@ pub struct ViewerState {
     /// TODO項目B: 現在ページの手動回転状態。rotation_carry_over が true の間は
     /// この値ではなく ViewerConfig::rotation_session_angle を使う（呼び出し側判断）。
     rotation: RotationState,
+    /// ページ送りの待ち時間の計測（perf ログ専用。挙動には影響しない）。
+    flip_tracker: crate::flip_wait::FlipTracker,
     /// TODO項目D相当のダミーフラグ。D本体（設定UI・永続化）は未実装のため常時true固定
     /// （EXIF自動回転は既にデコード時にピクセルへ焼き込み済みのため、Bの範囲では
     /// このフラグを実際の分岐には使わない）。
@@ -1095,6 +1097,7 @@ impl ViewerState {
             translate_toggle_enabled: false,
             pending_toggle_translate_window: false,
             rotation: RotationState::new(),
+            flip_tracker: Default::default(),
             exif_enabled: true,
             slideshow_active: false,
             slideshow_last_advance: Instant::now(),
@@ -1225,6 +1228,7 @@ impl ViewerState {
             translate_toggle_enabled: false,
             pending_toggle_translate_window: false,
             rotation: RotationState::new(),
+            flip_tracker: Default::default(),
             exif_enabled: true,
             slideshow_active: false,
             slideshow_last_advance: Instant::now(),
@@ -4581,6 +4585,21 @@ impl ViewerState {
         let mut min_repaint_after = Duration::MAX;
 
         let mut promoted_pages = Vec::new();
+
+        // ページ送りの待ち計測（perf ログ専用）。新しく見えたページが、先読み済みだったかを控える。
+        let mut flip = std::mem::take(&mut self.flip_tracker);
+        let flip_events = flip.begin_frame(
+            &visible_orig,
+            &|i| {
+                self.textures.contains_key(&i)
+                    || page_cache.get_best(&self.archive_path, i, active_generation, preparing_generation).is_some()
+            },
+            Instant::now(),
+        );
+        for e in &flip_events {
+            crate::log_perf!("[perf/open] {}", e.describe());
+        }
+
         for i in upload_order {
             let orig_i = self.entries[i].original_index;
             let Some((generation, content)) = page_cache.get_best(
@@ -4800,6 +4819,12 @@ impl ViewerState {
         for (orig_i, generation) in promoted_pages {
             page_cache.remove_older_versions(&self.archive_path, orig_i, generation);
         }
+
+        // 未準備で表示されたページが、このフレームのアップロードで届いたか。
+        for e in flip.end_frame(&|i| self.textures.contains_key(&i), Instant::now()) {
+            crate::log_perf!("[perf/open] {}", e.describe());
+        }
+        self.flip_tracker = flip;
 
         let window_orig: HashSet<usize> = (start..end)
             .map(|i| self.entries[i].original_index)

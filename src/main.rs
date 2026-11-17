@@ -8,6 +8,7 @@ mod config;
 mod confirm_dialog;
 mod controller;
 mod decode_jobs;
+mod flip_wait;
 mod display_backend;
 mod db_backup;
 mod dev_db_backup;
