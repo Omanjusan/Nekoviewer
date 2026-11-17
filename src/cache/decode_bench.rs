@@ -146,3 +146,71 @@ fn decode_bench() {
         bench_one("WebP 実ファイル(test/)", &b, true);
     }
 }
+
+/// 実ログ（1062x1500 → 941x1330 のほぼ等倍縮小）で、L8 の縮小が Rgb8 の約2.3倍遅かった件の切り分け。
+#[test]
+#[ignore]
+fn decode_bench_l8_near_unity() {
+    use fast_image_resize::{images::Image as FirImage, PixelType, ResizeAlg, FilterType as FirFilter, ResizeOptions, Resizer};
+    let src = std::fs::read("/usr/share/backgrounds/Beach-by-Troy-T.jpg").unwrap();
+    let img = image::load_from_memory(&src).unwrap().resize_to_fill(1062, 1500, image::imageops::FilterType::Triangle);
+    let gray = img.to_luma8();
+    let rgb = img.to_rgb8();
+    let (nw, nh) = (941u32, 1330u32);
+    println!("\n== L8/Rgb8 1062x1500 → {nw}x{nh}（RUNS={RUNS}）");
+    for (fname, alg, f) in [
+        ("CatmullRom", ResizeAlg::Convolution(FirFilter::CatmullRom), image::imageops::FilterType::CatmullRom),
+        ("Lanczos3", ResizeAlg::Convolution(FirFilter::Lanczos3), image::imageops::FilterType::Lanczos3),
+    ] {
+        let opt = ResizeOptions::new().resize_alg(alg);
+        let fir = |pt: PixelType, raw: &[u8]| {
+            let s = FirImage::from_vec_u8(1062, 1500, raw.to_vec(), pt).unwrap();
+            let mut d = FirImage::new(nw, nh, pt);
+            Resizer::new().resize(&s, &mut d, &opt).unwrap();
+            d
+        };
+        let rgba_from_gray = image::DynamicImage::ImageLuma8(gray.clone()).to_rgba8();
+        let u8 = median_ms(|| fir(PixelType::U8, gray.as_raw()));
+        let u8x3 = median_ms(|| fir(PixelType::U8x3, rgb.as_raw()));
+        let u8x4 = median_ms(|| fir(PixelType::U8x4, rgba_from_gray.as_raw()));
+        let cur_l8 = median_ms(|| crate::cache::resize_for_display(image::DynamicImage::ImageLuma8(gray.clone()), f, Some((941, 1330))));
+        let cur_rgb = median_ms(|| crate::cache::resize_for_display(image::DynamicImage::ImageRgb8(rgb.clone()), f, Some((941, 1330))));
+        // L8 → Rgb8(複製) → U8x3 縮小 → RGBA
+        let via_rgb = median_ms(|| {
+            let mut v = Vec::with_capacity(gray.as_raw().len() * 3);
+            for &g in gray.as_raw() { v.extend_from_slice(&[g, g, g]); }
+            let d = fir(PixelType::U8x3, &v);
+            image::DynamicImage::ImageRgb8(image::RgbImage::from_raw(nw, nh, d.into_vec()).unwrap()).into_rgba8()
+        });
+        println!("  {fname:<10} fir純粋: U8 {u8:5.2} / U8x3 {u8x3:5.2} / U8x4 {u8x4:5.2} ms | resize_for_display(clone込み): L8 {cur_l8:5.2} / Rgb8 {cur_rgb:5.2} | L8→RGB複製→U8x3→RGBA {via_rgb:5.2} ms");
+    }
+}
+
+/// L8 の縮小戦略比較: 現行(U8のまま縮小→RGBA) vs 案(L8→RGBA高速変換→U8x4縮小)。近等倍と強縮小の両方。
+#[test]
+#[ignore]
+fn decode_bench_l8_strategy() {
+    use fast_image_resize::{images::Image as FirImage, PixelType, ResizeAlg, FilterType as FirFilter, ResizeOptions, Resizer};
+    let src = std::fs::read("/usr/share/backgrounds/Beach-by-Troy-T.jpg").unwrap();
+    let base = image::load_from_memory(&src).unwrap();
+    for &(w, h, nw, nh) in &[(1062u32, 1500u32, 941u32, 1330u32), (2000, 3000, 720, 1080), (2000, 3000, 1800, 2700), (3840, 2560, 1920, 1280)] {
+        let gray = base.resize_to_fill(w, h, image::imageops::FilterType::Triangle).to_luma8();
+        println!("\n== L8 {w}x{h} → {nw}x{nh}");
+        for (fname, alg, f) in [
+            ("CatmullRom", ResizeAlg::Convolution(FirFilter::CatmullRom), image::imageops::FilterType::CatmullRom),
+            ("Lanczos3", ResizeAlg::Convolution(FirFilter::Lanczos3), image::imageops::FilterType::Lanczos3),
+        ] {
+            let opt = ResizeOptions::new().resize_alg(alg);
+            let cur = median_ms(|| crate::cache::resize_for_display(image::DynamicImage::ImageLuma8(gray.clone()), f, Some((nw, nh))));
+            let proposed = median_ms(|| {
+                let mut rgba = vec![255u8; w as usize * h as usize * 4];
+                for (d, &g) in rgba.chunks_exact_mut(4).zip(gray.as_raw()) { d[0] = g; d[1] = g; d[2] = g; }
+                let s = FirImage::from_vec_u8(w, h, rgba, PixelType::U8x4).unwrap();
+                let mut d = FirImage::new(nw, nh, PixelType::U8x4);
+                Resizer::new().resize(&s, &mut d, &opt).unwrap();
+                image::RgbaImage::from_raw(nw, nh, d.into_vec()).unwrap()
+            });
+            println!("  {fname:<10} 現行(U8) {cur:6.2} ms / 案(RGBA化→U8x4) {proposed:6.2} ms");
+        }
+    }
+}

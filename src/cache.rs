@@ -166,13 +166,15 @@ impl OpenArchive {
                 let (buf, display_name) = z.load_bytes(entry_name)?;
                 let read = t_read.elapsed();
                 let t_dec = std::time::Instant::now();
+                clear_last_resize_info();
                 let content = decode_bytes_to_content(&buf, &display_name, filter, cache_budget_bytes, ring_bounds, frame_hard_limit_bytes, target_size, exif_enabled);
                 log_perf!(
-                    "[perf/open] ページ内訳 {} ディスク読み={:.1}ms サイズ={}KB デコード={:.1}ms",
+                    "[perf/open] ページ内訳 {} ディスク読み={:.1}ms サイズ={}KB デコード={:.1}ms{}",
                     display_name,
                     read.as_secs_f64() * 1000.0,
                     buf.len() / 1024,
                     t_dec.elapsed().as_secs_f64() * 1000.0,
+                    last_resize_info_text(),
                 );
                 content
             }
@@ -244,6 +246,43 @@ pub fn take_last_page_meta() -> Option<PageMeta> {
     LAST_PAGE_META.with(|c| c.take())
 }
 
+/// 静止画1枚の「縮小（または縮小なしのRGBA化）」の内訳。perf ログ用（`[perf/open] ページ内訳` 等に付ける）。
+/// デコード本体と縮小のどちらが重いかを、画像の寸法・形式つきで見分けるための計測値。
+#[derive(Clone, Copy, Debug)]
+pub struct ResizeInfo {
+    pub src: (u32, u32),
+    pub dst: (u32, u32),
+    pub color: image::ColorType,
+    pub elapsed: std::time::Duration,
+}
+
+impl ResizeInfo {
+    /// ログ用の短い説明。例: `元=3000x4000(L8) →1080x1440 縮小=11.8ms` / `元=800x1200(Rgb8) 縮小なし 変換=0.9ms`
+    pub fn describe(&self) -> String {
+        let ms = self.elapsed.as_secs_f64() * 1000.0;
+        if self.src == self.dst {
+            format!("元={}x{}({:?}) 縮小なし 変換={:.1}ms", self.src.0, self.src.1, self.color, ms)
+        } else {
+            format!("元={}x{}({:?}) →{}x{} 縮小={:.1}ms", self.src.0, self.src.1, self.color, self.dst.0, self.dst.1, ms)
+        }
+    }
+}
+
+thread_local! {
+    /// 直近にこのスレッドで完了した静止画の縮小内訳。取り出しても消えない（読み取り専用）。
+    /// 消すのは `clear_last_resize_info`（ジョブ開始時）だけ。アニメ・TXTなど縮小を通らない経路では None のまま。
+    static LAST_RESIZE_INFO: std::cell::Cell<Option<ResizeInfo>> = const { std::cell::Cell::new(None) };
+}
+
+pub fn clear_last_resize_info() {
+    LAST_RESIZE_INFO.with(|c| c.set(None));
+}
+
+/// 直近の縮小内訳をログ用の文字列にする。縮小を通らなかったときは空文字。
+pub fn last_resize_info_text() -> String {
+    LAST_RESIZE_INFO.with(|c| c.get()).map(|i| format!(" {}", i.describe())).unwrap_or_default()
+}
+
 // ワーカースレッドからの結果
 pub struct LoadResult {
     pub archive_path: PathBuf,
@@ -288,6 +327,7 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                 let exif_enabled = req.exif_enabled;
                 let image_filter = req.image_filter;
                 let _ = take_last_page_meta();
+                clear_last_resize_info();
                 let t_job = std::time::Instant::now();
                 let _fg = ForegroundIoGuard::begin();
                 let _page_io = PageIoGuard::begin();
@@ -348,11 +388,12 @@ pub fn spawn_worker(filter: image::imageops::FilterType, num_threads: usize, ctx
                 }
 
                 crate::log_perf!(
-                    "[perf/open] ページジョブ(デコードワーカー) index={} 入力={} {} 所要={:.1}ms",
+                    "[perf/open] ページジョブ(デコードワーカー) index={} 入力={} {} 所要={:.1}ms{}",
                     req.index,
                     src_kind,
                     if content.is_some() { "OK" } else { "失敗" },
                     t_job.elapsed().as_secs_f64() * 1000.0,
+                    last_resize_info_text(),
                 );
 
                 if worker_queue.finish(job_id) {
@@ -532,16 +573,18 @@ fn decode_bytes_to_content(
 /// フェーズ6: 従来の固定上限(1920x1080)から、リサイズ再デコード対応のため呼び出し側指定に変更。
 pub fn resize_for_display(img: image::DynamicImage, filter: image::imageops::FilterType, target: Option<(u32, u32)>) -> image::RgbaImage {
     set_last_page_meta(PageMeta { orig: (img.width(), img.height()), animated: false });
-    let Some((tw, th)) = target else {
-        return into_rgba_fast(img);
+    let (w, h, color) = (img.width(), img.height(), img.color());
+    let t = std::time::Instant::now();
+    let (dst, out) = match target {
+        Some((tw, th)) => {
+            let (nw, nh) = crate::anim::fit_within(w, h, tw, th);
+            if (nw, nh) != (w, h) { ((nw, nh), fir_resize(img, nw, nh, filter)) } else { ((w, h), into_rgba_fast(img)) }
+        }
+        None => ((w, h), into_rgba_fast(img)),
     };
-    let (w, h) = (img.width(), img.height());
-    let (nw, nh) = crate::anim::fit_within(w, h, tw, th);
-    if (nw, nh) != (w, h) {
-        fir_resize(img, nw, nh, filter)
-    } else {
-        into_rgba_fast(img)
-    }
+    let info = ResizeInfo { src: (w, h), dst, color, elapsed: t.elapsed() };
+    LAST_RESIZE_INFO.with(|c| c.set(Some(info)));
+    out
 }
 
 // ── フェーズ3: リングバッファ式アニメーション（GIF/APNG/AVIF）───────────────────
