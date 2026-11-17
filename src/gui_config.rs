@@ -425,6 +425,8 @@ pub struct TabPositions {
     pub virtual_node: Option<VirtualPosition>,
     /// タグ検索タブの左ペイン幅(px)。位置ではなくレイアウトなので `use_last_dir` の影響を受けない。
     pub tag_search_left_width: Option<u32>,
+    /// タグ検索タブの有効タグの組み合わせ方（OR/AND）。レイアウトと同じく位置ではない設定。未保存=OR。
+    pub tag_search_mode: Option<crate::tag_search::TagMatchMode>,
 }
 
 impl TabPositions {
@@ -445,6 +447,9 @@ impl TabPositions {
         }
         if let Some(w) = self.tag_search_left_width {
             out.push_str(&format!("tab_tag_search_width={w}\n"));
+        }
+        if let Some(m) = self.tag_search_mode {
+            out.push_str(&format!("tab_tag_search_mode={}\n", m.to_state_str()));
         }
         out
     }
@@ -653,6 +658,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
     let mut tab_virtual_id: Option<u32> = None;
     let mut tab_virtual_path: Option<PathBuf> = None;
     let mut tab_tag_search_width: Option<u32> = None;
+    let mut tab_tag_search_mode: Option<crate::tag_search::TagMatchMode> = None;
     let mut tree_sort_virtual: Option<crate::tree_sort::TreeSort> = None;
     let mut tree_sort_real: Option<crate::tree_sort::TreeSort> = None;
     let mut window_width: Option<u32> = None;
@@ -806,6 +812,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                         .filter(|s| s.key != crate::tree_sort::TreeSortKey::Registration);
                 }
                 "tab_tag_search_width" => { tab_tag_search_width = v.trim().parse().ok(); }
+                "tab_tag_search_mode" => { tab_tag_search_mode = crate::tag_search::TagMatchMode::from_state_str(v); }
                 "tab_virtual_node" => { tab_virtual_id = v.trim().parse().ok(); }
                 "tab_virtual_path" => {
                     let v = v.trim();
@@ -1227,6 +1234,7 @@ fn parse_state_file(path: &Path) -> Option<AppState> {
                 _ => None,
             },
             tag_search_left_width: tab_tag_search_width,
+            tag_search_mode: tab_tag_search_mode,
         },
         tree_sorts: crate::tree_sort::TreeSorts { virtual_tree: tree_sort_virtual, real_tree: tree_sort_real },
         tag_panel_open: tag_panel_open.unwrap_or(false),
@@ -1691,6 +1699,17 @@ mod tests {
     }
 
     #[test]
+    fn tag_search_mode_roundtrips_and_bad_value_is_dropped() {
+        use crate::tag_search::TagMatchMode;
+        let tp = TabPositions { tag_search_mode: Some(TagMatchMode::And), ..Default::default() };
+        assert_eq!(tp.state_lines(), "tab_tag_search_mode=and\n");
+        assert_eq!(parse_state_text("m_and", &tp.state_lines()).tab_positions.tag_search_mode, Some(TagMatchMode::And));
+        assert_eq!(parse_state_text("m_or", "tab_tag_search_mode=or\n").tab_positions.tag_search_mode, Some(TagMatchMode::Or));
+        assert_eq!(parse_state_text("m_bad", "tab_tag_search_mode=xx\n").tab_positions.tag_search_mode, None);
+        assert_eq!(parse_state_text("m_none", "last_dir=/x\n").tab_positions.tag_search_mode, None);
+    }
+
+    #[test]
     fn tab_positions_roundtrip_through_state_text() {
         let tp = TabPositions {
             active: Some(SavedTab::VirtualFolders),
@@ -1698,6 +1717,7 @@ mod tests {
             search_dir: Some(PathBuf::from("/data/search base")),
             virtual_node: Some(VirtualPosition { id: 12, path: PathBuf::from("/data/manga") }),
             tag_search_left_width: Some(320),
+            tag_search_mode: Some(crate::tag_search::TagMatchMode::And),
         };
         let parsed = parse_state_text("roundtrip", &format!("last_dir=/real\n{}", tp.state_lines()));
         assert_eq!(parsed.tab_positions, tp);

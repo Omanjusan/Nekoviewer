@@ -924,6 +924,8 @@ pub struct NekoviewApp {
     tag_search_pending: Option<u64>,
     /// 左クリックで開いている「この要素名をタグ検索」ポップアップの要素ID（1つだけ開く）。None=閉じている
     tag_chip_menu: Option<u64>,
+    /// タグ検索タブの要素フィルタ欄の入力（保存しない）
+    tag_search_filter: String,
     /// 再紐付けのバックグラウンド実行（結果の受け取り口）。実行中は Some
     relink_job: Option<mpsc::Receiver<crate::identity_relink::RelinkReport>>,
     /// 複数件の「お気に入り設定から外す」の確認待ちパス
@@ -1635,6 +1637,7 @@ impl NekoviewApp {
             // 左ペイン幅はレイアウト設定なので、位置を捨てても残す
             crate::gui_config::TabPositions {
                 tag_search_left_width: tab_positions.tag_search_left_width,
+                tag_search_mode: tab_positions.tag_search_mode,
                 ..Default::default()
             }
         };
@@ -1773,6 +1776,7 @@ impl NekoviewApp {
             key_search_pending: None,
             tag_search_pending: None,
             tag_chip_menu: None,
+            tag_search_filter: String::new(),
             relink_job: None,
             favorite_unset_confirm: None,
             db_restore_confirm: None,

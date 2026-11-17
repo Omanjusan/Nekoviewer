@@ -2250,18 +2250,74 @@ impl Lang {
     /// タグ検索タブ左ペイン上部の操作ヒント
     pub fn tag_search_left_hint(self) -> &'static str {
         match self {
-            Lang::Japanese => "タグをクリックで有効／無効。有効にしたタグを全て持つファイルを探します。",
-            Lang::English  => "Click a tag to enable or disable it. Finds files that have every enabled tag.",
-            Lang::Chinese  => "点击标签以启用或禁用。查找同时具有所有已启用标签的文件。",
+            Lang::Japanese => "タグをクリックで有効／無効。ORは有効タグのどれかを持つファイル、ANDは全てを持つファイルを探します。",
+            Lang::English  => "Click a tag to enable or disable it. OR finds files with any enabled tag; AND finds files with every enabled tag.",
+            Lang::Chinese  => "点击标签以启用或禁用。“或”查找具有任一已启用标签的文件，“且”查找同时具有所有已启用标签的文件。",
         }
     }
 
-    /// タグ検索タブ左ペイン: 単一選択カテゴリの「S」マークのホバー説明
+    /// タグ検索タブ左ペイン: 単一選択カテゴリの「S」マークのホバー説明（ANDのときだけ出る）
     pub fn tag_search_single_hint(self) -> &'static str {
         match self {
-            Lang::Japanese => "単一選択のカテゴリです。同時に1つだけ有効にできます。",
-            Lang::English  => "Single-select category. Only one tag can be enabled at a time.",
-            Lang::Chinese  => "单选类别。同一时间只能启用一个标签。",
+            Lang::Japanese => "単一選択のカテゴリです。ANDのときは同時に1つだけ有効にできます（ORでは複数可）。",
+            Lang::English  => "Single-select category. In AND mode only one tag can be enabled at a time (OR allows several).",
+            Lang::Chinese  => "单选类别。“且”模式下同一时间只能启用一个标签（“或”模式可多选）。",
+        }
+    }
+
+    pub fn tag_search_mode_or(self) -> &'static str {
+        match self {
+            Lang::Japanese => "OR（どれか）",
+            Lang::English  => "OR (any)",
+            Lang::Chinese  => "或（任一）",
+        }
+    }
+
+    pub fn tag_search_mode_and(self) -> &'static str {
+        match self {
+            Lang::Japanese => "AND（すべて）",
+            Lang::English  => "AND (all)",
+            Lang::Chinese  => "且（全部）",
+        }
+    }
+
+    pub fn tag_search_clear(self) -> &'static str {
+        match self {
+            Lang::Japanese => "クリア",
+            Lang::English  => "Clear",
+            Lang::Chinese  => "清除",
+        }
+    }
+
+    pub fn tag_search_filter_hint(self) -> &'static str {
+        match self {
+            Lang::Japanese => "タグ要素を絞り込み…",
+            Lang::English  => "Filter tags…",
+            Lang::Chinese  => "筛选标签…",
+        }
+    }
+
+    pub fn tag_search_active_heading(self) -> &'static str {
+        match self {
+            Lang::Japanese => "有効なタグ",
+            Lang::English  => "Enabled tags",
+            Lang::Chinese  => "已启用的标签",
+        }
+    }
+
+    pub fn tag_search_active_none(self) -> &'static str {
+        match self {
+            Lang::Japanese => "未選択",
+            Lang::English  => "None selected",
+            Lang::Chinese  => "未选择",
+        }
+    }
+
+    pub fn tag_search_no_match(self) -> &'static str {
+        match self {
+            Lang::Japanese => "該当する要素がありません",
+            Lang::English  => "No matching tags",
+            Lang::Chinese  => "没有匹配的标签",
         }
     }
 

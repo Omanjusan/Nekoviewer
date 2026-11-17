@@ -20,9 +20,9 @@ use crate::fs::archive;
 
 use crate::i18n;
 use crate::tag_manager::TAG_MAIN_UNSET_ID;
-use crate::tag_search::{TagHit, TagQuery, TagScanMsg};
+use crate::tag_search::{TagHit, TagMatchMode, TagQuery, TagScanMsg};
 
-use super::panels::tag_chip;
+use super::panels::{tag_chip, tag_chip_with_x};
 use super::*;
 
 /// 左ペイン幅の既定値。他のタブの固定幅と同じ。
@@ -31,6 +31,8 @@ const TAG_SEARCH_LEFT_MIN_WIDTH: f32 = 180.0;
 const TAG_SEARCH_LEFT_MAX_WIDTH: f32 = 600.0;
 const TAG_SEARCH_HANDLE_WIDTH: f32 = 6.0;
 const TAG_SEARCH_HANDLE_HEIGHT: f32 = 56.0;
+/// 「有効なタグ」一覧の最大高さ。超えたら一覧の中でスクロールする。
+const TAG_SEARCH_ACTIVE_MAX_HEIGHT: f32 = 96.0;
 
 /// 保存値（未保存なら既定）を、許容範囲へ収めた左ペイン幅にする。
 pub(super) fn resolve_tag_search_left_width(saved: Option<u32>) -> f32 {
@@ -52,6 +54,19 @@ fn toggle_tag_search_chip(enabled: &mut HashSet<u64>, id: u64, single_group: Opt
         }
     }
     enabled.insert(id);
+}
+
+/// 一覧に出す1カテゴリ: (見出し名, 色, 単一選択か, 排他の対象になる全チップのid, 表示するチップ)。
+type TagSearchCategory = (String, egui::Color32, bool, Vec<u64>, Vec<(u64, String)>);
+
+/// 要素名が絞り込み文字列に当たるか。大文字小文字を区別しない部分一致で、別名つき（`A|B|C`）は全別名が対象。
+/// 空（空白のみ含む）なら全部に当たる。
+fn tag_name_matches_filter(name: &str, filter: &str) -> bool {
+    let f = filter.trim().to_lowercase();
+    if f.is_empty() {
+        return true;
+    }
+    crate::tag_master::split_aliases(name).iter().any(|a| a.to_lowercase().contains(&f)) || name.to_lowercase().contains(&f)
 }
 
 /// 「この要素をタグ検索」の有効タグ集合（1要素のみ）。
@@ -102,10 +117,18 @@ impl NekoviewApp {
         ui.scope_builder(egui::UiBuilder::new().max_rect(content), |ui| self.draw_tag_search_list(ui));
     }
 
+    /// 左ペイン本体。上から「OR/AND・クリア」「要素フィルタ」「有効なタグ一覧」を固定で置き、
+    /// その下に全カテゴリのチップ一覧（スクロール）を並べる。長い一覧の外に有効タグが隠れないようにするため。
     fn draw_tag_search_list(&mut self, ui: &mut egui::Ui) {
         ui.weak(i18n::t().tag_search_left_hint());
         ui.separator();
         let mut changed = false;
+        changed |= self.draw_tag_search_mode_row(ui);
+        self.draw_tag_search_filter_row(ui);
+        changed |= self.draw_tag_search_active_list(ui);
+        ui.separator();
+        let mode = self.tag_match_mode();
+        let filter = self.tag_search_filter.clone();
         egui::ScrollArea::vertical()
             .id_salt("tag_search_left_scroll")
             .auto_shrink([false, false])
@@ -113,24 +136,13 @@ impl NekoviewApp {
                 let full_w = ui.available_width();
                 // マスタ定義の借用とチップのトグルが衝突しないよう、先に描画対象を集める。
                 // メインカテゴリは先頭固定で、その先頭に「未設定」の疑似チップを置く。
-                let cats: Vec<_> = self
-                    .tag_manager_categories
-                    .iter()
-                    .map(|c| {
-                        let mut chips: Vec<(u64, String)> = Vec::new();
-                        if c.is_main {
-                            chips.push((TAG_MAIN_UNSET_ID, i18n::t().tag_main_unset_label().to_string()));
-                        }
-                        chips.extend(
-                            c.tiers
-                                .iter()
-                                .filter_map(|t| t.element.as_ref().map(|name| (t.id, name.clone()))),
-                        );
-                        // メインカテゴリは常に単一選択。
-                        (c.display_name(), c.color, c.is_main || c.single_select, chips)
-                    })
-                    .collect();
-                for (name, color, single, chips) in cats {
+                let cats = self.tag_search_categories(&filter);
+                if cats.is_empty() && !filter.trim().is_empty() {
+                    ui.weak(i18n::t().tag_search_no_match());
+                }
+                for (name, color, single_select, group, chips) in cats {
+                    // 単一選択の排他はANDのときだけ。ORでは同じカテゴリの複数選択が自然な使い方になる。
+                    let single = single_select && mode == TagMatchMode::And;
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new(name).strong().color(color));
@@ -149,7 +161,6 @@ impl NekoviewApp {
                             .on_hover_text(i18n::t().tag_search_single_hint());
                         }
                     });
-                    let group: Vec<u64> = chips.iter().map(|(id, _)| *id).collect();
                     ui.horizontal_wrapped(|ui| {
                         for (id, text) in chips {
                             let on = self.tag_search_enabled.contains(&id);
@@ -179,6 +190,119 @@ impl NekoviewApp {
         if changed {
             self.restart_tag_search();
         }
+    }
+
+    /// 現在の組み合わせ方（未保存=OR）。
+    pub(super) fn tag_match_mode(&self) -> TagMatchMode {
+        self.tab_positions.tag_search_mode.unwrap_or_default()
+    }
+
+    /// OR/ANDのラジオと「クリア」。変更があれば true（呼び出し側が再走査する）。
+    fn draw_tag_search_mode_row(&mut self, ui: &mut egui::Ui) -> bool {
+        let t = i18n::t();
+        let mut changed = false;
+        let mode = self.tag_match_mode();
+        let mut new_mode = mode;
+        ui.horizontal(|ui| {
+            if ui.radio(mode == TagMatchMode::Or, t.tag_search_mode_or()).clicked() {
+                new_mode = TagMatchMode::Or;
+            }
+            if ui.radio(mode == TagMatchMode::And, t.tag_search_mode_and()).clicked() {
+                new_mode = TagMatchMode::And;
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let has_any = !self.tag_search_enabled.is_empty();
+                if ui.add_enabled(has_any, egui::Button::new(t.tag_search_clear())).clicked() {
+                    self.tag_search_enabled.clear();
+                    changed = true;
+                }
+            });
+        });
+        if new_mode != mode {
+            // ANDへ戻したとき、すでに複数有効な単一選択カテゴリはその場では直さない（次にそのカテゴリを押したとき排他になる）。
+            self.tab_positions.tag_search_mode = Some(new_mode);
+            self.persist_state();
+            changed = true;
+        }
+        changed
+    }
+
+    /// 要素フィルタ欄（下のチップ一覧だけを絞る。保存しない）。
+    fn draw_tag_search_filter_row(&mut self, ui: &mut egui::Ui) {
+        ui.add(
+            egui::TextEdit::singleline(&mut self.tag_search_filter)
+                .hint_text(i18n::t().tag_search_filter_hint())
+                .desired_width(f32::INFINITY),
+        );
+    }
+
+    /// 「有効なタグ」一覧。×で個別に解除する。0件なら「未選択」。解除があれば true。
+    fn draw_tag_search_active_list(&mut self, ui: &mut egui::Ui) -> bool {
+        let t = i18n::t();
+        let items = self.tag_search_active_items();
+        let mut removed = None;
+        ui.add_space(2.0);
+        ui.label(egui::RichText::new(t.tag_search_active_heading()).small().strong());
+        if items.is_empty() {
+            ui.weak(t.tag_search_active_none());
+        } else {
+            let full_w = ui.available_width();
+            egui::ScrollArea::vertical()
+                .id_salt("tag_search_active_scroll")
+                .max_height(TAG_SEARCH_ACTIVE_MAX_HEIGHT)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        for (id, text, color) in &items {
+                            if tag_chip_with_x(ui, text, full_w, *color, contrasting_text_color(*color), *id) {
+                                removed = Some(*id);
+                            }
+                        }
+                    });
+                });
+        }
+        if let Some(id) = removed {
+            self.tag_search_enabled.remove(&id);
+            return true;
+        }
+        false
+    }
+
+    /// 有効タグの表示用一覧 `(id, 表示名, 色)`。カテゴリ登録順→要素順で、メインカテゴリの「未設定」を先頭に置く。
+    /// マスタに無いid（削除済みtier）は出さない。
+    fn tag_search_active_items(&self) -> Vec<(u64, String, egui::Color32)> {
+        let mut out = Vec::new();
+        for c in &self.tag_manager_categories {
+            if c.is_main && self.tag_search_enabled.contains(&TAG_MAIN_UNSET_ID) {
+                out.push((TAG_MAIN_UNSET_ID, i18n::t().tag_main_unset_label().to_string(), c.color));
+            }
+            for tier in &c.tiers {
+                if let Some(name) = tier.element.as_ref().filter(|_| self.tag_search_enabled.contains(&tier.id)) {
+                    out.push((tier.id, name.clone(), c.color));
+                }
+            }
+        }
+        out
+    }
+
+    /// 一覧に出すカテゴリ `TagSearchCategory`。`filter` に当たるチップだけを残し、
+    /// 1つも残らないカテゴリは除く。メインカテゴリの先頭には「未設定」の疑似チップを置く。
+    fn tag_search_categories(&self, filter: &str) -> Vec<TagSearchCategory> {
+        self.tag_manager_categories
+            .iter()
+            .filter_map(|c| {
+                let mut chips: Vec<(u64, String)> = Vec::new();
+                if c.is_main {
+                    chips.push((TAG_MAIN_UNSET_ID, i18n::t().tag_main_unset_label().to_string()));
+                }
+                chips.extend(c.tiers.iter().filter_map(|t| t.element.as_ref().map(|name| (t.id, name.clone()))));
+                // 排他は絞り込み前の全チップが対象（見えていないチップが有効なままにならないように）
+                let group: Vec<u64> = chips.iter().map(|(id, _)| *id).collect();
+                chips.retain(|(_, name)| tag_name_matches_filter(name, filter));
+                // メインカテゴリは常に単一選択。
+                (!chips.is_empty()).then(|| (c.display_name(), c.color, c.is_main || c.single_select, group, chips))
+            })
+            .collect()
     }
 
     /// タグチップの左クリックポップアップ「この要素名（X）をタグ検索」（確認メニュー）。
@@ -296,7 +420,7 @@ impl NekoviewApp {
             .filter(|c| c.is_main)
             .flat_map(|c| c.tiers.iter().map(|t| t.id))
             .collect();
-        let query = TagQuery::new(&self.tag_search_enabled, main_ids);
+        let query = TagQuery::new(&self.tag_search_enabled, main_ids, self.tag_match_mode());
         if query.is_empty() {
             return;
         }
@@ -359,6 +483,17 @@ impl NekoviewApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn filter_is_case_insensitive_substring_over_all_aliases() {
+        assert!(tag_name_matches_filter("Sousou no Frieren", ""));
+        assert!(tag_name_matches_filter("Sousou no Frieren", "  "));
+        assert!(tag_name_matches_filter("Sousou no Frieren", "frieren"));
+        assert!(!tag_name_matches_filter("Sousou no Frieren", "xyz"));
+        assert!(tag_name_matches_filter("葬送のフリーレン|Frieren", "frie"));
+        assert!(tag_name_matches_filter("葬送のフリーレン|Frieren", "葬送"));
+        assert!(!tag_name_matches_filter("葬送のフリーレン|Frieren", "ABC"));
+    }
 
     #[test]
     fn single_tag_enabled_holds_only_that_element() {

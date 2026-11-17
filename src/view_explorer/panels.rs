@@ -4537,6 +4537,39 @@ pub(super) fn tag_chip(
     resp.on_hover_text(text)
 }
 
+/// 検索タブの「有効なタグ」一覧用の、×付きチップ。×が押されたら true。文字部分は反応しない
+/// （`tag_chip_removable` と違い、別名の先頭切替ポップアップは持たない）。長い要素は文字側だけ`…`で省略し、×は右端に残す。
+pub(super) fn tag_chip_with_x(
+    ui: &mut egui::Ui,
+    text: &str,
+    full_w: f32,
+    fill: egui::Color32,
+    text_color: egui::Color32,
+    key: u64,
+) -> bool {
+    const X_W: f32 = 16.0;
+    let pad = egui::vec2(6.0, 2.0);
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let shown = crate::tag_master::display_name(text);
+    let galley = truncated_galley(ui, shown, font.clone(), text_color, (full_w - pad.x * 2.0 - X_W).max(8.0));
+    let size = egui::vec2(galley.size().x + pad.x * 2.0 + X_W, galley.size().y + pad.y * 2.0);
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::hover());
+    ui.painter().rect_filled(rect, 3.0, fill);
+    ui.painter().galley(rect.min + pad, galley, text_color);
+    let x_rect = egui::Rect::from_min_max(egui::pos2(rect.right() - X_W - pad.x, rect.top()), rect.right_bottom());
+    let x_resp = ui.interact(x_rect, ui.id().with(("tag_search_active_x", key)), egui::Sense::click());
+    let x_color = if x_resp.hovered() { text_color } else { text_color.gamma_multiply(0.6) };
+    ui.painter().text(
+        egui::pos2(rect.right() - X_W / 2.0 - pad.x / 2.0, rect.center().y),
+        egui::Align2::CENTER_CENTER,
+        "×",
+        font,
+        x_color,
+    );
+    resp.on_hover_text(text);
+    x_resp.clicked()
+}
+
 /// `tag_chip`の削除ボタン(×)付き版。文字部分と×を1個の矩形として確保するため、チップごと
 /// 折り返す。長い要素は文字側だけを`…`で省略し、×は常に右端に残す。×がクリック
 /// された（＝削除要求）時にtrueを返す。`key`はチップごとに一意なID用（要素のindex等）。
