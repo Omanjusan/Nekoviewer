@@ -1880,13 +1880,19 @@ fn draw_candidate_row(
     });
 
     // 名前（まとめた行は先頭の別名）。新規に登録するものは太字。同一の別名・対の表記は、後ろに足す。
-    let mut name_full = c.aliases.first().cloned().unwrap_or_else(|| c.name.clone());
-    if !c.aliases.is_empty() {
-        name_full.push_str(&format!("（{}: {}）", ctext::merged_label(), c.aliases.join(" ＝ ")));
-    }
-    if !c.alt_forms.is_empty() {
-        name_full.push_str(&format!("（{}）", c.alt_forms.join(" / ")));
-    }
+    // ホバー用は、日中（テスト）でも日本語（`as_ja`）。画面に出す分と、同じ組み立てで作る。
+    let build_name_full = || {
+        let mut name_full = c.aliases.first().cloned().unwrap_or_else(|| c.name.clone());
+        if !c.aliases.is_empty() {
+            name_full.push_str(&format!("（{}: {}）", ctext::merged_label(), c.aliases.join(" ＝ ")));
+        }
+        if !c.alt_forms.is_empty() {
+            name_full.push_str(&format!("（{}）", c.alt_forms.join(" / ")));
+        }
+        name_full
+    };
+    let name_full = build_name_full();
+    let name_full_ja = i18n::as_ja(build_name_full);
     let name_is_new = matches!(c.choice, Choice::New);
     let name_cell = at(cols.x_name() + CELL_PAD, cols.x_state() - CELL_PAD, 0.0, if compact { line1_h } else { row_h });
     if compact {
@@ -1917,7 +1923,7 @@ fn draw_candidate_row(
         in_cell(ui, at(name_cell.left() - rect.left(), name_cell.right() - rect.left(), line1_h, row_h), left, |ui| {
             let label = egui::RichText::new(&name_full);
             let label = if name_is_new { label.strong() } else { label };
-            ui.add(egui::Label::new(label).truncate().show_tooltip_when_elided(false)).on_hover_text(&name_full);
+            ui.add(egui::Label::new(label).truncate().show_tooltip_when_elided(false)).on_hover_text(&name_full_ja);
         });
     }
 
