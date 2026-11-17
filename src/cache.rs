@@ -1582,11 +1582,12 @@ fn fg_now_ms() -> u64 {
     fg_epoch().elapsed().as_millis() as u64
 }
 
-/// デコードワーカーが1ジョブ処理している間だけ生きる印。
-struct ForegroundIoGuard;
+/// 画面に出すためのディスク読み（ページ・アーカイブ内サムネのデコード、アーカイブを開く処理）が
+/// 動いている間だけ生きる印。FileCache の丸読みと手すきサムネ生成は、これが静かになるまで譲る。
+pub(crate) struct ForegroundIoGuard;
 
 impl ForegroundIoGuard {
-    fn begin() -> Self {
+    pub(crate) fn begin() -> Self {
         FG_IO_ACTIVE.fetch_add(1, Ordering::SeqCst);
         Self
     }
@@ -1597,6 +1598,13 @@ impl Drop for ForegroundIoGuard {
         FG_IO_LAST_END_MS.store(fg_now_ms(), Ordering::SeqCst);
         FG_IO_ACTIVE.fetch_sub(1, Ordering::SeqCst);
     }
+}
+
+/// 画面表示用のディスク読みが、動いておらず、最後に終わってから `quiet` 以上たっているか。
+/// 待たずに答えだけ返す（手すきサムネ生成が、毎フレーム「今送ってよいか」を見るのに使う）。
+pub(crate) fn foreground_io_quiet_for(quiet: std::time::Duration) -> bool {
+    let since_end = fg_now_ms().saturating_sub(FG_IO_LAST_END_MS.load(Ordering::SeqCst));
+    FG_IO_ACTIVE.load(Ordering::SeqCst) == 0 && since_end >= quiet.as_millis() as u64
 }
 
 /// デコードワーカーが静かになるまで待つ。待った合計を返す。
@@ -2265,10 +2273,14 @@ fn generate_thumb(req: &ThumbRequest) -> Option<image::RgbaImage> {
         let t2 = std::time::Instant::now();
         let result = resize_thumbnail(img, req.requested_edge, filter);
         log_perf!(
-            "[perf/thumb] load={:.1}ms resize={:.1}ms total={:.1}ms",
+            "[perf/thumb] load={:.1}ms resize={:.1}ms total={:.1}ms 対象={} edge={} 登録サムネ={} タグプレビュー={}",
             t_load.as_secs_f64() * 1000.0,
             t2.elapsed().as_secs_f64() * 1000.0,
             t_total.elapsed().as_secs_f64() * 1000.0,
+            filename,
+            req.requested_edge,
+            req.thumbnail_selection.is_some(),
+            req.is_tag_preview,
         );
         result
     };
@@ -3663,5 +3675,12 @@ mod file_cache_yield_tests {
         drop(g);
         let waited = handle.join().unwrap();
         assert!(waited >= std::time::Duration::from_millis(200), "終了後も静かな時間ぶん待つ: {waited:?}");
+
+        // 待たずに答える版（手すきサムネ生成用）。グローバルの状態を使うので、同じテストの中で順に確かめる。
+        assert!(foreground_io_quiet_for(std::time::Duration::from_millis(FG_IO_QUIET_MS)), "静かになった後は true");
+        let g = ForegroundIoGuard::begin();
+        assert!(!foreground_io_quiet_for(std::time::Duration::ZERO), "ジョブ中は false");
+        drop(g);
+        assert!(!foreground_io_quiet_for(std::time::Duration::from_secs(5)), "終わった直後は、長い静けさを要求すると false");
     }
 }

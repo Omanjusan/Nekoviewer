@@ -24,6 +24,11 @@ use crate::cache::ThumbRequest;
 const CONCURRENCY: usize = 1;
 /// 1回の呼び出し（1フレーム）で、サムネの有無を確認する最大件数。
 const SCAN_PER_FRAME: usize = 16;
+/// ページ読み・アーカイブを開く処理が終わってから、手すき生成が次を送るまでに空ける静けさ。
+/// 入力はエクスプローラー窓のものしか見ていないので、本を読んでいる間（ビューアー窓）の操作はここで拾う。
+/// 止めるのではなく、読み進めている間だけ送らず、読み終わり・手が止まれば自動で再開する。
+/// 送信済みの1件は止められないので、ページ送りの間隔より長めにして、ぶつかる確率を下げる。
+const FG_QUIET: Duration = Duration::from_millis(1500);
 /// ID解決待ちで飛ばしたものを見直すまでの間隔。
 const RECHECK_AFTER: Duration = Duration::from_secs(1);
 
@@ -173,6 +178,11 @@ impl NekoviewApp {
             || self.normal_thumb_pending() > 0
             || self.idle_thumb.pending.len() >= CONCURRENCY
         {
+            return;
+        }
+        // 本のページ読み・アーカイブを開く処理が動いている間と直後は、ディスクを取り合わないよう送らない。
+        if !crate::cache::foreground_io_quiet_for(FG_QUIET) {
+            ctx.request_repaint_after(Duration::from_millis(500));
             return;
         }
         let mut checked = 0;

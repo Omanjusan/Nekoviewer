@@ -92,6 +92,8 @@ impl PendingOpen {
         let worker_progress = Arc::clone(&progress);
         let worker_cancel = Arc::clone(&cancel);
         thread::spawn(move || {
+            // 開く処理の間は、FileCache の丸読みや手すきサムネ生成にディスクを譲らせる。
+            let _fg = crate::cache::ForegroundIoGuard::begin();
             let mut on_progress = |p: ArchiveOpenProgress| -> bool {
                 *worker_progress.lock().unwrap() = Some(ArchiveOpenPhase::Listing(p));
                 !worker_cancel.load(Ordering::Relaxed)
