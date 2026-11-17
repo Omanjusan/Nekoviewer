@@ -268,6 +268,8 @@ pub(super) struct TagConfirm {
     intro_open: bool,
     /// よくある質問のポップアップを開いているか。
     faq_open: bool,
+    /// 「キャンセル」を押したあとの、確認のポップアップを開いているか。
+    cancel_confirm: bool,
     /// 適用前の確認（要確認が残っているとき）を出しているか。
     precheck: bool,
     /// 名前の絞り込み欄。
@@ -403,7 +405,7 @@ impl TagConfirm {
         } else {
             return None;
         };
-        Some(Self { set, inputs: Arc::new(inputs), paths, master: Arc::new(master), model, rules, stage, move_rules, separators, sep_input: String::new(), sep_error: None, view: ListView::All, settings_open: false, rules_dialog_open: false, rebuild: None, threshold_draft: None, merge_dialog: None, bulk_move_dialog: None, intro_open: true, faq_open: false, precheck: false, filter: String::new(), next_bundle_id: 1, rename_review: None, limit, limit_keep: false, truncated: Vec::new(), reattach: false, compact: false, confirmed: HashSet::new(), resolve_dialog: None, why_dialog: None })
+        Some(Self { set, inputs: Arc::new(inputs), paths, master: Arc::new(master), model, rules, stage, move_rules, separators, sep_input: String::new(), sep_error: None, view: ListView::All, settings_open: false, rules_dialog_open: false, rebuild: None, threshold_draft: None, merge_dialog: None, bulk_move_dialog: None, intro_open: true, faq_open: false, cancel_confirm: false, precheck: false, filter: String::new(), next_bundle_id: 1, rename_review: None, limit, limit_keep: false, truncated: Vec::new(), reattach: false, compact: false, confirmed: HashSet::new(), resolve_dialog: None, why_dialog: None })
     }
 
     /// 切替項目が変わったので、別スレッドで候補を作り直す。進行中の作り直しは捨てる。
@@ -562,7 +564,6 @@ impl NekoviewApp {
         let stage = st.stage;
         let mut open = true;
         let mut next_stage: Option<Window> = None;
-        let mut cancel = false;
         let mut apply_clicked = false;
         let mut row_action: Option<RowAction> = None;
         let mut opts = self.config.tag_match;
@@ -589,60 +590,71 @@ impl NekoviewApp {
             // 見出し帯: 表示の絞り込み（チップ）・要確認を既定にするチェック・名前の絞り込み・表示密度・照合の設定・一括操作。
             let counts = view_counts(&st.set, stage, &st.confirmed);
             let window_idx: Vec<usize> = st.set.indices_in_window(stage);
+            // 1行目: 絞り込み（表示の切り替えのボタン・名前の絞り込み）と、右端寄せの「オプション」。
             ui.horizontal_wrapped(|ui| {
+                ui.strong(ctext::FILTER_HEADING);
                 for (v, label, n) in [
                     (ListView::All, ctext::VIEW_ALL, counts.all),
                     (ListView::NeedsReview, ctext::VIEW_NEEDS_REVIEW, counts.needs_review),
                     (ListView::Planned, ctext::ADOPT_LABEL, counts.planned),
                     (ListView::Rejected, ctext::REJECT_LABEL, counts.rejected),
                 ] {
-                    if ui.selectable_label(st.view == v, format!("{label} {n}")).clicked() {
+                    if ui.add(egui::Button::new(format!("{label} {n}")).selected(st.view == v)).clicked() {
                         st.view = v;
                     }
                 }
-                ui.checkbox(&mut default_review, ctext::DEFAULT_REVIEW_LABEL).on_hover_text(ctext::DEFAULT_REVIEW_HINT);
-            });
-            ui.horizontal_wrapped(|ui| {
+                ui.separator();
                 ui.label(t.tag_confirm_filter_label());
                 ui.add(egui::TextEdit::singleline(&mut st.filter).desired_width(180.0).hint_text(t.tag_confirm_filter_hint()));
                 if !st.filter.is_empty() && ui.small_button("✕").clicked() {
                     st.filter.clear();
                 }
-                ui.separator();
-                let density = if st.compact { ctext::DENSITY_COMPACT } else { ctext::DENSITY_STANDARD };
-                if ui.small_button(density).on_hover_text(ctext::DENSITY_HINT).clicked() {
-                    st.compact = !st.compact;
+                if st.rebuild.is_some() {
+                    ui.add(egui::Spinner::new());
                 }
-                if ui.small_button(ctext::SETTINGS_BUTTON).on_hover_text(ctext::SETTINGS_HINT).clicked() {
-                    st.settings_open = true;
+                // 「オプション」は右端に寄せる。この行に入りきらないときは、次の行の右端に回す。
+                if ui.available_size_before_wrap().x < OPTION_BTN_W + 8.0 {
+                    ui.end_row();
                 }
-                ui.menu_button(ctext::BULK_LABEL, |ui| {
-                    if ui.button(ctext::BULK_ADOPT_ALL).clicked() {
-                        for &i in &window_idx {
-                            st.set.candidates[i].adopt();
-                            confirm_if_flagged(&mut st.confirmed, &st.set.candidates[i]);
+                let w = ui.available_size_before_wrap().x.max(OPTION_BTN_W);
+                ui.allocate_ui_with_layout(egui::vec2(w, ui.spacing().interact_size.y), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let config = egui::containers::menu::MenuConfig::new().close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+                    egui::containers::menu::MenuButton::new(ctext::OPTION_BUTTON).config(config).ui(ui, |ui| {
+                        ui.label(egui::RichText::new(ctext::OPTION_DENSITY_HEADING).strong());
+                        ui.radio_value(&mut st.compact, false, ctext::DENSITY_STANDARD).on_hover_text(ctext::DENSITY_HINT);
+                        ui.radio_value(&mut st.compact, true, ctext::DENSITY_COMPACT).on_hover_text(ctext::DENSITY_HINT);
+                        ui.separator();
+                        ui.checkbox(&mut default_review, ctext::DEFAULT_REVIEW_LABEL).on_hover_text(ctext::DEFAULT_REVIEW_HINT);
+                        ui.separator();
+                        if ui.button(ctext::SETTINGS_BUTTON).on_hover_text(ctext::SETTINGS_HINT).clicked() {
+                            st.settings_open = true;
+                            ui.close();
                         }
-                        ui.close();
+                    });
+                });
+            });
+            // 2行目: 一括操作（3つを、最初から並べる）。
+            ui.horizontal_wrapped(|ui| {
+                ui.strong(ctext::BULK_HEADING);
+                if ui.button(ctext::BULK_ADOPT_ALL).clicked() {
+                    for &i in &window_idx {
+                        st.set.candidates[i].adopt();
+                        confirm_if_flagged(&mut st.confirmed, &st.set.candidates[i]);
                     }
-                    if ui.button(ctext::BULK_REJECT_ALL).clicked() {
-                        for &i in &window_idx {
+                }
+                if ui.button(ctext::BULK_REJECT_ALL).clicked() {
+                    for &i in &window_idx {
+                        st.set.candidates[i].unadopt();
+                        confirm_if_flagged(&mut st.confirmed, &st.set.candidates[i]);
+                    }
+                }
+                if ui.button(ctext::BULK_REJECT_UNCONFIRMED).clicked() {
+                    for &i in &window_idx {
+                        if st.set.candidates[i].unconfirmed {
                             st.set.candidates[i].unadopt();
                             confirm_if_flagged(&mut st.confirmed, &st.set.candidates[i]);
                         }
-                        ui.close();
                     }
-                    if ui.button(ctext::BULK_REJECT_UNCONFIRMED).clicked() {
-                        for &i in &window_idx {
-                            if st.set.candidates[i].unconfirmed {
-                                st.set.candidates[i].unadopt();
-                                confirm_if_flagged(&mut st.confirmed, &st.set.candidates[i]);
-                            }
-                        }
-                        ui.close();
-                    }
-                });
-                if st.rebuild.is_some() {
-                    ui.add(egui::Spinner::new());
                 }
             });
             ui.separator();
@@ -740,30 +752,33 @@ impl NekoviewApp {
                 ui.horizontal(|ui| {
                     if stage == Window::Two {
                         let back_enabled = st.set.candidates.iter().any(|c| c.role.window() == Window::One);
-                        if ui.add_enabled(back_enabled, egui::Button::new(ctext::FOOTER_BACK)).clicked() {
+                        if ui.add_enabled(back_enabled, egui::Button::new(ctext::footer_back_label())).clicked() {
                             next_stage = Some(Window::One);
                         }
-                    } else if ui.button(ctext::FOOTER_NEXT).clicked() {
+                    } else if ui.button(ctext::footer_next_label()).clicked() {
                         next_stage = Some(Window::Two);
                     }
                 });
             }
             ui.horizontal(|ui| {
-                // 適用のできる窓では、前回の自動付与分を外して付け直すかを選べる（既定はOFF）。
+                // 左: 適用のできる窓では、前回の自動付与分を外して付け直すかを選べる（既定はOFF）。
                 if last_stage {
                     ui.checkbox(&mut st.reattach, t.tag_confirm_reattach()).on_hover_text(t.tag_confirm_reattach_hover());
-                    ui.separator();
                 }
-                if ui.button(t.archive_open_cancel()).clicked() {
-                    cancel = true;
-                }
-                if last_stage {
-                    let btn = ui.add_enabled(apply_enabled, egui::Button::new(ctext::FOOTER_APPLY));
-                    let btn = if apply_enabled { btn } else { btn.on_disabled_hover_text(apply_hint) };
-                    if btn.clicked() {
-                        apply_clicked = true;
+                // 右: キャンセルを右端に置き、適用とは間隔を空ける（押し間違い対策）。
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button(t.archive_open_cancel()).clicked() {
+                        st.cancel_confirm = true;
                     }
-                }
+                    if last_stage {
+                        ui.add_space(32.0);
+                        let btn = ui.add_enabled(apply_enabled, egui::Button::new(ctext::FOOTER_APPLY));
+                        let btn = if apply_enabled { btn } else { btn.on_disabled_hover_text(apply_hint) };
+                        if btn.clicked() {
+                            apply_clicked = true;
+                        }
+                    }
+                });
             });
         });
 
@@ -778,7 +793,7 @@ impl NekoviewApp {
             self.persist_state();
         }
         // 照合の設定（別ポップアップ）。切り替えたら、下の `opts != before` で候補を作り直す。
-        if open && !cancel && st.settings_open {
+        if open && st.settings_open {
             let mut close = false;
             let mut delete_rule: Option<usize> = None;
             let mut sep_action: Option<SepAction> = None;
@@ -938,7 +953,7 @@ impl NekoviewApp {
             self.tag_confirm = Some(st);
         } else if apply_clicked {
             self.begin_apply(st);
-        } else if open && !cancel {
+        } else if open {
             // 上限を超えているとき: 拡張するか、維持して切り捨てるかを選ぶ（モーダル）。作り直し中は待つ。
             if !st.limit_keep && st.rebuild.is_none() {
                 let over = over_limit(&st.set.candidates, st.limit);
@@ -1004,13 +1019,38 @@ impl NekoviewApp {
                     st.view = ListView::NeedsReview;
                 }
             }
+            // キャンセルの確認（選択を全部捨てる操作なので、一手間かける）。
+            let mut cancel_go = false;
+            if st.cancel_confirm {
+                let mut keep = false;
+                let modal = self.explorer_modal(ctx, "tag_cancel_confirm").show(ctx, |ui| {
+                    ui.set_width(420.0);
+                    ui.heading(ctext::CANCEL_CONFIRM_TITLE);
+                    ui.add_space(4.0);
+                    ui.label(ctext::CANCEL_CONFIRM_BODY);
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button(ctext::CANCEL_CONFIRM_CONTINUE).clicked() {
+                            keep = true;
+                        }
+                        if ui.button(ctext::CANCEL_CONFIRM_GO).clicked() {
+                            cancel_go = true;
+                        }
+                    });
+                });
+                if keep || modal.should_close() {
+                    st.cancel_confirm = false;
+                }
+            }
             self.draw_tag_merge_dialog(ctx, &mut st);
             self.draw_tag_bulk_move_dialog(ctx, &mut st);
             self.draw_tag_resolve_dialog(ctx, &mut st);
             self.draw_tag_why_dialog(ctx, &mut st);
             self.draw_tag_rule_hits_dialog(ctx, &mut st);
             self.draw_tag_faq_dialog(ctx, &mut st);
-            if precheck_go {
+            if cancel_go {
+                // 確認窓を閉じる（st を戻さない）。
+            } else if precheck_go {
                 st.precheck = false;
                 self.begin_apply(st);
             } else if proceed {
@@ -1634,6 +1674,8 @@ fn merge_error_text(e: &MergeError, t: Lang) -> String {
 const TOGGLE_COL_W: f32 = 124.0;
 /// 「⋯」の列の幅。
 const OPS_COL_W: f32 = 150.0;
+/// 「オプション」ボタンのおおよその幅（右端寄せの判定用）。
+const OPTION_BTN_W: f32 = 110.0;
 /// セルの左右の余白。
 const CELL_PAD: f32 = 6.0;
 

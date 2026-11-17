@@ -109,8 +109,8 @@ pub(crate) fn band_title(role_label: &str, is_main: bool) -> String {
         format!("{BAND_PREFIX}{role_label}")
     }
 }
-pub(crate) const DENSITY_STANDARD: &str = "表示：標準（2段）";
-pub(crate) const DENSITY_COMPACT: &str = "表示：コンパクト（1段）";
+pub(crate) const DENSITY_STANDARD: &str = "標準（2段）";
+pub(crate) const DENSITY_COMPACT: &str = "コンパクト（1段）";
 pub(crate) const DENSITY_HINT: &str = "一覧の行の密度を切り替えます。コンパクトは1行で、行数が多いときに便利です";
 
 // ── 窓冒頭の説明・よくある質問・適用前の確認・上限ダイアログ ─────────────
@@ -149,8 +149,25 @@ pub(crate) const FAQ_ITEMS: [(&str, &str); 3] = [
     ),
 ];
 
-pub(crate) const FOOTER_BACK: &str = "戻る";
-pub(crate) const FOOTER_NEXT: &str = "次へ";
+/// 1枚目の窓の短い呼び名（下端の「戻る」ボタンの文面に使う）。
+pub(crate) const STAGE_ONE_NAME: &str = "形式・カテゴリ・言語・イベント";
+/// 2枚目の窓の短い呼び名（下端の「次へ」ボタンの文面に使う）。
+pub(crate) const STAGE_TWO_NAME: &str = "作者・グループ";
+
+/// 1枚目から2枚目へ進むボタン。
+pub(crate) fn footer_next_label() -> String {
+    format!("次へ：2/2 {STAGE_TWO_NAME}の解決ページへ進む")
+}
+
+/// 2枚目から1枚目へ戻るボタン。
+pub(crate) fn footer_back_label() -> String {
+    format!("戻る：1/2 {STAGE_ONE_NAME}の解決ページへ戻る")
+}
+
+pub(crate) const CANCEL_CONFIRM_TITLE: &str = "確認をやめますか？";
+pub(crate) const CANCEL_CONFIRM_BODY: &str = "ここまでの選択はすべて捨てられ、ファイルにはタグが付きません。";
+pub(crate) const CANCEL_CONFIRM_CONTINUE: &str = "続けて確認する";
+pub(crate) const CANCEL_CONFIRM_GO: &str = "やめる";
 pub(crate) const FOOTER_APPLY: &str = "今までの選択を適用";
 
 pub(crate) const PRECHECK_TITLE: &str = "要確認の候補が残っています";
@@ -282,7 +299,10 @@ pub(crate) const DEFAULT_REVIEW_LABEL: &str = "デフォルト表示を要確認
 pub(crate) const DEFAULT_REVIEW_HINT: &str = "オンのとき、確認窓を開いたら要確認の候補だけを先に表示します（要確認が無いときは、すべてを表示します）";
 pub(crate) const NEEDS_REVIEW_EMPTY: &str = "要確認の候補はありません。";
 
-pub(crate) const BULK_LABEL: &str = "一括操作 ▾";
+pub(crate) const FILTER_HEADING: &str = "絞り込み：";
+pub(crate) const BULK_HEADING: &str = "一括操作：";
+pub(crate) const OPTION_BUTTON: &str = "オプション ▾";
+pub(crate) const OPTION_DENSITY_HEADING: &str = "表示";
 pub(crate) const BULK_ADOPT_ALL: &str = "すべて「タグ採用予定」にする";
 pub(crate) const BULK_REJECT_ALL: &str = "すべて「タグ不採用」にする";
 pub(crate) const BULK_REJECT_UNCONFIRMED: &str = "未確定の候補を「タグ不採用」にする";
@@ -1078,6 +1098,12 @@ mod tests {
         // ホバーは先頭10件と、残りの件数。
         let (names, rest) = source_hover(&c, &inputs.iter().cloned().cycle().take(40).collect::<Vec<_>>());
         assert_eq!((names.len(), rest), (SOURCE_HOVER_CAP, 30));
+    }
+
+    #[test]
+    fn footer_stage_labels_name_the_destination() {
+        assert_eq!(footer_next_label(), "次へ：2/2 作者・グループの解決ページへ進む");
+        assert_eq!(footer_back_label(), "戻る：1/2 形式・カテゴリ・言語・イベントの解決ページへ戻る");
     }
 
     #[test]
