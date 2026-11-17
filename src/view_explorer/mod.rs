@@ -1076,6 +1076,9 @@ pub struct NekoviewApp {
     thumb_res_rx: mpsc::Receiver<ThumbResult>,
     thumb_session: Arc<AtomicU64>,
     thumb_pending: HashSet<PathBuf>,
+    /// 設定（サムネサイズ・フィルタ）を変えた時点で表示中だった、旧形式のテクスチャのパス。旧サムネを見せたまま、
+    /// 新形式で作り直して差し替えるための印（新形式が届くか、フォルダに入り直して `thumbnails` を空にすると消える）。
+    thumb_stale_textures: HashSet<PathBuf>,
     /// サムネ生成の待ち時間の計測（`[perf/thumb-wait]` ログ用。perf ログOFFのときは使わない）。
     /// 送信した時刻と種類（優先・通常・手すき）を、結果が返るまで覚える。
     thumb_trace: HashMap<PathBuf, (std::time::Instant, &'static str)>,
@@ -1877,6 +1880,7 @@ impl NekoviewApp {
             thumb_res_rx,
             thumb_session,
             thumb_pending: HashSet::new(),
+            thumb_stale_textures: HashSet::new(),
             thumb_trace: HashMap::new(),
             thumb_trace_count: 0,
             thumb_trace_sum_ms: 0.0,

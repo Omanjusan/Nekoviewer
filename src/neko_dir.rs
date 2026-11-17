@@ -447,6 +447,27 @@ mod tests {
     }
 
     #[test]
+    fn needs_regeneration_follows_state_and_profile() {
+        let neko_dir = unique_test_neko_dir("needs_regen");
+        let db = open_cache_db(&neko_dir, Path::new("/tmp/fake_needs_regen")).unwrap();
+        // 状態なし → 要る
+        assert!(thumbnail_needs_regeneration(&db, "none.zip", 256, TRIANGLE));
+        // 生成中（Processing）→ 二重に始めない
+        let token = claim_thumbnail_generation(&db, "a.zip", 100, 256, TRIANGLE, "").unwrap();
+        assert!(!thumbnail_needs_regeneration(&db, "a.zip", 256, TRIANGLE));
+        // 完成（Current）。同じ設定なら要らない。サイズ・フィルタが変われば要る。
+        assert!(finish_thumbnail_generation(&db, "a.zip", 100, b"a", "", 256, TRIANGLE, token));
+        assert!(!thumbnail_needs_regeneration(&db, "a.zip", 256, TRIANGLE));
+        assert!(thumbnail_needs_regeneration(&db, "a.zip", 384, TRIANGLE), "サイズ変更");
+        assert!(thumbnail_needs_regeneration(&db, "a.zip", 256, LANCZOS3), "フィルタ変更");
+        // 旧JPEGを残したまま作り直し待ち（Stale）→ 要る
+        reset_thumb_for_source(&db, "a.zip", "right\0pages/cover.jpg");
+        assert_eq!(read_thumbnail_state(&db, "a.zip").unwrap().status, ThumbnailStatus::Stale);
+        assert!(thumbnail_needs_regeneration(&db, "a.zip", 256, TRIANGLE));
+        let _ = std::fs::remove_dir_all(&neko_dir);
+    }
+
+    #[test]
     fn file_level_cas_does_not_block_other_profiles() {
         let neko_dir = unique_test_neko_dir("thumb_file_cas");
         let db = open_cache_db(&neko_dir, Path::new("/tmp/fake_thumb_file_cas")).unwrap();
@@ -1477,6 +1498,28 @@ pub fn fail_thumbnail_generation(
         }));
     }
     let _ = tx.commit();
+}
+
+/// このファイルのサムネが、**現設定（サイズ・フィルタ）の完成品ではなく、作り直す必要があるか**を、状態だけを見て返す。
+/// 手すき生成が、設定変更後に旧形式（`Stale`、または別のサイズ・フィルタで完成した `Current`）を順に作り直す対象を選ぶのに使う。
+/// - 状態なし・`Missing`・`Stale` → 要る
+/// - `Processing`（他で生成中） → 要らない（二重に始めない）
+/// - `Current` → 保存された生成条件が現設定と違えば要る
+/// 元ファイルの更新日時との突合はしない（それは `claim_thumbnail_generation` の最終判定に任せる。ここは軽く保つ）。
+pub fn thumbnail_needs_regeneration(
+    db: &Arc<Mutex<Database>>,
+    filename: &str,
+    requested_edge: u32,
+    requested_filter: u32,
+) -> bool {
+    match read_thumbnail_state(db, filename) {
+        None => true,
+        Some(state) => match state.status {
+            ThumbnailStatus::Missing | ThumbnailStatus::Stale => true,
+            ThumbnailStatus::Processing => false,
+            ThumbnailStatus::Current => state.target_edge != requested_edge || state.target_filter != requested_filter,
+        },
+    }
 }
 
 /// 生成可否はファイル単位CASで判定するため、PWD単位では常に許可する。

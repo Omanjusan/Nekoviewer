@@ -94,6 +94,12 @@ v1.1.0時点のキャッシュ層（`cache.rs` / `anim.rs` / `neko_dir.rs`）の
   （位置引数があればその場所、無ければ前回の場所。前回のタブが仮想フォルダなら、そのノードの実パス）。標準エラーに破棄件数を出す
   （[implements.md](implements.md) の「起動方法」）
 
+### 設定変更後の旧サムネの更新
+
+サムネサイズ・フィルタの変更後、旧形式（`Stale`・別の生成条件の `Current`）を自動で作り直す仕組みは
+[features/idle-thumb.md](features/idle-thumb.md) の「設定変更後の旧サムネの更新」に書いた。`neko_dir::thumbnail_needs_regeneration` が、
+状態と生成条件だけで「作り直す必要があるか」を返す（`Processing` は二重に始めない）。
+
 ### 飛び地一覧（お気に入り・検索・タグ検索・類似）のサムネ参照
 
 飛び地一覧（表示中フォルダ以外のファイルが並ぶ一覧）のサムネ要求は `ThumbRequest.db = None` で送る

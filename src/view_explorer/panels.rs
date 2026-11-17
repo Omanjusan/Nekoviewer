@@ -3057,41 +3057,11 @@ impl NekoviewApp {
                 4.0,
                 egui::Color32::from_gray(60),
             );
-            // ファイルID解決待ち（検証中）のファイルは、移動したファイルのサムネを
-            // 引っ越せるよう、解決が済むまで生成を始めない。
-            if !self.thumb_pending.contains(path)
-                && !self.thumb_failed.contains(path)
-                && !self.thumb_queued.contains(path)
-                && !self.identity_verifying.contains(path)
-            {
-                // キャッシュDBは表示中フォルダのもの。別フォルダのファイル（横断一覧・「消した組」ウィンドウ）に渡すと、
-                // サムネを間違ったフォルダのDBへ保存してしまうので、その場合はDBなしで生成する。
-                let same_dir_db = (self.folder_pane_tab.shows_real_dir() && path.parent() == Some(self.current_dir.as_path()))
-                    .then(|| self.cache_db.clone())
-                    .flatten();
-                if self.thumb_req_tx.try_send(ThumbRequest {
-                    archive_path: path.clone(),
-                    db: same_dir_db,
-                    is_raw_file: self.raw_image_files.contains(path),
-                    requested_edge: self.config.thumb_size,
-                    requested_filter: self.config.thumb_filter,
-                    generation_token: None,
-                    session_id: self.thumb_session.load(std::sync::atomic::Ordering::Acquire),
-                    is_tag_preview: false,
-                    thumbnail_selection: path.parent().and_then(|dir| {
-                        let filename = path.file_name()?.to_str()?;
-                        self.spread_db.as_ref().and_then(|db| {
-                            crate::spread_state::read_thumbnail_selection(db, dir, filename)
-                        })
-                    }),
-                }).is_ok() {
-                    // 計測（perf ログ ON のときだけ）: 画面に見えているセルの直接リクエスト（キューを通らない優先経路）。
-                    let (active, limit) = (self.thumb_pending.len(), self.config.resolved_decode_threads());
-                    let (since_input, since_open) = (self.thumb_last_user_activity.elapsed(), self.thumb_queue_built_at.elapsed());
-                    self.trace_thumb_sent(path, "可視", active, limit, since_input, since_open);
-                    self.thumb_pending.insert(path.clone());
-                }
-            }
+            self.request_visible_thumbnail(path);
+        }
+        // 設定変更で旧形式になったテクスチャは、旧サムネを見せたまま、新形式を作り直して差し替える。
+        if self.thumb_stale_textures.contains(path) {
+            self.request_visible_thumbnail(path);
         }
     }
 

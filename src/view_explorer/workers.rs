@@ -548,6 +548,10 @@ impl NekoviewApp {
                     {
                         let name = result.path.display().to_string();
                         let tex = upload_texture(ctx, &name, &rgba);
+                        // 新形式（現設定の完成品）が届いたら、旧形式の印を外す。旧画像のプレビューでは外さない。
+                        if result.stage == ThumbResultStage::Complete {
+                            self.thumb_stale_textures.remove(&result.path);
+                        }
                         self.thumbnails.insert(result.path, tex);
                     }
                 }

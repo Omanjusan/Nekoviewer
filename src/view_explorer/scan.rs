@@ -415,6 +415,7 @@ impl NekoviewApp {
     /// サムネイル生成状態・選択・スクロール位置を初期化する。start_scan と show_empty_listing の共通部分。
     fn reset_thumbs_and_selection(&mut self) {
         self.thumbnails.clear();
+        self.thumb_stale_textures.clear();
         self.thumb_display_requested.clear();
         self.thumb_pending.clear();
         self.thumb_queue.clear();
@@ -656,6 +657,10 @@ impl NekoviewApp {
             ),
         );
         if requested_edge_changed {
+            // 表示中のテクスチャは旧形式になる。旧サムネは見せたまま、新形式で作り直して差し替える（可視セルの再要求・
+            // 先読み・手すき生成の対象にする）。手すき生成は、終わっていても最初からやり直す。
+            self.thumb_stale_textures = self.thumbnails.keys().cloned().collect();
+            self.idle_thumb.force_restart();
             self.thumb_session.fetch_add(1, Ordering::AcqRel);
             if let Some(db) = &self.cache_db {
                 let _ = neko_dir::invalidate_processing_for_profile(
@@ -686,6 +691,64 @@ impl NekoviewApp {
         self.archives.iter()
             .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_string))
             .collect()
+    }
+
+    /// 現設定の完成品として表示できるテクスチャがあるか。設定変更で旧形式になったテクスチャは含めない。
+    pub(super) fn has_current_thumb_texture(&self, path: &PathBuf) -> bool {
+        self.thumbnails.contains_key(path) && !self.thumb_stale_textures.contains(path)
+    }
+
+    /// 現設定のサムネとして作り直す必要があるか（未生成・旧形式・生成条件の不一致）。手すき生成が対象を選ぶのに使う。
+    pub(super) fn thumb_needs_generation(&self, path: &PathBuf) -> bool {
+        path.file_name().and_then(|n| n.to_str())
+            .and_then(|name| self.cache_db.as_ref().map(|db| neko_dir::thumbnail_needs_regeneration(
+                db,
+                name,
+                self.config.thumb_size,
+                self.config.thumb_filter.thumbnail_cache_id(),
+            )))
+            .unwrap_or(true)
+    }
+
+    /// 画面に見えているセルのサムネを、直接リクエストする（キューを通らない優先経路）。
+    /// 生成中・失敗済み・先読みで待機中・ID解決待ち（検証中）のものは出さない。
+    pub(super) fn request_visible_thumbnail(&mut self, path: &PathBuf) {
+        // ファイルID解決待ち（検証中）のファイルは、移動したファイルのサムネを
+        // 引っ越せるよう、解決が済むまで生成を始めない。
+        if self.thumb_pending.contains(path)
+            || self.thumb_failed.contains(path)
+            || self.thumb_queued.contains(path)
+            || self.identity_verifying.contains(path)
+        {
+            return;
+        }
+        // キャッシュDBは表示中フォルダのもの。別フォルダのファイル（横断一覧・「消した組」ウィンドウ）に渡すと、
+        // サムネを間違ったフォルダのDBへ保存してしまうので、その場合はDBなしで生成する。
+        let same_dir_db = (self.folder_pane_tab.shows_real_dir() && path.parent() == Some(self.current_dir.as_path()))
+            .then(|| self.cache_db.clone())
+            .flatten();
+        if self.thumb_req_tx.try_send(ThumbRequest {
+            archive_path: path.clone(),
+            db: same_dir_db,
+            is_raw_file: self.raw_image_files.contains(path),
+            requested_edge: self.config.thumb_size,
+            requested_filter: self.config.thumb_filter,
+            generation_token: None,
+            session_id: self.thumb_session.load(std::sync::atomic::Ordering::Acquire),
+            is_tag_preview: false,
+            thumbnail_selection: path.parent().and_then(|dir| {
+                let filename = path.file_name()?.to_str()?;
+                self.spread_db.as_ref().and_then(|db| {
+                    crate::spread_state::read_thumbnail_selection(db, dir, filename)
+                })
+            }),
+        }).is_ok() {
+            // 計測（perf ログ ON のときだけ）: 画面に見えているセルの直接リクエスト（キューを通らない優先経路）。
+            let (active, limit) = (self.thumb_pending.len(), self.config.resolved_decode_threads());
+            let (since_input, since_open) = (self.thumb_last_user_activity.elapsed(), self.thumb_queue_built_at.elapsed());
+            self.trace_thumb_sent(path, "可視", active, limit, since_input, since_open);
+            self.thumb_pending.insert(path.clone());
+        }
     }
 
     pub(super) fn is_thumb_missing(&self, path: &PathBuf) -> bool {
@@ -775,7 +838,7 @@ impl NekoviewApp {
         self.thumb_missing_queued.retain(|p| desired.contains(p));
         self.thumb_priority_queued.retain(|p| desired.contains(p));
         for path in &window {
-            if self.thumbnails.contains_key(path)
+            if self.has_current_thumb_texture(path)
                 || self.thumb_pending.contains(path)
                 || self.thumb_failed.contains(path)
                 || self.thumb_queued.contains(path)

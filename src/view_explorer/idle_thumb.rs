@@ -97,6 +97,11 @@ impl IdleThumb {
         }
     }
 
+    /// 次のフレームで、最初から見直す（設定変更で、作り直す対象が変わったとき）。終わっていても再開する。
+    pub(super) fn force_restart(&mut self) {
+        self.seen_activity = None;
+    }
+
     fn restart(&mut self, activity: Instant) {
         if self.pass_sent > 0 && !self.done {
             log(|| format!("入力で中断: 送信 {} 件（+{:.1}s）", self.pass_sent, self.elapsed()));
@@ -276,7 +281,8 @@ impl NekoviewApp {
             let path = self.archives[self.idle_thumb.cursor].clone();
             self.idle_thumb.cursor += 1;
             checked += 1;
-            let skip = if self.thumbnails.contains_key(&path) {
+            // 表示中でも、設定変更で旧形式になったテクスチャは「表示済み」とみなさず、作り直す。
+            let skip = if self.has_current_thumb_texture(&path) {
                 Some(&mut self.idle_thumb.skipped.shown)
             } else if self.thumb_pending.contains(&path) {
                 Some(&mut self.idle_thumb.skipped.pending)
@@ -296,7 +302,8 @@ impl NekoviewApp {
                 self.idle_thumb.skipped.verifying += 1;
                 continue;
             }
-            if !self.is_thumb_missing(&path) {
+            // 未生成（Missing）に加えて、旧形式（Stale・別のサイズ/フィルタで完成したもの）も作り直す。
+            if !self.thumb_needs_generation(&path) {
                 self.idle_thumb.skipped.existing += 1;
                 continue;
             }
