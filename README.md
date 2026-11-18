@@ -4,6 +4,8 @@ A single-binary desktop viewer for comfortably reading manga archives in ZIP / C
 
 [日本語版 README](README.ja.md)
 
+📖 [Quick Reference](QUICKREFERENCE.md) — how to use tag search, real vs. virtual folder tabs, and the viewer's unusual default controls
+
 ---
 
 ## Purpose
