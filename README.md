@@ -19,10 +19,13 @@ A single-binary desktop viewer for comfortably reading manga archives in ZIP / C
 - Direct filesystem access — no dependency on external services or servers
 - Archive scoring — when you read to the end of an archive, a rating overlay appears automatically so you can give a score from ★0.5 to ★5. Close it without doing anything and the archive stays unrated.
 - Sorting by view count, which is recorded automatically. It can be combined with the main sort keys (filename, date, file size) for compound sorting, and you can switch between view-count order and score order. For example, you can keep "highest score first" while also viewing larger files first within the same score.
-- Network share (SMB) support — cache is stored locally, so it keeps working even with unusual network paths.
+- Files are managed by a lightweight hash (fingerprint) rather than by path, so tag and score information is tracked and preserved even if you move files outside the app.
+- Automatic tagging from in-archive metadata — reads metadata such as Comicinfo.xml, meta.json, and info.txt and tags files automatically. It works especially well on collections of CBZ files. Click the triangle icon at the right edge of the explorer to expand the tag UI; the buttons at the top are the entry points to these functions. Tags are fetched and applied folder by folder.
+- Duplicate file detection based on the hash above. Once thumbnails are available, similar files are also checked automatically by thumbnail similarity.
+- Tag search across folders. The search scope is limited to folders whose hashes have already been calculated, so folders need to be visited first — opening a folder triggers the calculation automatically. The more you use it, the wider and more complete the search scope becomes.
+- Network share (SMB) support — access is designed to put as little load on the share as possible, though you won't get the same performance as local storage. Thumbnail cache is stored locally even for archives on a network share, so it keeps working even with unusual network paths. When disconnected, an icon is shown and the files can't be accessed; reconnect and reload, and they come back.
 - Animated GIF, WebP, and AVIF playback — handles large animation files, which is especially useful for high-resolution AI-generated animations.
 - Favorite file support — a single flag can apply to many favorite folders at once.
-- Limited search — search files that already have cached thumbnails.
 - Per-archive spread mode setting — saved automatically and restored on reopen.
 - Optional per-archive sort settings — restored on reopen and updated when leaving the viewer.
 - Focused purely on viewing, without file-manager operations such as move, delete, or copy, reducing the risk of accidental changes. (Copy support is planned.)
